@@ -17,18 +17,15 @@ class ConversationTagger:
         self.exchange_tagger = ExchangeTagger()
         self.conversation_aggregator = ConversationAggregator()
     
-    def add_user_rule(self, tag_name: str, rule_function: Callable):
+    def add_exchange_rule(self, tag_name: str, rule_function: Callable):
         """Add rule for analyzing user messages in exchanges."""
-        self.exchange_tagger.add_user_rule(tag_name, rule_function)
+        self.exchange_tagger.add_rule(tag_name, rule_function)
     
-    def add_assistant_rule(self, tag_name: str, rule_function: Callable):
+    def add_conversation_rule(self, tag_name: str, rule_function: Callable):
         """Add rule for analyzing assistant messages in exchanges."""
         self.exchange_tagger.add_assistant_rule(tag_name, rule_function)
     
-    def add_exchange_rule(self, tag_name: str, rule_function: Callable):
-        """Add rule for analyzing entire exchanges."""
-        self.exchange_tagger.add_exchange_rule(tag_name, rule_function)
-    
+    # we should probably apply these tags in the conversation builder
     def tag_conversation(self, conversation: Dict[str, Any]) -> Dict[str, Any]:
         """Tag a conversation using exchange-based analysis."""
         # Parse into exchanges
