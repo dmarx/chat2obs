@@ -13,29 +13,19 @@ class ExchangeTagger:
     """Tags exchanges with user/assistant/exchange-level rules."""
     
     def __init__(self):
-        self.user_rules: Dict[str, Callable] = {}
-        self.assistant_rules: Dict[str, Callable] = {}
-        self.exchange_rules: Dict[str, Callable] = {}
+        self.rules: Dict[str, Callable] = {}
     
-    def add_user_rule(self, tag_name: str, rule_function: Callable):
+    def add_rule(self, tag_name: str, rule_function: Callable):
         """Add rule for user messages."""
-        self.user_rules[tag_name] = rule_function
-    
-    def add_assistant_rule(self, tag_name: str, rule_function: Callable):
-        """Add rule for assistant messages."""
-        self.assistant_rules[tag_name] = rule_function
-    
-    def add_exchange_rule(self, tag_name: str, rule_function: Callable):
-        """Add rule for entire exchange."""
-        self.exchange_rules[tag_name] = rule_function
+        self.rules[tag_name] = rule_function
     
     def tag_exchange(self, exchange: Exchange) -> Dict[str, Any]:
         """Tag a single exchange and populate its tags attribute."""
         #tags = []
         tags = exchange.tags or []
         
-        # Apply user rules
-        for tag_name, rule_func in self.user_rules.items():
+        # why is this so complicated? rule_func api probably needs to be simpler
+        for tag_name, rule_func in self.rules.items():
             try:
                 result = rule_func(exchange)
                 if result:
@@ -49,34 +39,7 @@ class ExchangeTagger:
                 # Skip failed rules silently for now
                 pass
         
-        # Apply assistant rules
-        for tag_name, rule_func in self.assistant_rules.items():
-            try:
-                result = rule_func(exchange)
-                if result:
-                    if isinstance(result, bool):
-                        tags.append(Tag(tag_name))
-                    elif isinstance(result, Tag):
-                        tags.append(result)
-                    else:
-                        tags.append(Tag(tag_name))
-            except Exception as e:
-                pass
-        
-        # Apply exchange rules
-        for tag_name, rule_func in self.exchange_rules.items():
-            try:
-                result = rule_func(exchange)
-                if result:
-                    if isinstance(result, bool):
-                        tags.append(Tag(tag_name))
-                    elif isinstance(result, Tag):
-                        tags.append(result)
-                    else:
-                        tags.append(Tag(tag_name))
-            except Exception as e:
-                pass
-        
+        ### these should all be encapsulated in conversation_rules, or alternatively accessible via Conversation object metadata attrs
         # Add exchange metadata tags
         tags.append(Tag('message_count', count=len(exchange.messages)))
         
@@ -91,14 +54,16 @@ class ExchangeTagger:
         
         # Populate the exchange's tags attribute
         exchange.tags = tags
-        
+
+        # we shouldn't need this dict anymore, it's redundant with just returning the new/updated exchange object
         return {
             'exchange_id': exchange.exchange_id,
             'conversation_id': exchange.conversation_id,
             'tags': tags,
             'exchange': exchange
         }
-    
+
+    # this is basically redundant with conversation tagging
     def tag_exchanges(self, exchanges: List[Exchange]) -> List[Dict[str, Any]]:
         """Tag multiple exchanges."""
         return [self.tag_exchange(exchange) for exchange in exchanges]
