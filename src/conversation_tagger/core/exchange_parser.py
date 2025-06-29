@@ -79,7 +79,8 @@ class ExchangeParser:
     def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
         """Add a new continuation detection rule."""
         self.continuation_rules.append(rule_function)
-    
+
+    # this should just return a Conversation object
     def parse_conversation(self, conversation: Dict[str, Any]) -> List[Exchange]:
         """Parse a conversation into fully-tagged exchanges."""
         mapping = conversation.get('mapping', {})
