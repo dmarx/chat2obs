@@ -78,6 +78,8 @@ class ExchangeParser:
             simple_continuation_rule,
             short_continuation_rule
         ]
+        if exchange_tagger is None:
+            exchange_tagger = ExchangeTagger()
         self.exchange_tagger = exchange_tagger
 
     def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
