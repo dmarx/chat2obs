@@ -16,7 +16,12 @@ class Conversation:
     title: str
     exchanges: List['Exchange'] = field(default_factory=list)
     tags: List[Tag] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict) 
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def _exchange_tags(self) -> List[Tag]:
+        """Get all tags from exchanges."""
+        return [tag for exchange in self.exchanges for tag in exchange.tags]
     
     @property
     def exchange_count(self) -> int:
