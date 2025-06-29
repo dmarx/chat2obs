@@ -1,6 +1,6 @@
 # conversation_tagger/core/exchange_tagger.py
 """
-Tag individual exchanges.
+Tag individual exchanges using the improved exchange structure.
 """
 
 from typing import Dict, Any, List, Callable
@@ -30,8 +30,9 @@ class ExchangeTagger:
         self.exchange_rules[tag_name] = rule_function
     
     def tag_exchange(self, exchange: Exchange) -> Dict[str, Any]:
-        """Tag a single exchange."""
-        tags = []
+        """Tag a single exchange and populate its tags attribute."""
+        #tags = []
+        tags = exchange.tags or []
         
         # Apply user rules
         for tag_name, rule_func in self.user_rules.items():
@@ -76,10 +77,24 @@ class ExchangeTagger:
             except Exception as e:
                 pass
         
+        # Add exchange metadata tags
+        tags.append(Tag('message_count', count=len(exchange.messages)))
+        
+        user_msg_count = len(exchange.get_user_messages())
+        assistant_msg_count = len(exchange.get_assistant_messages())
+        
+        tags.append(Tag('user_message_count', count=user_msg_count))
+        tags.append(Tag('assistant_message_count', count=assistant_msg_count))
+        
+        if exchange.has_continuations():
+            tags.append(Tag('has_continuations'))
+        
+        # Populate the exchange's tags attribute
+        exchange.tags = tags
+        
         return {
             'exchange_id': exchange.exchange_id,
             'conversation_id': exchange.conversation_id,
-            'exchange_index': exchange.exchange_index,
             'tags': tags,
             'exchange': exchange
         }
@@ -87,4 +102,3 @@ class ExchangeTagger:
     def tag_exchanges(self, exchanges: List[Exchange]) -> List[Dict[str, Any]]:
         """Tag multiple exchanges."""
         return [self.tag_exchange(exchange) for exchange in exchanges]
-
