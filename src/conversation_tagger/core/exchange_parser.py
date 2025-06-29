@@ -5,18 +5,79 @@ Parse conversations into exchanges using a two-step approach:
 2. Merge chunks when continuations are detected
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Callable
 from .exchange import Exchange
+
+
+def quote_elaborate_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for quote + elaborate continuation pattern."""
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip()
+    
+    return (text.startswith('>') and 
+            len(text.split('\n')) >= 2 and 
+            text.split('\n')[-1].strip().lower() == 'elaborate')
+
+
+def simple_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for simple continuation keywords."""
+    continuation_patterns = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip().lower()
+    
+    return text in continuation_patterns
+
+
+def short_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for short prompts starting with continuation words."""
+    continuation_starters = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip().lower()
+    
+    if len(text.split()) <= 3:
+        for pattern in continuation_starters:
+            if text.startswith(pattern):
+                return True
+    
+    return False
 
 
 class ExchangeParser:
     """Parses conversations into exchanges using dyadic segmentation + merging."""
     
     def __init__(self):
-        self.continuation_patterns = [
-            'continue', 'more', 'keep going', 'go on', 'next', 
-            'tell me more', 'expand', 'keep writing', 'finish'
+        self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
+            quote_elaborate_rule,
+            simple_continuation_rule,
+            short_continuation_rule
         ]
+    
+    def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
+        """Add a new continuation detection rule."""
+        self.continuation_rules.append(rule_function)
     
     def parse_conversation(self, conversation: Dict[str, Any]) -> List[Exchange]:
         """Parse a conversation into exchanges using two-step approach."""
@@ -26,6 +87,7 @@ class ExchangeParser:
         all_messages = []
         for node_id, node in mapping.items():
             message = node.get('message')
+            # should exchanges capture every message in the span?
             if message and message.get('author'):
                 create_time = message.get('create_time') or 0
                 all_messages.append((create_time, message))
@@ -33,12 +95,9 @@ class ExchangeParser:
         all_messages.sort(key=lambda x: x[0])
         messages = [msg for _, msg in all_messages]
         
-        conversation_id = conversation.get('conversation_id', 'unknown')
+        conversation_id = conversation.get('conversation_id', )
         
-        # Step 1: Create dyadic exchanges
         dyadic_exchanges = self._create_dyadic_exchanges(messages, conversation_id)
-        
-        # Step 2: Merge exchanges when continuations are detected
         merged_exchanges = self._merge_continuations(dyadic_exchanges)
         
         return merged_exchanges
@@ -89,8 +148,11 @@ class ExchangeParser:
         for i in range(1, len(dyadic_exchanges)):
             next_exchange = dyadic_exchanges[i]
             
-            # Check if next exchange starts with a continuation
-            if self._is_continuation_exchange(next_exchange):
+            # Check if next exchange is a continuation using any rule
+            should_merge = any(rule(current_exchange, next_exchange) 
+                             for rule in self.continuation_rules)
+            
+            if should_merge:
                 # Merge with current exchange (time-ordering handled by __add__)
                 current_exchange = current_exchange + next_exchange
             else:
@@ -103,33 +165,3 @@ class ExchangeParser:
         
         return merged_exchanges
     
-    def _is_continuation_exchange(self, exchange: Exchange) -> bool:
-        """Check if an exchange represents a continuation of the previous exchange."""
-        user_messages = exchange.get_user_messages()
-        
-        if not user_messages:
-            return False
-        
-        # Check the first user message in this exchange
-        first_user_message = user_messages[0]
-        content = first_user_message.get('content', {})
-        text = content.get('text', '').strip()
-        text_lower = text.lower()
-        
-        # Quote + elaborate pattern
-        if (text.startswith('>') and 
-            len(text.split('\n')) >= 2 and 
-            text.split('\n')[-1].strip().lower() == 'elaborate'):
-            return True
-        
-        # Simple continuation patterns
-        if text_lower in self.continuation_patterns:
-            return True
-        
-        # Short prompts starting with continuation words
-        if len(text.split()) <= 3:
-            for pattern in self.continuation_patterns:
-                if text_lower.startswith(pattern):
-                    return True
-        
-        return False
