@@ -5,12 +5,12 @@ Parse conversations into exchanges using a two-step approach:
 2. Merge chunks when continuations are detected
 """
 
-from typing import Dict, Any, List, Callable, TYPE_CHECKING
+from typing import Dict, Any, List, Callable
 from .exchange import Exchange
 from .conversation import Conversation
 
-if TYPE_CHECKING:
-    from .exchange_tagger import ExchangeTagger
+
+from .exchange_tagger import ExchangeTagger
 
 
 def quote_elaborate_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
@@ -72,7 +72,7 @@ def short_continuation_rule(previous_exchange: Exchange, current_exchange: Excha
 class ExchangeParser:
     """Parses conversations into tagged exchanges."""
     
-    def __init__(self, exchange_tagger: 'ExchangeTagger' | None = None):
+    def __init__(self, exchange_tagger: ExchangeTagger | None = None):
         self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
             quote_elaborate_rule,
             simple_continuation_rule,
