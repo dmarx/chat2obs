@@ -4,7 +4,7 @@ Factory to create configured tagger with improved exchange handling.
 """
 
 from .core.tagger import ConversationTagger
-
+from .core.exchange import Exchange
 
 def create_default_tagger() -> ConversationTagger:
     """Create a basic tagger with example rules for the new exchange design."""
