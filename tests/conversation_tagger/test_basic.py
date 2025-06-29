@@ -1,311 +1,305 @@
-# tests/test_basic.py
+# tests/conversation_tagger/test_simple.py
 """
-Basic test to verify the improved exchange system works.
+Simple test suite for main features and happy paths.
 """
 
 import pytest
-from conversation_tagger import create_default_tagger, Tag
 from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.exchange_parser import ExchangeParser
+from conversation_tagger.core.exchange_tagger import ExchangeTagger
+from conversation_tagger.core.tag import Tag
+from conversation_tagger.core.conversation import Conversation
 
 
-def create_test_conversation():
-    """Create a simple test conversation with continuation."""
-    return {
-        'conversation_id': 'test_conv',
-        'title': 'Test Conversation',
-        'mapping': {
-            'node1': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 1000,
-                    'content': {
-                        'text': 'Fix this Python code:\n```python\nprint("hello")\n```',
-                        'parts': []
-                    }
-                }
-            },
-            'node2': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 2000,
-                    'content': {
-                        'text': 'Here is the fix:\n```python\nprint("Hello, World!")\n```',
-                        'parts': []
-                    }
-                }
-            },
-            'node3': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 3000,
-                    'content': {
-                        'text': '> Here is the fix\n\nelaborate',
-                        'parts': []
-                    }
-                }
-            },
-            'node4': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 4000,
-                    'content': {
-                        'text': 'The fix adds proper formatting and follows Python conventions...',
-                        'parts': []
-                    }
-                }
-            }
-        }
-    }
-
-
-def test_exchange_merge_operator():
-    """Test that Exchange.__add__ works correctly with time ordering."""
-    # Create two simple exchanges with different timestamps
-    exchange1 = Exchange(
-        exchange_id='test_1',
-        conversation_id='conv_1',
-        messages=[
-            {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there'}, 'create_time': 2000}
-        ]
-    )
-    
-    exchange2 = Exchange(
-        exchange_id='test_2', 
-        conversation_id='conv_1',
-        messages=[
-            {'author': {'role': 'user'}, 'content': {'text': 'Continue'}, 'create_time': 3000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'Sure thing'}, 'create_time': 4000}
-        ]
-    )
-    
-    # Merge them
-    merged = exchange1 + exchange2
-    
-    # Check merged properties
-    assert len(merged.messages) == 4
-    assert merged.conversation_id == 'conv_1'
-    assert len(merged.exchange_id) == 36  # UUID length
-    assert merged.exchange_id != exchange1.exchange_id  # New UUID generated
-    
-    # Check messages are ordered by time
-    times = [msg.get('create_time', 0) for msg in merged.messages]
-    assert times == [1000, 2000, 3000, 4000]  # Should be in chronological order
-    
-    # Check message sequence is preserved
-    roles = [msg['author']['role'] for msg in merged.messages]
-    assert roles == ['user', 'assistant', 'user', 'assistant']
-    
-    # Check text extraction works
-    assert 'Hello' in merged.get_user_text()
-    assert 'Continue' in merged.get_user_text()
-    assert 'Hi there' in merged.get_assistant_text()
-    assert 'Sure thing' in merged.get_assistant_text()
-
-
-def test_exchange_time_ordering():
-    """Test that messages are properly ordered by time during merge."""
-    # Create exchanges where the second one actually happened first
-    exchange1 = Exchange(
-        exchange_id='test_1',
-        conversation_id='conv_1',
-        messages=[
-            {'author': {'role': 'user'}, 'content': {'text': 'Second message'}, 'create_time': 3000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'Second response'}, 'create_time': 4000}
-        ]
-    )
-    
-    exchange2 = Exchange(
-        exchange_id='test_2',
-        conversation_id='conv_1', 
-        messages=[
-            {'author': {'role': 'user'}, 'content': {'text': 'First message'}, 'create_time': 1000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'First response'}, 'create_time': 2000}
-        ]
-    )
-    
-    # Merge them
-    merged = exchange1 + exchange2
-    
-    # Check that messages are now properly ordered by time
-    texts = [msg['content']['text'] for msg in merged.messages]
-    assert texts == ['First message', 'First response', 'Second message', 'Second response']
-    
-    # Check first_message_time property
-    assert merged.first_message_time == 1000
-
-
-def test_exchange_create_method():
-    """Test the Exchange.create class method."""
+def test_exchange_basic_operations():
+    """Test basic Exchange creation and operations."""
+    # Create a simple exchange
     messages = [
-        {'author': {'role': 'user'}, 'content': {'text': 'Test'}, 'create_time': 1000}
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}
     ]
     
     exchange = Exchange.create('test_conv', messages)
     
+    # Basic properties
     assert exchange.conversation_id == 'test_conv'
-    assert exchange.messages == messages
+    assert len(exchange.messages) == 2
     assert len(exchange.exchange_id) == 36  # UUID length
-    assert exchange.tags == []  # Empty tags list
+    
+    # Text extraction
+    assert exchange.get_user_text() == 'Hello'
+    assert exchange.get_assistant_text() == 'Hi there!'
+    
+    # Message filtering
+    assert len(exchange.get_user_messages()) == 1
+    assert len(exchange.get_assistant_messages()) == 1
+    
+    # No continuations in simple exchange
+    assert not exchange.has_continuations()
 
 
-def test_exchange_methods():
-    """Test Exchange helper methods."""
-    exchange = Exchange(
-        exchange_id='test',
-        conversation_id='conv',
-        messages=[
-            {'author': {'role': 'user'}, 'content': {'text': 'First question'}, 'create_time': 1000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'First answer'}, 'create_time': 2000},
-            {'author': {'role': 'user'}, 'content': {'text': 'Follow up'}, 'create_time': 3000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'Second answer'}, 'create_time': 4000}
-        ]
-    )
-    
-    # Test message filtering
-    assert len(exchange.get_user_messages()) == 2
-    assert len(exchange.get_assistant_messages()) == 2
-    
-    # Test continuation detection
-    assert exchange.has_continuations() == True
-    
-    # Test text extraction
-    user_text = exchange.get_user_text()
-    assert 'First question' in user_text
-    assert 'Follow up' in user_text
-    
-    assistant_text = exchange.get_assistant_text()
-    assert 'First answer' in assistant_text
-    assert 'Second answer' in assistant_text
-    
-    # Test first_message_time
-    assert exchange.first_message_time == 1000
-
-
-def test_improved_parsing():
-    """Test that the improved parsing creates proper exchanges."""
-    tagger = create_default_tagger()
-    conversation = create_test_conversation()
-    
-    result = tagger.tag_conversation(conversation)
-    
-    # Should have basic structure
-    assert 'conversation_id' in result
-    assert 'tags' in result
-    assert 'exchanges' in result
-    assert 'exchange_count' in result
-    
-    # Should have 1 exchange (continuation merged)
-    assert result['exchange_count'] == 1
-    
-    # The exchange should have 4 messages (user->asst->user->asst)
-    exchange = result['exchanges'][0]['exchange']
-    assert len(exchange.messages) == 4
-    assert exchange.has_continuations()
-    
-    # Should detect all the expected tags
-    tag_names = [tag.name for tag in result['tags']]
-    #assert 'has_user_has_code_blocks' in tag_names
-    #assert 'has_assistant_has_code_blocks' in tag_names
-    #assert 'has_has_quote_elaborate' in tag_names
-    #assert 'has_mentions_programming_language' in tag_names
-    assert 'has_exchange_type' in tag_names
-
-
-
-
-def test_modular_continuation_rules():
-    """Test the modular continuation rule system."""
-    from conversation_tagger.core.exchange_parser import ExchangeParser, quote_elaborate_rule, simple_continuation_rule
-    
-    parser = ExchangeParser()
-    
-    # Test individual rules
+def test_exchange_merging():
+    """Test exchange merging with + operator."""
     exchange1 = Exchange.create('test', [
         {'author': {'role': 'user'}, 'content': {'text': 'Question'}, 'create_time': 1000},
         {'author': {'role': 'assistant'}, 'content': {'text': 'Answer'}, 'create_time': 2000}
     ])
     
-    # Quote + elaborate pattern
     exchange2 = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': '> Answer\n\nelaborate'}, 'create_time': 3000}
+        {'author': {'role': 'user'}, 'content': {'text': 'Follow up'}, 'create_time': 3000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'More info'}, 'create_time': 4000}
     ])
     
-    assert quote_elaborate_rule(exchange1, exchange2) == True
-    assert simple_continuation_rule(exchange1, exchange2) == False
+    merged = exchange1 + exchange2
     
-    # Simple continuation
-    exchange3 = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'continue'}, 'create_time': 3000}
+    # Check merged properties
+    assert len(merged.messages) == 4
+    assert merged.conversation_id == 'test'
+    assert merged.has_continuations()  # Now has multiple user messages
+    
+    # Check text contains both exchanges
+    assert 'Question' in merged.get_user_text()
+    assert 'Follow up' in merged.get_user_text()
+    assert 'Answer' in merged.get_assistant_text()
+    assert 'More info' in merged.get_assistant_text()
+    
+    # Check time ordering is preserved
+    times = [msg.get('create_time') for msg in merged.messages]
+    assert times == [1000, 2000, 3000, 4000]
+
+
+def test_tag_creation():
+    """Test Tag creation and attributes."""
+    # Simple tag
+    tag1 = Tag('simple_tag')
+    assert tag1.name == 'simple_tag'
+    assert tag1.attributes == {}
+    assert str(tag1) == 'simple_tag'
+    
+    # Tag with attributes
+    tag2 = Tag('complex_tag', count=5, category='test')
+    assert tag2.name == 'complex_tag'
+    assert tag2.attributes['count'] == 5
+    assert tag2.attributes['category'] == 'test'
+    assert 'count=5' in str(tag2)
+    assert 'category=test' in str(tag2)
+    
+    # Tag equality
+    assert tag1 == 'simple_tag'
+    assert tag1 != tag2
+
+
+def test_exchange_tagger():
+    """Test ExchangeTagger with simple rules."""
+    tagger = ExchangeTagger()
+    
+    # Add a simple rule
+    def has_greeting(exchange):
+        text = exchange.get_user_text().lower()
+        return 'hello' in text or 'hi' in text
+    
+    tagger.add_rule('greeting', has_greeting)
+    
+    # Test with greeting
+    exchange_with_greeting = Exchange.create('test', [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello there!'}, 'create_time': 1000}
     ])
     
-    assert quote_elaborate_rule(exchange1, exchange3) == False
-    assert simple_continuation_rule(exchange1, exchange3) == True
+    tagged_exchange = tagger.tag_exchange(exchange_with_greeting)
+    tag_names = [tag.name for tag in tagged_exchange.tags]
+    assert 'greeting' in tag_names
     
-    # Test adding custom rule
-    def custom_rule(prev_exchange: Exchange, curr_exchange: Exchange) -> bool:
-        """Custom rule for testing."""
-        user_messages = curr_exchange.get_user_messages()
-        if not user_messages:
-            return False
-        text = user_messages[0].get('content', {}).get('text', '').strip()
-        return text.startswith('CUSTOM:')
+    # Test without greeting
+    exchange_no_greeting = Exchange.create('test', [
+        {'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}, 'create_time': 1000}
+    ])
     
-    parser.add_continuation_rule(custom_rule)
-    assert len(parser.continuation_rules) == 4  # 3 default + 1 custom
+    tagged_exchange = tagger.tag_exchange(exchange_no_greeting)
+    tag_names = [tag.name for tag in tagged_exchange.tags]
+    assert 'greeting' not in tag_names
 
 
-def test_continuation_rule_integration():
-    """Test that continuation rules work in full parsing."""
-    conversation = {
-        'conversation_id': 'rule_test',
+def test_conversation_creation():
+    """Test Conversation object creation and properties."""
+    exchanges = [
+        Exchange.create('test_conv', [
+            {'author': {'role': 'user'}, 'content': {'text': 'First question'}, 'create_time': 1000},
+            {'author': {'role': 'assistant'}, 'content': {'text': 'First answer'}, 'create_time': 2000}
+        ]),
+        Exchange.create('test_conv', [
+            {'author': {'role': 'user'}, 'content': {'text': 'Second question'}, 'create_time': 3000},
+            {'author': {'role': 'assistant'}, 'content': {'text': 'Second answer'}, 'create_time': 4000}
+        ])
+    ]
+    
+    conversation = Conversation(
+        conversation_id='test_conv',
+        title='Test Conversation',
+        exchanges=exchanges
+    )
+    
+    # Basic properties
+    assert conversation.conversation_id == 'test_conv'
+    assert conversation.title == 'Test Conversation'
+    assert conversation.exchange_count == 2
+    assert conversation.total_message_count == 4
+    assert conversation.total_user_messages == 2
+    assert conversation.total_assistant_messages == 2
+    
+    # Text aggregation
+    user_text = conversation.get_all_user_text()
+    assert 'First question' in user_text
+    assert 'Second question' in user_text
+    
+    assistant_text = conversation.get_all_assistant_text()
+    assert 'First answer' in assistant_text
+    assert 'Second answer' in assistant_text
+
+
+def test_simple_parsing():
+    """Test basic conversation parsing."""
+    # Simple test conversation
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Test Chat',
         'mapping': {
-            'node1': {
+            'msg1': {
                 'message': {
                     'author': {'role': 'user'},
                     'create_time': 1000,
-                    'content': {'text': 'What is Python?'}
+                    'content': {'text': 'Hello, how are you?'}
                 }
             },
-            'node2': {
+            'msg2': {
                 'message': {
-                    'author': {'role': 'assistant'},
+                    'author': {'role': 'assistant'}, 
                     'create_time': 2000,
-                    'content': {'text': 'Python is a programming language.'}
-                }
-            },
-            'node3': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 3000,
-                    'content': {'text': 'more'}  # Simple continuation
-                }
-            },
-            'node4': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 4000,
-                    'content': {'text': 'It was created by Guido van Rossum.'}
+                    'content': {'text': 'I\'m doing well, thank you!'}
                 }
             }
         }
     }
     
-    from conversation_tagger.core.exchange_parser import ExchangeParser
     parser = ExchangeParser()
-    exchanges = parser.parse_conversation(conversation)
+    conversation = parser.parse_conversation(conversation_data)
     
-    # Should merge into 1 exchange due to 'more' continuation
-    assert len(exchanges) == 1
-    assert len(exchanges[0].messages) == 4
-
-
-def test_tag_creation():
-    """Test Tag class works with attributes."""
-    tag = Tag('test_tag', value=42, category='example')
+    assert isinstance(conversation, Conversation)
+    assert conversation.conversation_id == 'test_conv'
+    assert conversation.title == 'Test Chat'
+    assert conversation.exchange_count == 1
     
-    assert tag.name == 'test_tag'
-    assert tag.attributes['value'] == 42
-    assert 'value=42' in str(tag)
-    assert tag == 'test_tag'  # String comparison
+    exchange = conversation.exchanges[0]
+    assert len(exchange.messages) == 2
+    assert 'Hello, how are you?' in exchange.get_user_text()
+    assert 'I\'m doing well, thank you!' in exchange.get_assistant_text()
 
+
+def test_continuation_detection():
+    """Test that continuation patterns are detected and merged."""
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Test Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Tell me about Python'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000, 
+                    'content': {'text': 'Python is a programming language...'}
+                }
+            },
+            'msg3': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 3000,
+                    'content': {'text': 'continue'}  # Continuation keyword
+                }
+            },
+            'msg4': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 4000,
+                    'content': {'text': 'It was created by Guido van Rossum...'}
+                }
+            }
+        }
+    }
+    
+    parser = ExchangeParser()
+    conversation = parser.parse_conversation(conversation_data)
+    
+    # Should merge into single exchange due to continuation
+    assert conversation.exchange_count == 1
+    
+    exchange = conversation.exchanges[0]
+    assert len(exchange.messages) == 4
+    assert exchange.has_continuations()
+    
+    # Check all content is preserved
+    user_text = exchange.get_user_text()
+    assert 'Tell me about Python' in user_text
+    assert 'continue' in user_text
+    
+    assistant_text = exchange.get_assistant_text()
+    assert 'Python is a programming language' in assistant_text
+    assert 'Guido van Rossum' in assistant_text
+
+
+def test_quote_elaborate_pattern():
+    """Test quote + elaborate continuation pattern."""
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Test Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'What is machine learning?'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Machine learning is a subset of AI.'}
+                }
+            },
+            'msg3': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 3000,
+                    'content': {'text': '> Machine learning is a subset of AI.\n\nelaborate'}
+                }
+            },
+            'msg4': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 4000,
+                    'content': {'text': 'It involves algorithms that improve through experience...'}
+                }
+            }
+        }
+    }
+    
+    parser = ExchangeParser()
+    conversation = parser.parse_conversation(conversation_data)
+    
+    # Should merge due to quote + elaborate pattern
+    assert conversation.exchange_count == 1
+    
+    exchange = conversation.exchanges[0]
+    assert len(exchange.messages) == 4
+    assert 'What is machine learning?' in exchange.get_user_text()
+    assert 'elaborate' in exchange.get_user_text()
+    assert 'algorithms that improve' in exchange.get_assistant_text()
+
+
+if __name__ == '__main__':
+    pytest.main([__file__, '-v'])
