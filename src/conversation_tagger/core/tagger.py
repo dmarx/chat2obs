@@ -21,7 +21,7 @@ class ConversationTagger:
     
     def add_exchange_rule(self, tag_name: str, rule_function: Callable):
         """Add rule for analyzing exchanges."""
-        self.exchange_tagger.add_rule(tag_name, rule_function)
+        self.exchange_parser.exchange_tagger.add_rule(tag_name, rule_function)
 
     def add_conversation_rule(self, tag_name: str, rule_function: Callable):
         # to do
