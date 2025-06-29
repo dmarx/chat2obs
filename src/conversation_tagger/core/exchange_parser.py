@@ -66,28 +66,28 @@ def short_continuation_rule(previous_exchange: Exchange, current_exchange: Excha
 
 
 class ExchangeParser:
-    """Parses conversations into exchanges using dyadic segmentation + merging."""
+    """Parses conversations into tagged exchanges."""
     
-    def __init__(self):
+    def __init__(self, exchange_tagger: Optional['ExchangeTagger'] = None):
         self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
             quote_elaborate_rule,
             simple_continuation_rule,
             short_continuation_rule
         ]
-    
+        self.exchange_tagger = exchange_tagger
+
     def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
         """Add a new continuation detection rule."""
         self.continuation_rules.append(rule_function)
     
     def parse_conversation(self, conversation: Dict[str, Any]) -> List[Exchange]:
-        """Parse a conversation into exchanges using two-step approach."""
+        """Parse a conversation into fully-tagged exchanges."""
         mapping = conversation.get('mapping', {})
         
-        # Extract and sort messages
+        # Extract and sort messages (existing logic)
         all_messages = []
         for node_id, node in mapping.items():
             message = node.get('message')
-            # should exchanges capture every message in the span?
             if message and message.get('author'):
                 create_time = message.get('create_time') or 0
                 all_messages.append((create_time, message))
@@ -95,10 +95,18 @@ class ExchangeParser:
         all_messages.sort(key=lambda x: x[0])
         messages = [msg for _, msg in all_messages]
         
-        conversation_id = conversation.get('conversation_id', )
+        conversation_id = conversation.get('conversation_id')
         
         dyadic_exchanges = self._create_dyadic_exchanges(messages, conversation_id)
         merged_exchanges = self._merge_continuations(dyadic_exchanges)
+        
+        # Tag exchanges as they're finalized
+        if self.exchange_tagger:
+            tagged_exchanges = []
+            for exchange in merged_exchanges:
+                tagged_exchange = self.exchange_tagger.tag_exchange(exchange)
+                tagged_exchanges.append(tagged_exchange)
+            return tagged_exchanges
         
         return merged_exchanges
     
