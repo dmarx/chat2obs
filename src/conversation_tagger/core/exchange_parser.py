@@ -1,12 +1,16 @@
-# conversation_tagger/core/exchange_parser.py
+# src/conversation_tagger/core/exchange_parser.py
 """
 Parse conversations into exchanges using a two-step approach:
 1. Segment into dyadic USER-ASSISTANT chunks
 2. Merge chunks when continuations are detected
 """
 
-from typing import Dict, Any, List, Callable
+from typing import Dict, Any, List, Callable, TYPE_CHECKING
 from .exchange import Exchange
+from .conversation import Conversation
+
+if TYPE_CHECKING:
+    from .exchange_tagger import ExchangeTagger
 
 
 def quote_elaborate_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
@@ -46,7 +50,7 @@ def short_continuation_rule(previous_exchange: Exchange, current_exchange: Excha
     """Check for short prompts starting with continuation words."""
     continuation_starters = [
         'continue', 'more', 'keep going', 'go on', 'next', 
-        'tell me more', 'expand', 'keep writing', 'finish'
+        'tell me more', 'expand', 'keep writing', 'finish', 'elaborate','do go on', 'make it so', 'yes', 'please', 'do it'
     ]
     
     user_messages = current_exchange.get_user_messages()
@@ -68,7 +72,7 @@ def short_continuation_rule(previous_exchange: Exchange, current_exchange: Excha
 class ExchangeParser:
     """Parses conversations into tagged exchanges."""
     
-    def __init__(self, exchange_tagger: Optional['ExchangeTagger'] = None):
+    def __init__(self, exchange_tagger: 'ExchangeTagger' | None = None):
         self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
             quote_elaborate_rule,
             simple_continuation_rule,
@@ -80,9 +84,8 @@ class ExchangeParser:
         """Add a new continuation detection rule."""
         self.continuation_rules.append(rule_function)
 
-    # this should just return a Conversation object
-    def parse_conversation(self, conversation: Dict[str, Any]) -> List[Exchange]:
-        """Parse a conversation into fully-tagged exchanges."""
+    def parse_conversation(self, conversation: Dict[str, Any]) -> Conversation:
+        """Parse a conversation into a Conversation object with fully-tagged exchanges."""
         mapping = conversation.get('mapping', {})
         
         # Extract and sort messages (existing logic)
@@ -97,6 +100,7 @@ class ExchangeParser:
         messages = [msg for _, msg in all_messages]
         
         conversation_id = conversation.get('conversation_id')
+        title = conversation.get('title', '')
         
         dyadic_exchanges = self._create_dyadic_exchanges(messages, conversation_id)
         merged_exchanges = self._merge_continuations(dyadic_exchanges)
@@ -107,9 +111,18 @@ class ExchangeParser:
             for exchange in merged_exchanges:
                 tagged_exchange = self.exchange_tagger.tag_exchange(exchange)
                 tagged_exchanges.append(tagged_exchange)
-            return tagged_exchanges
+        else:
+            tagged_exchanges = merged_exchanges
         
-        return merged_exchanges
+        # Create and return Conversation object
+        conv = Conversation(
+            conversation_id=conversation_id,
+            title=title,
+            exchanges=tagged_exchanges,
+            #metadata=conversation
+        )
+        
+        return conv
     
     def _create_dyadic_exchanges(self, messages: List[Dict[str, Any]], 
                                 conversation_id: str) -> List[Exchange]:
@@ -173,4 +186,3 @@ class ExchangeParser:
         merged_exchanges.append(current_exchange)
         
         return merged_exchanges
-    
