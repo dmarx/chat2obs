@@ -2,3 +2,4 @@
 data/ingestion/
 src/ATTIC/
 __pycache__/
+*.py[codz]
