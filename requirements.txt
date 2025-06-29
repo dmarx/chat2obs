@@ -1,0 +1,6 @@
+loguru
+networkx
+numpy
+pandas
+pytest
+python-frontmatter
