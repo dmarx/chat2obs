@@ -1,2 +1,4 @@
 .venv
 data/ingestion/
+src/ATTIC/
+__pycache__/
