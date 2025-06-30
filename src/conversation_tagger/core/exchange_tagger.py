@@ -2,7 +2,7 @@
 """
 Tag individual exchanges using the improved exchange structure.
 """
-
+import re
 from typing import Dict, Any, List, Callable
 from collections import defaultdict
 from .tag import Tag
@@ -45,3 +45,33 @@ class ExchangeTagger:
         # Update the exchange's tags
         exchange.tags = tags
         return exchange
+
+### Exchange Rules ###
+
+# todo: could extract wikilinks into an annotation.
+def has_wiki_links(exchange: Exchange) -> bool:
+    """Check for Obsidian-style wiki links [[link text]]."""
+    text = exchange.get_assistant_text()
+    #return ('[[' in text) and (']]' in text)
+    return bool(re.search(r'\[\[.+?\]\]', text))
+
+def has_latex_math(exchange: Exchange) -> bool:
+    """Check for LaTeX/MathJax mathematical formulas."""
+    text = exchange.get_assistant_text()
+    
+    # Look for various LaTeX/MathJax patterns
+    # these would probably be better as regexes.
+    math_indicators = [
+        re.search(r'\$\$.+?\$\$', text) is not None,
+        re.search(r'\\\((.+?)\\\)', text) is not None,
+        re.search(r'\\\[(.+?)\\\]', text) is not None,
+        # Common LaTeX commands
+        any(cmd in text for cmd in ['\\frac', '\\sum', '\\int', '\\sqrt', '\\alpha', '\\beta', '\\gamma', '\\theta', '\\pi', '\\sigma', '\\infty', '\\partial', '\\nabla']),
+    ]
+    
+    return any(math_indicators)
+
+DEFAULT_EXCHANGE_RULES = {
+    'has_wiki_links': has_wiki_links,
+    'has_latex_math': has_latex_math,
+}
