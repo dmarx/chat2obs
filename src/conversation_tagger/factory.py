@@ -5,10 +5,20 @@ Factory to create configured tagger with improved exchange handling.
 
 from .core.tagger import ConversationTagger
 from .core.exchange import Exchange
+from .core.exchange_parser import ExchangeParser
+from .core.exchange_tagger import ExchangeTagger, DEFAULT_EXCHANGE_RULES
+
+default_exchange_tagger = ExchangeTagger()
+# Register default exchange rules
+for rule_name, rule_func in DEFAULT_EXCHANGE_RULES.items():
+    default_exchange_tagger.add_rule(rule_name, rule_func)   
+
+default_parser = ExchangeParser(exchange_tagger=default_exchange_tagger)
+
 
 def create_default_tagger() -> ConversationTagger:
     """Create a basic tagger with example rules for the new exchange design."""
-    tagger = ConversationTagger()
+    tagger = ConversationTagger(exchange_parser=default_parser)
     
     # # Add custom continuation rule example
     # def numeric_follow_up_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
