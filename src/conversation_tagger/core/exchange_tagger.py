@@ -58,7 +58,7 @@ def has_wiki_links(exchange: Exchange) -> bool:
 
 def has_latex_math(exchange: Exchange) -> bool:
     """Check for LaTeX/MathJax mathematical formulas."""
-    text = exchange.get_assistant_text()
+    text = ' '.join(exchange.get_assistant_texts())
     math_indicators = [
         re.search(r'\$\$.+?\$\$', text) is not None,
         re.search(r'\\\((.+?)\\\)', text) is not None,
