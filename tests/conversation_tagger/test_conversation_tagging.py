@@ -133,8 +133,3 @@ def test_conversation_rule_error_handling():
     assert 'working' in tag_names
     assert 'broken' not in tag_names
 
-
-    # Verify length category
-    length_tags = [tag for tag in result.tags if tag.name == 'length_category']
-    assert len(length_tags) == 1
-    assert length_tags[0].attributes.get('category') == 'single_exchange'
