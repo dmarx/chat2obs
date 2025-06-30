@@ -67,7 +67,7 @@ def test_conversation_tagging_multiple_rules():
     tagger = ConversationTagger()
     
     def length_rule(conversation):
-        return Tag('length', exchanges=conversation.exchange_count)
+        return Tag('length_info', exchanges=conversation.exchange_count)
     
     def complexity_rule(conversation):
         return conversation.total_message_count > 4
