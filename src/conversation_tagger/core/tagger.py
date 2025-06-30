@@ -17,7 +17,7 @@ class ConversationTagger:
         if not exchange_parser:
             exchange_parser = ExchangeParser()
         self.exchange_parser = exchange_parser
-        self.rules = []
+        self.rules: Dict[str, Callable] = {}
     
     def add_exchange_rule(self, tag_name: str, rule_function: Callable):
         """Add rule for analyzing exchanges."""
@@ -25,12 +25,12 @@ class ConversationTagger:
 
     def add_conversation_rule(self, tag_name: str, rule_function: Callable):
         # to do
-        pass
+        self.rules[tag_name] = rule_function
     
     def tag_conversation(self, conversation: Dict[str, Any]) -> Conversation:
         """Tag a conversation using exchange-based analysis."""
         # Parse into tagged exchanges and return Conversation object
         conv = self.exchange_parser.parse_conversation(conversation)
-        # to do: apply conversation-level rules
+        # to do: apply conversation-level tagging rules
         return conv
     
