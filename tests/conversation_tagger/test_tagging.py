@@ -42,7 +42,7 @@ def test_exchange_tagger_with_attributes():
     tagger = ExchangeTagger()
     
     def message_length(exchange):
-        text = exchange.get_user_text()
+        text = ' '.join(exchange.get_user_texts())
         length = len(text)
         if length > 50:
             return Tag('message_length', size='long', chars=length)
