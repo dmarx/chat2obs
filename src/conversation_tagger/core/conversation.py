@@ -16,7 +16,20 @@ class Conversation:
     title: str
     exchanges: List['Exchange'] = field(default_factory=list)
     tags: List[Tag] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    # metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Post-initialization to ensure tags are set."""
+        if not self.tags:
+            self._add_exchange_tags()
+
+    def _add_exchange_tags(self):
+        if not self.tags:
+            tags = []
+            for t in self._exchange_tags:
+                if t not in tags:
+                    tags.append(t)
+            self.tags = tags
 
     @property
     def _exchange_tags(self) -> List[Tag]:
