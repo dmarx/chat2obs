@@ -65,7 +65,7 @@ def test_end_to_end_tagging(sample_coding_conversation):
     
     # Add a custom rule for testing
     def mentions_python(exchange):
-        text = (exchange.get_user_text() + ' ' + exchange.get_assistant_text()).lower()
+        text = (' '.join(exchange.get_user_texts()) + ' ' + ' '.join(exchange.get_assistant_texts())).lower()
         return 'python' in text
     
     tagger.add_exchange_rule('mentions_python', mentions_python)
