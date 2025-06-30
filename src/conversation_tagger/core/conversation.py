@@ -57,7 +57,7 @@ class Conversation:
         return any(exchange.has_continuations() for exchange in self.exchanges)
     
     def get_all_user_text(self) -> str:
-        return ' '.join(exchange.get_user_text() for exchange in self.exchanges)
+        return ' '.join(' '.join(exchange.get_user_texts()) for exchange in self.exchanges))
     
     def get_all_assistant_text(self) -> str:
-        return ' '.join(exchange.get_assistant_text() for exchange in self.exchanges)
+        return ' '.join(' '.join(exchange.get_assistant_texts()) for exchange in self.exchanges))
