@@ -15,7 +15,7 @@ def test_exchange_tagger_basic():
     tagger = ExchangeTagger()
     
     def has_greeting(exchange):
-        user_text = exchange.get_user_text().lower()
+        user_text = ' '.join(exchange.get_user_texts()).lower()
         return 'hello' in user_text or 'hi' in user_text
     
     tagger.add_rule('greeting', has_greeting)
@@ -153,6 +153,6 @@ def test_continuation_detection(conversation_with_continuation):
     assert len(exchange) == 4
     assert exchange.has_continuations()
     
-    user_text = exchange.get_user_text()
+    user_text = ' '.join(exchange.get_user_texts())
     assert 'Tell me about Python' in user_text
     assert 'continue' in user_text
