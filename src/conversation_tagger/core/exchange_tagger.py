@@ -9,6 +9,11 @@ from .tag import Tag
 from .exchange import Exchange
 
 
+# we generalize this into a Tagger(ABC) which 
+# we can use to tag both exchanges and conversations
+## rule adding is the same API
+## tagging is the same API
+### ... maybe rather than an ExchangeTagger, we have a Tagger that can tag both Exchanges and Conversations
 class ExchangeTagger:
     """Tags exchanges with configurable rules."""
     
