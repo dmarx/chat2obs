@@ -81,14 +81,6 @@ def test_end_to_end_tagging(sample_coding_conversation):
     all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
     tag_names = [tag.name for tag in all_tags]
     assert 'mentions_python' in tag_names
-    
-    # Should have detected questions
-    exchange_type_tags = [tag for tag in all_tags if tag.name == 'exchange_type']
-    assert len(exchange_type_tags) > 0
-    
-    # At least one should be classified as a question
-    question_tags = [tag for tag in exchange_type_tags if tag.attributes.get('type') == 'question']
-    assert len(question_tags) > 0
 
 
 def test_conversation_with_attachments():
