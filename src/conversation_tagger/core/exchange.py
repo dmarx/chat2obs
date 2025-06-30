@@ -11,6 +11,17 @@ if TYPE_CHECKING:
     from .tag import Tag
 
 
+def get_message_text(message: Dict[str, Any]) -> str:
+    """Extract text content from a message."""
+    content = message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    return text.strip()
+
+
 @dataclass
 class Exchange:
     """A sequential conversation exchange with merge capabilities."""
@@ -37,30 +48,6 @@ class Exchange:
             return 0.0
         return self.messages[0].get('create_time', 0.0)
     
-    def get_user_text(self) -> str:
-        """Get combined text from all user messages."""
-        texts = []
-        for msg in self.messages:
-            if msg.get('author', {}).get('role') == 'user':
-                content = msg.get('content', {})
-                text = content.get('text', '')
-                parts = content.get('parts', [])
-                all_text = text + ' ' + ' '.join(str(p) for p in parts if isinstance(p, str))
-                texts.append(all_text)
-        return ' '.join(texts).strip()
-    
-    def get_assistant_text(self) -> str:
-        """Get combined text from all assistant messages."""
-        texts = []
-        for msg in self.messages:
-            if msg.get('author', {}).get('role') == 'assistant':
-                content = msg.get('content', {})
-                text = content.get('text', '')
-                parts = content.get('parts', [])
-                all_text = text + ' ' + ' '.join(str(p) for p in parts if isinstance(p, str))
-                texts.append(all_text)
-        return ' '.join(texts).strip()
-    
     def has_continuations(self) -> bool:
         """Check if this exchange has continuation prompts (multiple user messages)."""
         user_count = sum(1 for msg in self.messages 
@@ -77,6 +64,14 @@ class Exchange:
         return [msg for msg in self.messages 
                 if msg.get('author', {}).get('role') == 'assistant']
     
+    def get_user_texts(self) -> str:
+        """Get combined text from all user messages."""
+        return [get_message_text(msg) for msg in self.get_user_messages()]
+    
+    def get_assistant_texts(self) -> str:
+        """Get combined text from all assistant messages."""
+        return [get_message_text(msg) for msg in self.get_assistant_messages()]
+
     def __add__(self, other: 'Exchange') -> 'Exchange':
         """Merge two exchanges by combining and time-ordering their messages."""
         if not isinstance(other, Exchange):
@@ -90,6 +85,7 @@ class Exchange:
         combined_messages.sort(key=lambda msg: msg.get('create_time', 0.0))
         
         # Combine tags from both exchanges
+        # probably need to be smarter about how we perform this merge
         combined_tags = self.tags + other.tags
         
         # Create new exchange with combined content
