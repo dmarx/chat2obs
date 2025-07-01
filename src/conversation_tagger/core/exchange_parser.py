@@ -121,7 +121,7 @@ class ExchangeParser:
             conversation_id=conversation_id,
             title=title,
             exchanges=tagged_exchanges,
-            #metadata=conversation
+            raw=conversation,
         )
         
         return conv
