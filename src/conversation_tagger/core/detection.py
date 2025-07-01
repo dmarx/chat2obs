@@ -14,60 +14,7 @@ from .tag import Tag
 ######################
 #  Conversation Rules #
 ######################
-
-def has_github_repos(conversation: Conversation) -> bool:
-    """Check if GitHub repositories were selected for context."""
-    for exchange in conversation.exchanges:
-        for message in exchange.messages:
-            metadata = message.get('metadata', {})
-            repos = metadata.get('selected_github_repos', [])
-            if repos:  # Non-empty list
-                return True
-    return False
-
-
-def has_canvas_operations(conversation: Conversation) -> bool:
-    """Check for canvas/document operations."""
-    for exchange in conversation.exchanges:
-        for message in exchange.messages:
-            metadata = message.get('metadata', {})
-            if metadata.get('canvas'):
-                return True
-    return False
-
-
-def has_web_search(conversation: Conversation) -> bool:
-    """Check for web search operations."""
-    for exchange in conversation.exchanges:
-        for message in exchange.messages:
-            metadata = message.get('metadata', {})
-            if (metadata.get('search_queries') or 
-                metadata.get('search_result_groups') or
-                metadata.get('content_references')):
-                return True
-    return False
-
-
-def has_reasoning_thoughts(conversation: Conversation) -> bool:
-    """Check for reasoning/thinking patterns."""
-    for exchange in conversation.exchanges:
-        for message in exchange.messages:
-            content = message.get('content', {})
-            if content.get('thoughts'):  # Reasoning thoughts
-                return True
-    return False
-
-
-def has_code_execution(conversation: Conversation) -> bool:
-    """Check for code execution artifacts."""
-    for exchange in conversation.exchanges:
-        for message in exchange.messages:
-            metadata = message.get('metadata', {})
-            if (metadata.get('aggregate_result') or 
-                metadata.get('jupyter_messages')):
-                return True
-    return False
-
+# These should only do aggregation/summarization, not detection
 
 def create_conversation_length_tag(conversation: Conversation) -> Tag:
     """Create structured tag for conversation length."""
@@ -88,34 +35,27 @@ def create_conversation_length_tag(conversation: Conversation) -> Tag:
     return Tag('conversation_length', count=exchange_count, category=category)
 
 
-def exchange_uses_gizmo_plugin(exchange: Exchange) -> List[Tag]:
-    """Detect gizmo/plugin usage in an exchange."""
+def conversation_feature_summary(conversation: Conversation) -> List[Tag]:
+    """Aggregate feature usage across all exchanges."""
+    feature_counts = {}
+    total_exchanges = conversation.exchange_count
+    
+    # Count exchanges with each feature
+    for exchange in conversation.exchanges:
+        for tag in exchange.tags:
+            if tag.name in ['has_github_repos', 'has_canvas_operations', 'has_web_search', 
+                           'has_reasoning_thoughts', 'has_code_execution', 'has_code_blocks',
+                           'has_script_headers', 'has_code_structure_patterns', 'has_wiki_links',
+                           'has_latex_math', 'user_has_attachments']:
+                feature_counts[tag.name] = feature_counts.get(tag.name, 0) + 1
+    
     tags = []
-    gizmos = set()
-    plugins = set()
-    
-    # Check message-level metadata
-    for message in exchange.messages:
-        metadata = message.get('metadata', {})
-        
-        # Invoked plugins
-        invoked_plugin = metadata.get('invoked_plugin', {})
-        if invoked_plugin:
-            if invoked_plugin.get('plugin_id'):
-                plugins.add(invoked_plugin['plugin_id'])
-            if invoked_plugin.get('namespace'):
-                plugins.add(invoked_plugin['namespace'])
-        
-        # Gizmo usage
-        if metadata.get('gizmo_id'):
-            gizmos.add(metadata['gizmo_id'])
-    
-    # Create tags
-    for gizmo in gizmos:
-        tags.append(Tag('gizmo', gizmo_id=gizmo))
-    
-    for plugin in plugins:
-        tags.append(Tag('plugin', plugin_id=plugin))
+    for feature, count in feature_counts.items():
+        percentage = (count / total_exchanges) * 100 if total_exchanges > 0 else 0
+        tags.append(Tag(f'conversation_{feature}', 
+                       exchange_count=count, 
+                       total_exchanges=total_exchanges,
+                       percentage=round(percentage, 1)))
     
     return tags
 
@@ -158,7 +98,59 @@ def conversation_gizmo_plugin_summary(conversation: Conversation) -> List[Tag]:
 ######################
 #   Exchange Rules   #
 ######################
+# These do actual detection on individual exchanges
 
+# Feature detection (moved from conversation-level)
+def has_github_repos(exchange: Exchange) -> bool:
+    """Check if GitHub repositories were selected for context in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        repos = metadata.get('selected_github_repos', [])
+        if repos:  # Non-empty list
+            return True
+    return False
+
+
+def has_canvas_operations(exchange: Exchange) -> bool:
+    """Check for canvas/document operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('canvas'):
+            return True
+    return False
+
+
+def has_web_search(exchange: Exchange) -> bool:
+    """Check for web search operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if (metadata.get('search_queries') or 
+            metadata.get('search_result_groups') or
+            metadata.get('content_references')):
+            return True
+    return False
+
+
+def has_reasoning_thoughts(exchange: Exchange) -> bool:
+    """Check for reasoning/thinking patterns in this exchange."""
+    for message in exchange.messages:
+        content = message.get('content', {})
+        if content.get('thoughts'):  # Reasoning thoughts
+            return True
+    return False
+
+
+def has_code_execution(exchange: Exchange) -> bool:
+    """Check for code execution artifacts in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if (metadata.get('aggregate_result') or 
+            metadata.get('jupyter_messages')):
+            return True
+    return False
+
+
+# Code detection
 def has_code_blocks(exchange: Exchange) -> bool:
     """Check for explicit code blocks (``` markdown syntax)."""
     all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
@@ -199,6 +191,7 @@ def has_code_structure_patterns(exchange: Exchange) -> bool:
     return False
 
 
+# User behavior detection
 def user_has_quote_elaborate(exchange: Exchange) -> bool:
     """Check if user messages contain quote+elaborate continuation pattern."""
     for message in exchange.get_user_messages():
@@ -229,6 +222,7 @@ def user_is_continuation(exchange: Exchange) -> bool:
     return exchange.has_continuations()
 
 
+# Assistant behavior detection
 def assistant_has_reasoning(exchange: Exchange) -> bool:
     """Check if assistant messages contain reasoning/thinking content."""
     for message in exchange.get_assistant_messages():
@@ -237,10 +231,6 @@ def assistant_has_reasoning(exchange: Exchange) -> bool:
             return True
     return False
 
-
-######################
-# From exchange_tagger.py #
-######################
 
 def has_wiki_links(exchange: Exchange) -> bool:
     """Check for Obsidian-style wiki links [[link text]]."""
@@ -269,6 +259,7 @@ def has_latex_math(exchange: Exchange) -> bool:
     return False
 
 
+# First user message analysis
 def first_user_has_large_content(exchange: Exchange, min_length: int = 2000) -> bool:
     """Check if the first user message has large content."""
     user_messages = exchange.get_user_messages()
@@ -351,35 +342,80 @@ def first_user_has_code_attachments(exchange: Exchange) -> bool:
     return False
 
 
+# Gizmo/plugin detection
+def exchange_uses_gizmo_plugin(exchange: Exchange) -> List[Tag]:
+    """Detect gizmo/plugin usage in an exchange."""
+    tags = []
+    gizmos = set()
+    plugins = set()
+    
+    # Check message-level metadata
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        
+        # Invoked plugins
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+        
+        # Gizmo usage
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    # Create tags
+    for gizmo in gizmos:
+        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    
+    for plugin in plugins:
+        tags.append(Tag('plugin', plugin_id=plugin))
+    
+    return tags
+
+
 ######################
 #   Rule Registry    #
 ######################
 
-# High-value conversation-level rules
+# High-value conversation-level rules (aggregation only)
 CONVERSATION_RULES = {
+    'conversation_length': create_conversation_length_tag,
+    'conversation_feature_summary': conversation_feature_summary,
+    'conversation_gizmo_plugin_summary': conversation_gizmo_plugin_summary,
+}
+
+# High-value exchange-level rules (actual detection)
+EXCHANGE_RULES = {
+    # Feature detection (moved from conversation-level)
     'has_github_repos': has_github_repos,
     'has_canvas_operations': has_canvas_operations,
     'has_web_search': has_web_search,
     'has_reasoning_thoughts': has_reasoning_thoughts,
     'has_code_execution': has_code_execution,
-    'conversation_length': create_conversation_length_tag,
-    'conversation_gizmo_plugin_summary': conversation_gizmo_plugin_summary,
-}
-
-# High-value exchange-level rules  
-EXCHANGE_RULES = {
+    
+    # Code detection
     'has_code_blocks': has_code_blocks,
     'has_script_headers': has_script_headers,
     'has_code_structure_patterns': has_code_structure_patterns,
+    
+    # User behavior
     'user_has_quote_elaborate': user_has_quote_elaborate,
     'user_has_attachments': user_has_attachments,
     'user_is_continuation': user_is_continuation,
+    
+    # Assistant behavior
     'assistant_has_reasoning': assistant_has_reasoning,
     'has_wiki_links': has_wiki_links,
     'has_latex_math': has_latex_math,
+    
+    # First user message analysis
     'first_user_has_large_content': first_user_has_large_content,
     'first_user_has_code_patterns': first_user_has_code_patterns,
     'first_user_has_attachments': first_user_has_attachments,
     'first_user_has_code_attachments': first_user_has_code_attachments,
+    
+    # Gizmo/plugin detection
     'exchange_uses_gizmo_plugin': exchange_uses_gizmo_plugin,
 }
