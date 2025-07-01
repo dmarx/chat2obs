@@ -88,31 +88,27 @@ def create_conversation_length_tag(conversation: Conversation) -> Tag:
     return Tag('conversation_length', count=exchange_count, category=category)
 
 
-def create_gizmo_plugin_tags(conversation: Conversation) -> List[Tag]:
-    """Create structured tags for gizmos and plugins."""
+def exchange_uses_gizmo_plugin(exchange: Exchange) -> List[Tag]:
+    """Detect gizmo/plugin usage in an exchange."""
     tags = []
     gizmos = set()
     plugins = set()
     
-    # Check conversation-level data (if available in raw format)
-    # Note: This would need conversation.metadata if we stored raw data
-    
-    # Check message-level
-    for exchange in conversation.exchanges:
-        for message in exchange.messages:
-            metadata = message.get('metadata', {})
-            
-            # Invoked plugins
-            invoked_plugin = metadata.get('invoked_plugin', {})
-            if invoked_plugin:
-                if invoked_plugin.get('plugin_id'):
-                    plugins.add(invoked_plugin['plugin_id'])
-                if invoked_plugin.get('namespace'):
-                    plugins.add(invoked_plugin['namespace'])
-            
-            # Gizmo usage
-            if metadata.get('gizmo_id'):
-                gizmos.add(metadata['gizmo_id'])
+    # Check message-level metadata
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        
+        # Invoked plugins
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+        
+        # Gizmo usage
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
     
     # Create tags
     for gizmo in gizmos:
@@ -120,6 +116,41 @@ def create_gizmo_plugin_tags(conversation: Conversation) -> List[Tag]:
     
     for plugin in plugins:
         tags.append(Tag('plugin', plugin_id=plugin))
+    
+    return tags
+
+
+def conversation_gizmo_plugin_summary(conversation: Conversation) -> List[Tag]:
+    """Aggregate gizmo/plugin usage across all exchanges."""
+    all_gizmos = set()
+    all_plugins = set()
+    gizmo_count = 0
+    plugin_count = 0
+    
+    # Collect from all exchange tags
+    for exchange in conversation.exchanges:
+        for tag in exchange.tags:
+            if tag.name == 'gizmo':
+                all_gizmos.add(tag.attributes.get('gizmo_id'))
+                gizmo_count += 1
+            elif tag.name == 'plugin':
+                all_plugins.add(tag.attributes.get('plugin_id'))
+                plugin_count += 1
+    
+    tags = []
+    
+    # Summary tags
+    if all_gizmos:
+        tags.append(Tag('conversation_gizmo_usage', 
+                       unique_gizmos=len(all_gizmos), 
+                       total_usage=gizmo_count,
+                       gizmo_list=list(all_gizmos)))
+    
+    if all_plugins:
+        tags.append(Tag('conversation_plugin_usage',
+                       unique_plugins=len(all_plugins),
+                       total_usage=plugin_count, 
+                       plugin_list=list(all_plugins)))
     
     return tags
 
@@ -332,7 +363,7 @@ CONVERSATION_RULES = {
     'has_reasoning_thoughts': has_reasoning_thoughts,
     'has_code_execution': has_code_execution,
     'conversation_length': create_conversation_length_tag,
-    'gizmo_plugin_tags': create_gizmo_plugin_tags,
+    'conversation_gizmo_plugin_summary': conversation_gizmo_plugin_summary,
 }
 
 # High-value exchange-level rules  
@@ -350,4 +381,5 @@ EXCHANGE_RULES = {
     'first_user_has_code_patterns': first_user_has_code_patterns,
     'first_user_has_attachments': first_user_has_attachments,
     'first_user_has_code_attachments': first_user_has_code_attachments,
+    'exchange_uses_gizmo_plugin': exchange_uses_gizmo_plugin,
 }
