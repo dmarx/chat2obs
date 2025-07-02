@@ -405,6 +405,8 @@ def naive_title_extraction(text):
         outv = top.replace("#","").strip()
     elif top.startswith("**") and top.endswith("**"):
         outv = top.replace("**","")
+    if outv is not None:
+        outv = outv.strip()
     return outv
 
 def extract_proposed_title(exchange: Exchange) -> str:
