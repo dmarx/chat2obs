@@ -1,0 +1,1885 @@
+---
+File: src/conversation_tagger/__init__.py
+---
+# conversation_tagger/__init__.py
+"""
+Minimal conversation tagging system with exchange-based analysis.
+"""
+
+from .core.tag import Tag
+from .core.tagger import ConversationTagger
+from .factory import create_default_tagger
+
+__all__ = ['Tag', 'ConversationTagger', 'create_default_tagger']
+
+
+---
+File: src/conversation_tagger/analysis/__init__.py
+---
+
+
+
+---
+File: src/conversation_tagger/analysis/faceting.py
+---
+# conversation_tagger/analysis/faceting.py
+"""
+Faceting functionality for analyzing conversations by different dimensions.
+"""
+
+from typing import Dict, Any, List, Optional
+from collections import defaultdict
+
+from ..core.tag import Tag
+
+
+def get_facet_value(tags: List[Tag], facet_tag_name: str, 
+                   facet_attribute: Optional[str] = None) -> str:
+    """Extract facet value from a conversation's tags."""
+    matching_tags = [tag for tag in tags if tag.name == facet_tag_name]
+    
+    if not matching_tags:
+        return "<none>"
+    
+    if facet_attribute is None:
+        # Just check for presence of the tag
+        return f"has_{facet_tag_name}"
+    
+    # Extract specific attribute values
+    values = []
+    for tag in matching_tags:
+        if facet_attribute in tag.attributes:
+            values.append(str(tag.attributes[facet_attribute]))
+    
+    if not values:
+        return f"<{facet_tag_name}_no_{facet_attribute}>"
+    
+    # If multiple values, join them
+    return "; ".join(sorted(set(values)))
+
+
+def do_facet_conversations(tagged_conversations: List[Dict[str, Any]], 
+                       facet_tag_name: str, 
+                       facet_attribute: Optional[str] = None,
+                       max_facets: int = 50) -> Dict[str, List[Dict[str, Any]]]:
+    """Group conversations by facet values."""
+    facets = defaultdict(list)
+    
+    for tagged_conv in tagged_conversations:
+        facet_value = get_facet_value(tagged_conv['tags'], facet_tag_name, facet_attribute)
+        facets[facet_value].append(tagged_conv)
+    
+    # Sort by facet size (largest first) and limit
+    sorted_facets = dict(sorted(facets.items(), key=lambda x: len(x[1]), reverse=True))
+    
+    if len(sorted_facets) > max_facets:
+        # Keep top facets and group rest into "others"
+        items = list(sorted_facets.items())
+        top_facets = dict(items[:max_facets-1])
+        
+        other_conversations = []
+        for _, conversations in items[max_facets-1:]:
+            other_conversations.extend(conversations)
+        
+        if other_conversations:
+            top_facets["<other>"] = other_conversations
+        
+        return top_facets
+    
+    return sorted_facets
+
+
+def print_faceted_summary(tagged_conversations: List[Dict[str, Any]], 
+                         facet_tag_name: str, 
+                         facet_attribute: Optional[str] = None,
+                         show_details: bool = False,
+                         max_facets: int = 20):
+    """Print tag summary broken down by facets."""
+    total = len(tagged_conversations)
+    facets = do_facet_conversations(tagged_conversations, facet_tag_name, facet_attribute, max_facets)
+    
+    print(f"Tagged {total} conversations")
+    print(f"Faceted by: {facet_tag_name}" + 
+          (f".{facet_attribute}" if facet_attribute else ""))
+    print(f"Found {len(facets)} facet values")
+    
+    print(f"\n{'='*80}")
+    print(f"FACETED TAG SUMMARY")
+    print(f"{'='*80}")
+    
+    for facet_value, facet_conversations in facets.items():
+        facet_size = len(facet_conversations)
+        facet_percentage = (facet_size / total) * 100
+        
+        print(f"\n📊 FACET: {facet_value}")
+        print(f"    Conversations: {facet_size} ({facet_percentage:.1f}% of total)")
+        print(f"    {'-' * 60}")
+        
+        # Calculate tag statistics for this facet
+        tag_counts = defaultdict(int)
+        tag_attributes = defaultdict(lambda: defaultdict(list))
+        unique_structured_tags = defaultdict(set)
+        
+        for tagged_conv in facet_conversations:
+            for tag in tagged_conv['tags']:
+                tag_counts[tag.name] += 1
+                
+                # Collect attribute information
+                for attr_name, attr_value in tag.attributes.items():
+                    if isinstance(attr_value, (int, float)):
+                        tag_attributes[tag.name][attr_name].append(attr_value)
+                    else:
+                        unique_structured_tags[tag.name].add(f"{attr_name}={attr_value}")
+        
+        # Sort tags for this facet (show all tags)
+        sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        for tag_name, count in sorted_tags:
+            percentage = (count / facet_size) * 100
+            print(f"    {tag_name}: {count} ({percentage:.1f}%)")
+            
+            if show_details:
+                # Show numeric attribute statistics
+                if tag_name in tag_attributes:
+                    for attr_name, values in tag_attributes[tag.name].items():
+                        if values:
+                            avg_val = sum(values) / len(values)
+                            min_val = min(values)
+                            max_val = max(values)
+                            print(f"        {attr_name}: avg={avg_val:.1f}, range=[{min_val}, {max_val}]")
+                
+                # Show unique structured values
+                if tag_name in unique_structured_tags:
+                    unique_vals = sorted(unique_structured_tags[tag.name])
+                    if len(unique_vals) <= 5:
+                        print(f"        values: {', '.join(unique_vals)}")
+                    else:
+                        print(f"        values: {', '.join(unique_vals[:5])} ... (+{len(unique_vals)-5} more)")
+
+
+
+---
+File: src/conversation_tagger/core/conversation.py
+---
+# conversation_tagger/core/conversation.py
+from typing import List, Dict, Any, TYPE_CHECKING
+from dataclasses import dataclass, field
+
+if TYPE_CHECKING:
+    from .exchange import Exchange
+    from .exchange_parser import ExchangeParser
+
+from .tag import Tag
+
+@dataclass 
+class Conversation:
+    """A conversation consisting of sequential exchanges."""
+    
+    conversation_id: str
+    title: str
+    exchanges: List['Exchange'] = field(default_factory=list)
+    tags: List[Tag] = field(default_factory=list)
+    raw: Dict[str, Any] | None = field(default=None)  
+    
+    def __post_init__(self):
+        """Post-initialization to ensure tags are set."""
+        if not self.tags:
+            self._add_exchange_tags()
+
+    def _add_exchange_tags(self):
+        if not self.tags:
+            tags = []
+            for t in self._exchange_tags:
+                if t not in tags:
+                    tags.append(t)
+            self.tags = tags
+
+    @property
+    def _exchange_tags(self) -> List[Tag]:
+        """Get all tags from exchanges."""
+        return [tag for exchange in self.exchanges for tag in exchange.tags]
+    
+    @property
+    def exchange_count(self) -> int:
+        return len(self.exchanges)
+    
+    @property 
+    def total_message_count(self) -> int:
+        return sum(len(exchange.messages) for exchange in self.exchanges)
+    
+    @property
+    def total_user_messages(self) -> int:
+        return sum(len(exchange.get_user_messages()) for exchange in self.exchanges)
+        
+    @property
+    def total_assistant_messages(self) -> int:
+        return sum(len(exchange.get_assistant_messages()) for exchange in self.exchanges)
+    
+    @property
+    def has_continuations(self) -> bool:
+        return any(exchange.has_continuations() for exchange in self.exchanges)
+    
+    def get_all_user_text(self) -> str:
+        return ' '.join(' '.join(exchange.get_user_texts()) for exchange in self.exchanges)
+    
+    def get_all_assistant_text(self) -> str:
+        return ' '.join(' '.join(exchange.get_assistant_texts()) for exchange in self.exchanges)
+
+
+
+---
+File: src/conversation_tagger/core/detection.py
+---
+# src/conversation_tagger/core/detection.py
+"""
+High-value detection rules for conversations and exchanges.
+Reimplemented to use Exchange/Conversation objects with proper API.
+"""
+
+import re
+from typing import Dict, Any, List
+from .exchange import Exchange
+from .conversation import Conversation
+from .tag import Tag
+
+
+######################
+#  Conversation Rules #
+######################
+# These should only do aggregation/summarization, not detection
+
+def create_conversation_length_tag(conversation: Conversation) -> Tag:
+    """Create structured tag for conversation length."""
+    exchange_count = conversation.exchange_count
+    
+    # Determine category based on number of exchanges
+    if exchange_count == 1:
+        category = 'single'
+    elif exchange_count <= 3:
+        category = 'short'
+    elif exchange_count <= 10:
+        category = 'medium'
+    elif exchange_count <= 25:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('conversation_length', count=exchange_count, category=category)
+
+
+def conversation_feature_summary(conversation: Conversation) -> List[Tag]:
+    """Aggregate feature usage across all exchanges."""
+    feature_counts = {}
+    total_exchanges = conversation.exchange_count
+    
+    # Count exchanges with each feature
+    for exchange in conversation.exchanges:
+        exchange_features = set()
+        for tag in exchange.tags:
+            if tag.name in ['has_github_repos', 'has_canvas_operations', 'has_web_search', 
+                           'has_reasoning_thoughts', 'has_code_execution', 'has_code_blocks',
+                           'has_script_headers', 'has_code_structure_patterns', 'has_wiki_links',
+                           'has_latex_math', 'user_has_attachments']:
+                exchange_features.add(tag.name)
+            elif tag.name == 'gizmo':
+                exchange_features.add('has_gizmo_usage')
+            elif tag.name == 'plugin':
+                exchange_features.add('has_plugin_usage')
+        
+        # Count each feature once per exchange
+        for feature in exchange_features:
+            feature_counts[feature] = feature_counts.get(feature, 0) + 1
+    
+    tags = []
+    for feature, count in feature_counts.items():
+        percentage = (count / total_exchanges) * 100 if total_exchanges > 0 else 0
+        tags.append(Tag(f'conversation_{feature}', 
+                       exchange_count=count, 
+                       total_exchanges=total_exchanges,
+                       percentage=round(percentage, 1)))
+    
+    return tags
+
+
+def conversation_gizmo_plugin_summary(conversation: Conversation) -> List[Tag]:
+    """Aggregate gizmo/plugin usage across all exchanges."""
+    all_gizmos = set()
+    all_plugins = set()
+    gizmo_count = 0
+    plugin_count = 0
+    
+    # Collect from all exchange tags
+    for exchange in conversation.exchanges:
+        for tag in exchange.tags:
+            if tag.name == 'gizmo':
+                all_gizmos.add(tag.attributes.get('gizmo_id'))
+                gizmo_count += 1
+            elif tag.name == 'plugin':
+                all_plugins.add(tag.attributes.get('plugin_id'))
+                plugin_count += 1
+    
+    tags = []
+    
+    # Summary tags
+    if all_gizmos:
+        tags.append(Tag('conversation_gizmo_usage', 
+                       unique_gizmos=len(all_gizmos), 
+                       total_usage=gizmo_count,
+                       gizmo_list=list(all_gizmos)))
+    
+    if all_plugins:
+        tags.append(Tag('conversation_plugin_usage',
+                       unique_plugins=len(all_plugins),
+                       total_usage=plugin_count, 
+                       plugin_list=list(all_plugins)))
+    
+    return tags
+
+
+######################
+#   Exchange Rules   #
+######################
+# These do actual detection on individual exchanges
+
+# Feature detection (moved from conversation-level)
+def has_github_repos(exchange: Exchange) -> bool:
+    """Check if GitHub repositories were selected for context in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        repos = metadata.get('selected_github_repos', [])
+        if repos:  # Non-empty list
+            return True
+    return False
+
+
+def has_canvas_operations(exchange: Exchange) -> bool:
+    """Check for canvas/document operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('canvas'):
+            return True
+    return False
+
+
+def has_web_search(exchange: Exchange) -> bool:
+    """Check for web search operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if (metadata.get('search_queries') or 
+            metadata.get('search_result_groups') or
+            metadata.get('content_references')):
+            return True
+    return False
+
+
+def has_reasoning_thoughts(exchange: Exchange) -> bool:
+    """Check for reasoning/thinking patterns in this exchange."""
+    for message in exchange.messages:
+        content = message.get('content', {})
+        if content.get('thoughts'):  # Reasoning thoughts
+            return True
+    return False
+
+
+def has_code_execution(exchange: Exchange) -> bool:
+    """Check for code execution artifacts in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if (metadata.get('aggregate_result') or 
+            metadata.get('jupyter_messages')):
+            return True
+    return False
+
+
+# Code detection
+def has_code_blocks(exchange: Exchange) -> bool:
+    """Check for explicit code blocks (``` markdown syntax)."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    return any('```' in text for text in all_texts)
+
+
+def has_script_headers(exchange: Exchange) -> bool:
+    """Check for script headers and system includes."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    script_indicators = ['#!/bin/', '#include', 'using namespace']
+    
+    for text in all_texts:
+        if any(indicator in text for indicator in script_indicators):
+            return True
+    return False
+
+
+def has_code_structure_patterns(exchange: Exchange) -> bool:
+    """Check for actual code structure patterns (syntax combinations that suggest real code)."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    
+    for text in all_texts:
+        # Look for combinations that strongly suggest actual code
+        patterns = [
+            # Function definition pattern
+            ('def ' in text and '(' in text and ':' in text and 'return' in text),
+            # Class definition pattern  
+            ('class ' in text and '(' in text and ':' in text and 'def ' in text),
+            # JavaScript function pattern
+            ('function(' in text or 'function ' in text) and '{' in text and '}' in text,
+            # Multiple assignment pattern
+            text.count('=') >= 3 and ('let ' in text or 'const ' in text or 'var ' in text),
+        ]
+        
+        if any(pattern for pattern in patterns):
+            return True
+    
+    return False
+
+
+# User behavior detection
+def user_has_quote_elaborate(exchange: Exchange) -> bool:
+    """Check if user messages contain quote+elaborate continuation pattern."""
+    for message in exchange.get_user_messages():
+        content = message.get('content', {})
+        text = content.get('text', '').strip()
+        
+        if not text.startswith('>'):
+            continue
+        
+        lines = text.split('\n')
+        if len(lines) >= 2 and lines[-1].strip().lower() == 'elaborate':
+            return True
+    
+    return False
+
+
+def user_has_attachments(exchange: Exchange) -> bool:
+    """Check if user messages have attachments."""
+    for message in exchange.get_user_messages():
+        metadata = message.get('metadata', {})
+        if metadata.get('attachments'):
+            return True
+    return False
+
+
+def user_is_continuation(exchange: Exchange) -> bool:
+    """Check if this exchange started with a continuation prompt."""
+    return exchange.has_continuations()
+
+
+# Assistant behavior detection
+def assistant_has_reasoning(exchange: Exchange) -> bool:
+    """Check if assistant messages contain reasoning/thinking content."""
+    for message in exchange.get_assistant_messages():
+        content = message.get('content', {})
+        if content.get('thoughts'):
+            return True
+    return False
+
+
+def has_wiki_links(exchange: Exchange) -> bool:
+    """Check for Obsidian-style wiki links [[link text]]."""
+    assistant_texts = exchange.get_assistant_texts()
+    return any(bool(re.search(r'\[\[.+?\]\]', text)) for text in assistant_texts)
+
+
+def has_latex_math(exchange: Exchange) -> bool:
+    """Check for LaTeX/MathJax mathematical formulas."""
+    assistant_texts = exchange.get_assistant_texts()
+    
+    for text in assistant_texts:
+        math_indicators = [
+            re.search(r'\$\$.+?\$\$', text) is not None,
+            re.search(r'\\\((.+?)\\\)', text) is not None,
+            re.search(r'\\\[(.+?)\\\]', text) is not None,
+            # Common LaTeX commands
+            any(cmd in text for cmd in ['\\frac', '\\sum', '\\int', '\\sqrt', '\\alpha', 
+                                       '\\beta', '\\gamma', '\\theta', '\\pi', '\\sigma', 
+                                       '\\infty', '\\partial', '\\nabla']),
+        ]
+        
+        if any(math_indicators):
+            return True
+    
+    return False
+
+
+# First user message analysis
+def first_user_has_large_content(exchange: Exchange, min_length: int = 2000) -> bool:
+    """Check if the first user message has large content."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    content = first_message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    
+    return len(text.strip()) > min_length
+
+
+def first_user_has_code_patterns(exchange: Exchange) -> bool:
+    """Check if the first user message contains code patterns."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    content = first_message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    
+    # Strong code indicators
+    code_indicators = [
+        '```',  # Code blocks
+        'def ', 'function ', 'class ',  # Definitions
+        'import ', 'from ', 'require(',  # Imports
+        '#!/bin/', '#include',  # Script headers
+    ]
+    
+    return any(indicator in text for indicator in code_indicators)
+
+
+def first_user_has_attachments(exchange: Exchange) -> bool:
+    """Check if the first user message has attachments."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    return len(attachments) > 0
+
+
+def first_user_has_code_attachments(exchange: Exchange) -> bool:
+    """Check if the first user message has code-related attachments."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    
+    for attachment in attachments:
+        mime_type = attachment.get('mime_type', '').lower()
+        name = attachment.get('name', '').lower()
+        
+        # Check for code file extensions
+        code_extensions = ['.py', '.js', '.java', '.cpp', '.c', '.go', '.rs', 
+                          '.ts', '.jsx', '.tsx', '.sql', '.sh', '.rb', '.php']
+        if any(ext in name for ext in code_extensions):
+            return True
+            
+        # Check for code-related MIME types
+        code_mimes = ['text/x-python', 'text/x-java', 'application/javascript', 'text/x-script']
+        if any(mime in mime_type for mime in code_mimes):
+            return True
+    
+    return False
+
+
+# Gizmo/plugin detection
+def get_gizmo_tags(exchange: Exchange) -> List[Tag]:
+    """Get tags for specific gizmos used in this exchange."""
+    tags = []
+    gizmos = set()
+    
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    for gizmo in gizmos:
+        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    
+    return tags
+
+
+def get_plugin_tags(exchange: Exchange) -> List[Tag]:
+    """Get tags for specific plugins used in this exchange."""
+    tags = []
+    plugins = set()
+    
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+    
+    for plugin in plugins:
+        tags.append(Tag('plugin', plugin_id=plugin))
+    
+    return tags
+
+
+##############################
+# Template content inference #
+##############################
+
+def naive_title_extraction(text):
+    """
+    Attempts to detect presence of title in first line of a message.
+    """
+    # get first line
+    top = text.strip().split("\n")[0]
+
+    # title/section header detected
+    outv = None
+    if top.startswith("#"):
+        outv = top.replace("#","").strip()
+    elif top.startswith("**") and top.endswith("**"):
+        outv = top.replace("**","")
+    if outv is not None:
+        outv = outv.strip()
+    return outv
+
+def extract_proposed_title(exchange: Exchange) -> str:
+    """
+    Extracts proposed content title from the assistant's response.
+    Assumes that an article was generated with a proposed title.
+    """
+    try:
+       text = exchange.get_assistant_texts()[0]
+    except IndexError:
+        return None
+    return naive_title_extraction(text)
+
+
+######################
+#   Rule Registry    #
+######################
+
+# High-value conversation-level rules (aggregation only)
+CONVERSATION_RULES = {
+    'conversation_length': create_conversation_length_tag,
+    'conversation_feature_summary': conversation_feature_summary,
+    'conversation_gizmo_plugin_summary': conversation_gizmo_plugin_summary,
+}
+
+# High-value exchange-level rules (actual detection)
+EXCHANGE_RULES = {
+    # Feature detection (moved from conversation-level)
+    'has_github_repos': has_github_repos,
+    'has_canvas_operations': has_canvas_operations,
+    'has_web_search': has_web_search,
+    'has_reasoning_thoughts': has_reasoning_thoughts,
+    'has_code_execution': has_code_execution,
+    
+    # Code detection
+    'has_code_blocks': has_code_blocks,
+    'has_script_headers': has_script_headers,
+    'has_code_structure_patterns': has_code_structure_patterns,
+    
+    # User behavior
+    'user_has_quote_elaborate': user_has_quote_elaborate,
+    'user_has_attachments': user_has_attachments,
+    'user_is_continuation': user_is_continuation,
+    
+    # Assistant behavior
+    'assistant_has_reasoning': assistant_has_reasoning,
+    'has_wiki_links': has_wiki_links,
+    'has_latex_math': has_latex_math,
+    
+    # First user message analysis
+    'first_user_has_large_content': first_user_has_large_content,
+    'first_user_has_code_patterns': first_user_has_code_patterns,
+    'first_user_has_attachments': first_user_has_attachments,
+    'first_user_has_code_attachments': first_user_has_code_attachments,
+    
+    # Gizmo/plugin detection
+    'get_gizmo_tags': get_gizmo_tags,
+    'get_plugin_tags': get_plugin_tags,
+
+    # Template content inference
+    'proposed_title': extract_proposed_title,
+}
+
+
+---
+File: src/conversation_tagger/core/detection_old.py
+---
+"""
+NB: The intention is to collect rule functions in this file for organizaitonal purposes, but at present
+probably none of these will work out of the box. They were ported from an older brainstorming version of the
+codebase and at minimum need to be updated to account for the new Exchange/Conversation objects, and several
+probably need to have their logic re-implemented to just be better classifiers.
+
+In the future, would be great if we could compress documents into vectors which could be used for these classifications.
+"""
+from typing import Dict, Any
+
+from .exchange import Exchange
+
+
+### Already implemented elsewhere, need to be moved here
+# - wiki markdown
+#   - TODO: add a "see also:{bullleted list}" detector
+# - user first message?
+
+
+
+
+### Content ###
+
+def has_large_content(conversation: Dict[str, Any], min_length: int = 2000) -> bool:
+    """Check if conversation has unusually large content anywhere."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        content = message.get('content', {})
+        text = content.get('text', '')
+        if len(text) > min_length:
+            return True
+            
+        parts = content.get('parts', [])
+        for part in parts:
+            if isinstance(part, str) and len(part) > min_length:
+                return True
+    
+    return False
+
+
+def has_github_repos(conversation: Dict[str, Any]) -> bool:
+    """Check if GitHub repositories were selected for context."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        repos = metadata.get('selected_github_repos', [])
+        if repos:  # Non-empty list
+            return True
+    
+    return False
+
+
+def has_canvas_operations(conversation: Dict[str, Any]) -> bool:
+    """Check for canvas/document operations."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if metadata.get('canvas'):
+            return True
+    
+    return False
+
+
+def has_web_search(conversation: Dict[str, Any]) -> bool:
+    """Check for web search operations."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if (metadata.get('search_queries') or 
+            metadata.get('search_result_groups') or
+            metadata.get('content_references')):
+            return True
+    
+    return False
+
+
+def has_reasoning_thoughts(conversation: Dict[str, Any]) -> bool:
+    """Check for reasoning/thinking patterns."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        content = message.get('content', {})
+        if content.get('thoughts'):  # Reasoning thoughts
+            return True
+    
+    return False
+
+
+def has_code_execution(conversation: Dict[str, Any]) -> bool:
+    """Check for code execution artifacts."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if (metadata.get('aggregate_result') or 
+            metadata.get('jupyter_messages')):
+            return True
+    
+    return False
+
+
+### Code Indicators ###
+
+# conversation_tagger/detection/code_indicators.py
+"""
+Individual code detection functions - each detects a specific type of code evidence.
+"""
+
+from typing import Dict, Any
+
+from .helpers import get_all_text_from_message
+
+
+def has_code_blocks(conversation: Dict[str, Any]) -> bool:
+    """Check for explicit code blocks (``` markdown syntax)."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        if '```' in all_text:
+            return True
+    
+    return False
+
+
+def has_function_definitions(conversation: Dict[str, Any]) -> bool:
+    """Check for function/class definition keywords."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        definition_keywords = ['def ', 'function ', 'class ']
+        if any(keyword in all_text for keyword in definition_keywords):
+            return True
+    
+    return False
+
+
+def has_import_statements(conversation: Dict[str, Any]) -> bool:
+    """Check for import/require statements."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        import_keywords = ['import ', 'from ', 'require(']
+        if any(keyword in all_text for keyword in import_keywords):
+            return True
+    
+    return False
+
+
+def has_script_headers(conversation: Dict[str, Any]) -> bool:
+    """Check for script headers and system includes."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        script_indicators = ['#!/bin/', '#include', 'using namespace']
+        if any(indicator in all_text for indicator in script_indicators):
+            return True
+    
+    return False
+
+
+def has_high_keyword_density(conversation: Dict[str, Any]) -> bool:
+    """Check for high density of programming keywords in large text."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        
+        # Only check substantial text
+        if len(all_text) <= 1000:
+            continue
+        
+        coding_keywords = ['function', 'class', 'import', 'def ', 'const ', 'let ', 'var ', 'return', 'if ', 'for ', 'while ']
+        keyword_count = sum(1 for keyword in coding_keywords if keyword in all_text.lower())
+        
+        # High threshold to avoid false positives in articles
+        if keyword_count >= 5:
+            return True
+    
+    return False
+
+
+def has_code_structure_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check for actual code structure patterns (syntax combinations that suggest real code)."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        
+        # Look for combinations that strongly suggest actual code
+        patterns = [
+            # Function definition pattern
+            ('def ' in all_text and '(' in all_text and ':' in all_text and 'return' in all_text),
+            # Class definition pattern  
+            ('class ' in all_text and '(' in all_text and ':' in all_text and 'def ' in all_text),
+            # JavaScript function pattern
+            ('function(' in all_text or 'function ' in all_text) and '{' in all_text and '}' in all_text,
+            # Multiple assignment pattern
+            all_text.count('=') >= 3 and ('let ' in all_text or 'const ' in all_text or 'var ' in all_text),
+        ]
+        
+        if any(pattern for pattern in patterns):
+            return True
+    
+    return False
+
+
+def has_code_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check for any code patterns (combines individual indicators)."""
+    return (has_code_blocks(conversation) or 
+            has_function_definitions(conversation) or 
+            has_import_statements(conversation) or 
+            has_script_headers(conversation) or
+            has_code_structure_patterns(conversation) or
+            has_high_keyword_density(conversation))
+
+  
+### Continuation Rules ###
+
+def user_has_quote_elaborate(exchange: Exchange) -> bool:
+    """Check if user messages contain quote+elaborate continuation pattern."""
+    for message in exchange.user_messages:
+        content = message.get('content', {})
+        text = content.get('text', '').strip()
+        
+        if not text.startswith('>'):
+            continue
+        
+        lines = text.split('\n')
+        if len(lines) >= 2 and lines[-1].strip().lower() == 'elaborate':
+            return True
+    
+    return False
+
+### Exchange Rules
+
+# conversation_tagger/detection/exchange_rules.py
+"""
+Detection rules specifically designed for exchange-level analysis.
+"""
+
+from typing import Dict, Any
+from ..core.exchange import Exchange
+from ..core.tag import Tag
+
+
+# User message detection rules
+def user_has_code_blocks(exchange: Exchange) -> bool:
+    """Check if user messages contain code blocks."""
+    user_text = exchange.get_user_text()
+    return '```' in user_text
+
+
+def user_has_attachments(exchange: Exchange) -> bool:
+    """Check if user messages have attachments."""
+    for message in exchange.user_messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('attachments'):
+            return True
+    return False
+
+
+def user_has_error_messages(exchange: Exchange) -> bool:
+    """Check if user messages contain error patterns."""
+    user_text = exchange.get_user_text().lower()
+    error_patterns = [
+        'error:', 'traceback', 'exception:', 'failed:', 'cannot', 'not working',
+        'broken', 'issue', 'problem', 'bug', 'crash', 'threw an error'
+    ]
+    return any(pattern in user_text for pattern in error_patterns)
+
+
+def user_prompt_length_category(exchange: Exchange) -> Tag:
+    """Categorize user prompt length."""
+    user_text = exchange.get_user_text()
+    length = len(user_text)
+    
+    if length < 50:
+        category = 'very_short'
+    elif length < 200:
+        category = 'short'
+    elif length < 1000:
+        category = 'medium'
+    elif length < 3000:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('user_prompt_length', length=length, category=category)
+
+
+def user_is_continuation(exchange: Exchange) -> bool:
+    """Check if this exchange started with a continuation prompt."""
+    return exchange.has_continuations()
+
+
+# Assistant message detection rules
+def assistant_has_code_blocks(exchange: Exchange) -> bool:
+    """Check if assistant messages contain code blocks."""
+    assistant_text = exchange.get_assistant_text()
+    return '```' in assistant_text
+
+
+def assistant_has_wiki_links(exchange: Exchange) -> bool:
+    """Check if assistant messages contain wiki-style links."""
+    assistant_text = exchange.get_assistant_text()
+    return '[[' in assistant_text and ']]' in assistant_text
+
+
+def assistant_has_latex_math(exchange: Exchange) -> bool:
+    """Check if assistant messages contain mathematical formulas."""
+    assistant_text = exchange.get_assistant_text()
+    
+    math_indicators = [
+        ('$' in assistant_text and assistant_text.count('$') >= 2),
+        '$$' in assistant_text,
+        ('\\(' in assistant_text and '\\)' in assistant_text),
+        any(cmd in assistant_text for cmd in ['\\frac', '\\sum', '\\int', '\\sqrt'])
+    ]
+    
+    return any(math_indicators)
+
+
+def assistant_response_length_category(exchange: Exchange) -> Tag:
+    """Categorize assistant response length."""
+    assistant_text = exchange.get_assistant_text()
+    length = len(assistant_text)
+    
+    if length < 100:
+        category = 'very_short'
+    elif length < 500:
+        category = 'short'
+    elif length < 2000:
+        category = 'medium'
+    elif length < 5000:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('assistant_response_length', length=length, category=category)
+
+
+def assistant_has_reasoning(exchange: Exchange) -> bool:
+    """Check if assistant messages contain reasoning/thinking content."""
+    for message in exchange.assistant_messages:
+        content = message.get('content', {})
+        if content.get('thoughts'):
+            return True
+    return False
+
+
+# Exchange-level detection rules
+def exchange_is_coding_focused(exchange: Exchange) -> bool:
+    """Check if the entire exchange is focused on coding."""
+    return (user_has_code_blocks(exchange) or 
+            assistant_has_code_blocks(exchange) or
+            exchange.is_code_focused())
+
+
+def exchange_is_wiki_article_focused(exchange: Exchange) -> bool:
+    """Check if exchange is focused on wiki/documentation content."""
+    user_text = exchange.get_user_text()
+    assistant_text = exchange.get_assistant_text()
+    
+    wiki_indicators = [
+        '[[' in user_text or '[[' in assistant_text,
+        'write an article' in user_text.lower(),
+        'create a wiki' in user_text.lower(),
+        len(assistant_text) > 1000 and ('# ' in assistant_text or '## ' in assistant_text)
+    ]
+    
+    return any(wiki_indicators)
+
+
+def exchange_has_error_resolution(exchange: Exchange) -> bool:
+    """Check if exchange involves error troubleshooting."""
+    return (user_has_error_messages(exchange) and 
+            len(exchange.assistant_messages) > 0)
+
+
+def exchange_interaction_pattern(exchange: Exchange) -> Tag:
+    """Determine the interaction pattern of this exchange."""
+    user_stats = exchange.get_user_prompt_stats()
+    assistant_stats = exchange.get_assistant_response_stats()
+    
+    if user_stats['message_count'] > 1:
+        pattern = 'multi_turn'
+    elif user_stats['length'] > 2000:
+        pattern = 'context_heavy'
+    elif assistant_stats['length'] > 3000:
+        pattern = 'detailed_response'
+    elif user_stats['length'] < 50 and assistant_stats['length'] < 200:
+        pattern = 'quick_qa'
+    else:
+        pattern = 'standard'
+    
+    return Tag('interaction_pattern', 
+               pattern=pattern,
+               user_messages=user_stats['message_count'],
+               assistant_messages=assistant_stats['message_count'])
+
+
+# #  For exchange no, but something like this could be interesting for Conversation level analysis.
+# def exchange_timing_stats(exchange: Exchange) -> Tag:
+#     """Calculate timing statistics for the exchange."""
+#     if exchange.start_time and exchange.end_time:
+#         duration = exchange.end_time - exchange.start_time
+        
+#         if duration < 30:
+#             speed = 'very_fast'
+#         elif duration < 120:
+#             speed = 'fast'
+#         elif duration < 300:
+#             speed = 'medium'
+#         elif duration < 600:
+#             speed = 'slow'
+#         else:
+#             speed = 'very_slow'
+        
+#         return Tag('exchange_timing', 
+#                    duration_seconds=duration,
+#                    speed_category=speed)
+    
+#     return Tag('exchange_timing', duration_seconds=0, speed_category='unknown')
+
+### User 1st message
+# possibly already implemented some or all of this elsewhere?
+
+def first_user_has_large_content(conversation: Dict[str, Any], min_length: int = 2000) -> bool:
+    """Check if the first user message has large content."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    all_text = get_all_text_from_message(first_message)
+    return len(all_text) > min_length
+
+
+def first_user_has_code_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message contains code patterns."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    all_text = get_all_text_from_message(first_message)
+    
+    # Strong code indicators
+    code_indicators = [
+        '```',  # Code blocks
+        'def ', 'function ', 'class ',  # Definitions
+        'import ', 'from ', 'require(',  # Imports
+        '#!/bin/', '#include',  # Script headers
+    ]
+    
+    return any(indicator in all_text for indicator in code_indicators)
+
+
+def first_user_has_attachments(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message has attachments."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    return len(attachments) > 0
+
+
+def first_user_has_code_attachments(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message has code-related attachments."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    
+    for attachment in attachments:
+        mime_type = attachment.get('mime_type', '').lower()
+        name = attachment.get('name', '').lower()
+        
+        # Check for code file extensions
+        code_extensions = ['.py', '.js', '.java', '.cpp', '.c', '.go', '.rs', '.ts', '.jsx', '.tsx', '.sql', '.sh', '.rb', '.php']
+        if any(ext in name for ext in code_extensions):
+            return True
+            
+        # Check for code-related MIME types
+        code_mimes = ['text/x-python', 'text/x-java', 'application/javascript', 'text/x-script']
+        if any(mime in mime_type for mime in code_mimes):
+            return True
+    
+    return False
+
+
+### Structured Tags
+
+# conversation_tagger/detection/structured_tags.py
+"""
+Functions that create structured tags with attributes.
+"""
+
+from typing import Dict, Any, List
+
+from ..core.tag import Tag
+from .helpers import get_all_user_messages
+
+
+def create_conversation_length_tag(conversation: Dict[str, Any]) -> Tag:
+    """Create structured tag for conversation length."""
+    user_count = len(get_all_user_messages(conversation))
+    
+    # Determine category
+    if user_count == 1:
+        category = 'single'
+    elif user_count <= 3:
+        category = 'short'
+    elif user_count <= 10:
+        category = 'medium'
+    elif user_count <= 25:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('conversation_length', count=user_count, category=category)
+
+
+def create_prompt_stats_tag(conversation: Dict[str, Any]) -> Tag:
+    """Create structured tag for prompt statistics."""
+    from .helpers import get_all_text_from_message
+    
+    user_messages = get_all_user_messages(conversation)
+    
+    if not user_messages:
+        return Tag('prompt_stats', count=0, mean=0, median=0, variance=0, 
+                  length_category='none', consistency='none')
+    
+    # Calculate message lengths
+    lengths = []
+    for message in user_messages:
+        all_text = get_all_text_from_message(message)
+        lengths.append(len(all_text))
+    
+    # Calculate statistics
+    mean_length = sum(lengths) / len(lengths)
+    sorted_lengths = sorted(lengths)
+    n = len(sorted_lengths)
+    median_length = (sorted_lengths[n//2] if n % 2 == 1 
+                    else (sorted_lengths[n//2-1] + sorted_lengths[n//2]) / 2)
+    variance = sum((x - mean_length) ** 2 for x in lengths) / len(lengths) if len(lengths) > 1 else 0
+    
+    # Determine categories
+    if mean_length < 50:
+        length_category = 'very_short'
+    elif mean_length < 200:
+        length_category = 'short'
+    elif mean_length < 1000:
+        length_category = 'medium'
+    elif mean_length < 3000:
+        length_category = 'long'
+    else:
+        length_category = 'very_long'
+    
+    if variance < 1000:
+        consistency = 'consistent'
+    elif variance < 10000:
+        consistency = 'mixed'
+    else:
+        consistency = 'variable'
+    
+    return Tag('prompt_stats', 
+               count=len(lengths),
+               mean=round(mean_length, 1),
+               median=round(median_length, 1),
+               variance=round(variance, 1),
+               length_category=length_category,
+               consistency=consistency)
+
+
+def create_gizmo_plugin_tags(conversation: Dict[str, Any]) -> List[Tag]:
+    """Create structured tags for gizmos and plugins."""
+    tags = []
+    gizmos = set()
+    plugins = set()
+    
+    # Check conversation-level
+    if conversation.get('gizmo_id'):
+        gizmos.add(conversation['gizmo_id'])
+    
+    plugin_ids = conversation.get('plugin_ids', [])
+    if plugin_ids:
+        plugins.update(plugin_ids)
+    
+    # Check message-level
+    mapping = conversation.get('mapping', {})
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        
+        # Invoked plugins
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+        
+        # Gizmo usage
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    # Create tags
+    for gizmo in gizmos:
+        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    
+    for plugin in plugins:
+        tags.append(Tag('plugin', plugin_id=plugin))
+    
+    return tags
+
+
+
+---
+File: src/conversation_tagger/core/exchange.py
+---
+# conversation_tagger/core/exchange.py
+"""
+Exchange abstraction with sequential message handling and merge capabilities.
+"""
+
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from dataclasses import dataclass, field
+import uuid
+
+if TYPE_CHECKING:
+    from .tag import Tag
+
+
+def get_message_text(message: Dict[str, Any]) -> str:
+    """Extract text content from a message."""
+    content = message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    return text.strip()
+
+
+@dataclass
+class Exchange:
+    """A sequential conversation exchange with merge capabilities."""
+    
+    exchange_id: str
+    conversation_id: str
+    messages: List[Dict[str, Any]]  # Sequential messages in this exchange
+    tags: List['Tag'] = field(default_factory=list)  # Container for associated tags
+    
+    @classmethod
+    def create(cls, conversation_id: str, messages: List[Dict[str, Any]]) -> 'Exchange':
+        """Create a new exchange with a random UUID."""
+        return cls(
+            exchange_id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            messages=messages,
+            tags=[]
+        )
+    
+    @property
+    def first_message_time(self) -> float:
+        """Get the create_time of the first message for ordering."""
+        if not self.messages:
+            return 0.0
+        return self.messages[0].get('create_time', 0.0)
+    
+    def has_continuations(self) -> bool:
+        """Check if this exchange has continuation prompts (multiple user messages)."""
+        user_count = sum(1 for msg in self.messages 
+                        if msg.get('author', {}).get('role') == 'user')
+        return user_count > 1
+    
+    def get_user_messages(self) -> List[Dict[str, Any]]:
+        """Get just the user messages."""
+        return [msg for msg in self.messages 
+                if msg.get('author', {}).get('role') == 'user']
+    
+    def get_assistant_messages(self) -> List[Dict[str, Any]]:
+        """Get just the assistant messages."""
+        return [msg for msg in self.messages 
+                if msg.get('author', {}).get('role') == 'assistant']
+    
+    def get_user_texts(self) -> str:
+        """Get combined text from all user messages."""
+        return [get_message_text(msg) for msg in self.get_user_messages()]
+    
+    def get_assistant_texts(self) -> str:
+        """Get combined text from all assistant messages."""
+        return [get_message_text(msg) for msg in self.get_assistant_messages()]
+
+    def __add__(self, other: 'Exchange') -> 'Exchange':
+        """Merge two exchanges by combining and time-ordering their messages."""
+        if not isinstance(other, Exchange):
+            raise TypeError("Can only add Exchange objects")
+        
+        if self.conversation_id != other.conversation_id:
+            raise ValueError("Cannot merge exchanges from different conversations")
+        
+        # Combine and sort messages by create_time to ensure proper chronological order
+        combined_messages = self.messages + other.messages
+        combined_messages.sort(key=lambda msg: msg.get('create_time', 0.0))
+        
+        # Combine tags from both exchanges
+        # probably need to be smarter about how we perform this merge
+        combined_tags = self.tags + other.tags
+        
+        # Create new exchange with combined content
+        merged_exchange = Exchange(
+            exchange_id=str(uuid.uuid4()),  # New UUID for merged exchange
+            conversation_id=self.conversation_id,
+            messages=combined_messages,
+            tags=combined_tags
+        )
+        
+        return merged_exchange
+    
+    def __len__(self) -> int:
+        """Return number of messages in exchange."""
+        return len(self.messages)
+    
+    def __str__(self) -> str:
+        """String representation showing message sequence."""
+        roles = [msg.get('author', {}).get('role', 'unknown') for msg in self.messages]
+        return f"Exchange({self.exchange_id[:8]}...: {' → '.join(roles)})"
+
+
+
+---
+File: src/conversation_tagger/core/exchange_parser.py
+---
+# src/conversation_tagger/core/exchange_parser.py
+"""
+Parse conversations into exchanges using a two-step approach:
+1. Segment into dyadic USER-ASSISTANT chunks
+2. Merge chunks when continuations are detected
+"""
+
+from typing import Dict, Any, List, Callable
+from .exchange import Exchange
+from .conversation import Conversation
+
+
+from .exchange_tagger import ExchangeTagger
+
+
+def quote_elaborate_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for quote + elaborate continuation pattern."""
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip()
+    
+    return (text.startswith('>') and 
+            len(text.split('\n')) >= 2 and 
+            text.split('\n')[-1].strip().lower() == 'elaborate')
+
+
+def simple_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for simple continuation keywords."""
+    continuation_patterns = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip().lower()
+    
+    return text in continuation_patterns
+
+
+def short_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for short prompts starting with continuation words."""
+    continuation_starters = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish', 'elaborate','do go on', 'make it so', 'yes', 'please', 'do it'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip().lower()
+    
+    if len(text.split()) <= 3:
+        for pattern in continuation_starters:
+            if text.startswith(pattern):
+                return True
+    
+    return False
+
+
+class ExchangeParser:
+    """Parses conversations into tagged exchanges."""
+    
+    def __init__(self, exchange_tagger: ExchangeTagger | None = None):
+        self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
+            quote_elaborate_rule,
+            simple_continuation_rule,
+            short_continuation_rule
+        ]
+        if exchange_tagger is None:
+            exchange_tagger = ExchangeTagger()
+        self.exchange_tagger = exchange_tagger
+
+    def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
+        """Add a new continuation detection rule."""
+        self.continuation_rules.append(rule_function)
+
+    def parse_conversation(self, conversation: Dict[str, Any]) -> Conversation:
+        """Parse a conversation into a Conversation object with fully-tagged exchanges."""
+        mapping = conversation.get('mapping', {})
+        
+        # Extract and sort messages (existing logic)
+        all_messages = []
+        for node_id, node in mapping.items():
+            message = node.get('message')
+            if message and message.get('author'):
+                create_time = message.get('create_time') or 0
+                all_messages.append((create_time, message))
+        
+        all_messages.sort(key=lambda x: x[0])
+        messages = [msg for _, msg in all_messages]
+        
+        conversation_id = conversation.get('conversation_id')
+        title = conversation.get('title', '')
+        
+        dyadic_exchanges = self._create_dyadic_exchanges(messages, conversation_id)
+        merged_exchanges = self._merge_continuations(dyadic_exchanges)
+        
+        # Tag exchanges as they're finalized
+        if self.exchange_tagger:
+            tagged_exchanges = []
+            for exchange in merged_exchanges:
+                tagged_exchange = self.exchange_tagger.tag_exchange(exchange)
+                tagged_exchanges.append(tagged_exchange)
+        else:
+            tagged_exchanges = merged_exchanges
+        
+        # Create and return Conversation object
+        conv = Conversation(
+            conversation_id=conversation_id,
+            title=title,
+            exchanges=tagged_exchanges,
+            raw=conversation,
+        )
+        
+        return conv
+    
+    def _create_dyadic_exchanges(self, messages: List[Dict[str, Any]], 
+                                conversation_id: str) -> List[Exchange]:
+        """Step 1: Create simple USER-ASSISTANT dyadic exchanges."""
+        dyadic_exchanges = []
+        current_pair = []
+        
+        for message in messages:
+            author_role = message.get('author', {}).get('role', '')
+            
+            if author_role in ['user', 'assistant']:
+                current_pair.append(message)
+                
+                # If we have a user->assistant pair, create exchange
+                if (len(current_pair) == 2 and 
+                    current_pair[0].get('author', {}).get('role') == 'user' and
+                    current_pair[1].get('author', {}).get('role') == 'assistant'):
+                    
+                    exchange = Exchange.create(conversation_id, current_pair.copy())
+                    dyadic_exchanges.append(exchange)
+                    current_pair = []
+                
+                # Handle cases where we have multiple user messages or assistant messages
+                elif len(current_pair) > 2:
+                    # Create exchange with what we have so far
+                    exchange = Exchange.create(conversation_id, current_pair.copy())
+                    dyadic_exchanges.append(exchange)
+                    current_pair = []
+        
+        # Handle any remaining messages
+        if current_pair:
+            exchange = Exchange.create(conversation_id, current_pair)
+            dyadic_exchanges.append(exchange)
+        
+        return dyadic_exchanges
+    
+    def _merge_continuations(self, dyadic_exchanges: List[Exchange]) -> List[Exchange]:
+        """Step 2: Merge exchanges when continuation patterns are detected."""
+        if not dyadic_exchanges:
+            return []
+        
+        merged_exchanges = []
+        current_exchange = dyadic_exchanges[0]
+        
+        for i in range(1, len(dyadic_exchanges)):
+            next_exchange = dyadic_exchanges[i]
+            
+            # Check if next exchange is a continuation using any rule
+            should_merge = any(rule(current_exchange, next_exchange) 
+                             for rule in self.continuation_rules)
+            
+            if should_merge:
+                # Merge with current exchange (time-ordering handled by __add__)
+                current_exchange = current_exchange + next_exchange
+            else:
+                # Finalize current exchange and start new one
+                merged_exchanges.append(current_exchange)
+                current_exchange = next_exchange
+        
+        # Add the final exchange
+        merged_exchanges.append(current_exchange)
+        
+        return merged_exchanges
+
+
+
+---
+File: src/conversation_tagger/core/exchange_tagger.py
+---
+# src/conversation_tagger/core/exchange_tagger.py
+"""
+Tag individual exchanges using the improved exchange structure.
+"""
+from typing import Dict, Callable
+from .tag import Tag
+from .exchange import Exchange
+
+
+
+# we generalize this into a Tagger(ABC) which 
+# we can use to tag both exchanges and conversations
+## rule adding is the same API
+## tagging is the same API
+### ... maybe rather than an ExchangeTagger, we have a Tagger that can tag both Exchanges and Conversations
+class ExchangeTagger:
+    """Tags exchanges with configurable rules."""
+    
+    def __init__(self):
+        self.rules: Dict[str, Callable] = {}
+    
+    def add_rule(self, tag_name: str, rule_function: Callable):
+        """Add rule for exchanges."""
+        self.rules[tag_name] = rule_function
+    
+    def tag_exchange(self, exchange: Exchange) -> Exchange:
+        """Tag a single exchange and return the updated exchange."""
+        tags = exchange.tags or []
+        
+        for tag_name, rule_func in self.rules.items():
+            try:
+                result = rule_func(exchange)
+                if result:
+                    if isinstance(result, bool):
+                        tags.append(Tag(tag_name))
+                    elif isinstance(result, Tag):
+                        tags.append(result)
+                    else:
+                        tags.append(Tag(tag_name))
+            except Exception as e:
+                # Skip failed rules silently for now
+                pass
+        
+        # Update the exchange's tags
+        exchange.tags = tags
+        return exchange
+
+
+
+
+---
+File: src/conversation_tagger/core/tag.py
+---
+
+# =============================================================================
+# conversation_tagger/core/tag.py
+"""
+Basic Tag class with optional attributes.
+"""
+
+from typing import Any
+
+
+class Tag:
+    """A tag with optional key-value attributes."""
+    
+    def __init__(self, name: str, **attributes):
+        self.name = name
+        self.attributes = attributes
+    
+    def __str__(self):
+        if self.attributes:
+            attrs = ", ".join(f"{k}={v}" for k, v in self.attributes.items())
+            return f"{self.name}({attrs})"
+        return self.name
+    
+    def __repr__(self):
+        return f"Tag('{self.name}', {self.attributes})"
+    
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.name == other
+        elif isinstance(other, Tag):
+            return self.name == other.name and self.attributes == other.attributes
+        return False
+    
+    def __hash__(self):
+        return hash((self.name, tuple(sorted(self.attributes.items()))))
+
+
+
+
+---
+File: src/conversation_tagger/core/tagger.py
+---
+# src/conversation_tagger/core/tagger.py
+"""
+Main ConversationTagger that orchestrates the exchange-based analysis.
+"""
+
+from typing import Dict, Any, List, Callable
+from .exchange_parser import ExchangeParser
+from .exchange_tagger import ExchangeTagger
+from .conversation import Conversation
+from .exchange import Exchange
+from .tag import Tag
+
+
+class ConversationTagger:
+    """Main tagger that uses exchange-based analysis."""
+    
+    def __init__(self, exchange_parser: ExchangeParser | None = None):
+        if not exchange_parser:
+            exchange_parser = ExchangeParser()
+        self.exchange_parser = exchange_parser
+        self.conversation_rules: Dict[str, Callable] = {}
+    
+    def add_exchange_rule(self, tag_name: str, rule_function: Callable):
+        """Add rule for analyzing exchanges."""
+        self.exchange_parser.exchange_tagger.add_rule(tag_name, rule_function)
+
+    def add_conversation_rule(self, tag_name: str, rule_function: Callable):
+        """Add rule for analyzing entire conversations."""
+        self.conversation_rules[tag_name] = rule_function
+    
+    def tag_conversation(self, conversation: Dict[str, Any]) -> Conversation:
+        """Tag a conversation using exchange-based analysis."""
+        # Parse into tagged exchanges and return Conversation object
+        conv = self.exchange_parser.parse_conversation(conversation)
+        
+        # Apply conversation-level tagging rules
+        conversation_tags = []
+        
+        for tag_name, rule_func in self.conversation_rules.items():
+            try:
+                result = rule_func(conv)
+                if result:
+                    if isinstance(result, bool):
+                        conversation_tags.append(Tag(tag_name))
+                    elif isinstance(result, Tag):
+                        conversation_tags.append(result)
+                    elif isinstance(result, list):
+                        # Handle multiple tags returned from one rule
+                        for tag in result:
+                            if isinstance(tag, Tag):
+                                conversation_tags.append(tag)
+                            else:
+                                conversation_tags.append(Tag(tag_name))
+                    else:
+                        # Treat other truthy values as simple tags
+                        conversation_tags.append(Tag(tag_name))
+            except Exception as e:
+                # Skip failed rules - could add logging here later
+                pass
+        
+        # Combine exchange tags with conversation-level tags
+        all_tags = conv.tags + conversation_tags
+        conv.tags = all_tags
+        
+        return conv
+
+
+
+---
+File: src/conversation_tagger/factory.py
+---
+# conversation_tagger/factory.py
+"""
+Factory to create configured tagger with improved exchange handling.
+"""
+from .core.tagger import ConversationTagger
+from .core.detection import EXCHANGE_RULES, CONVERSATION_RULES
+
+
+def create_default_tagger() -> ConversationTagger:
+    """Create a basic tagger with example rules for the new exchange design."""
+    tagger = ConversationTagger()
+    for rule_name, rule_func in EXCHANGE_RULES.items():
+        tagger.add_exchange_rule(rule_name, rule_func)   
+    for rule_name, rule_func in CONVERSATION_RULES.items():
+        tagger.add_conversation_rule(rule_name, rule_func)
+    
+    return tagger
+
+

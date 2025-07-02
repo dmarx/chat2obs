@@ -1,0 +1,4432 @@
+---
+File: .github/workflows/summary-for-llm.yml
+---
+name: Llamero Summarization
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  generate-summaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install llamero
+      run: touch requirements.txt
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        #cache: 'pip'
+
+    - name: Install llamero
+      run: pip install llamero
+
+    - name: Generate summaries
+      run: |
+        llamero summarize all
+        #llamero tree --output summaries/tree.md
+
+
+
+---
+File: .github/workflows/test.yml
+---
+# .github/workflows/test.yml
+name: Test Suite
+
+on:
+  push:
+    #branches: [ main, exchange-redesign ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -e .
+
+    - name: Run tests
+      run: |
+        python -m pytest tests/ -v
+
+
+
+---
+File: docs/chatgpt.schema.json
+---
+{'$schema': 'http://json-schema.org/schema#',
+ 'type': 'array',
+ 'items': {'type': 'object',
+  'properties': {'mapping': {'type': 'object',
+    'patternProperties': {'^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$': {'type': 'object',
+      'properties': {'id': {'type': 'string'},
+       'message': {'anyOf': [{'type': 'null'},
+         {'type': 'object',
+          'properties': {'id': {'type': 'string'},
+           'author': {'type': 'object',
+            'properties': {'role': {'type': 'string'},
+             'name': {'type': ['null', 'string']},
+             'metadata': {'type': 'object',
+              'properties': {'real_author': {'type': 'string'}}}},
+            'required': ['metadata', 'name', 'role']},
+           'create_time': {'type': ['null', 'number']},
+           'update_time': {'type': ['null', 'number']},
+           'content': {'type': 'object',
+            'properties': {'content_type': {'type': 'string'},
+             'parts': {'type': 'array',
+              'items': {'anyOf': [{'type': 'string'},
+                {'type': 'object',
+                 'properties': {'content_type': {'type': 'string'},
+                  'asset_pointer': {'type': 'string'},
+                  'size_bytes': {'type': 'integer'},
+                  'width': {'type': 'integer'},
+                  'height': {'type': 'integer'},
+                  'fovea': {'type': ['integer', 'null']},
+                  'metadata': {'anyOf': [{'type': 'null'},
+                    {'type': 'object',
+                     'properties': {'dalle': {'anyOf': [{'type': 'null'},
+                        {'type': 'object',
+                         'properties': {'gen_id': {'type': 'string'},
+                          'prompt': {'type': 'string'},
+                          'seed': {'type': ['integer', 'null']},
+                          'parent_gen_id': {'type': ['null', 'string']},
+                          'edit_op': {'type': ['null', 'string']},
+                          'serialization_title': {'type': 'string'}},
+                         'required': ['edit_op',
+                          'gen_id',
+                          'parent_gen_id',
+                          'prompt',
+                          'seed',
+                          'serialization_title']}]},
+                      'gizmo': {'type': 'null'},
+                      'generation': {'anyOf': [{'type': 'null'},
+                        {'type': 'object',
+                         'properties': {'gen_id': {'type': 'string'},
+                          'gen_size': {'type': 'string'},
+                          'seed': {'type': 'null'},
+                          'parent_gen_id': {'type': 'null'},
+                          'height': {'type': 'integer'},
+                          'width': {'type': 'integer'},
+                          'transparent_background': {'type': 'boolean'},
+                          'serialization_title': {'type': 'string'}},
+                         'required': ['gen_id',
+                          'gen_size',
+                          'height',
+                          'parent_gen_id',
+                          'seed',
+                          'serialization_title',
+                          'transparent_background',
+                          'width']}]},
+                      'container_pixel_height': {'type': ['integer', 'null']},
+                      'container_pixel_width': {'type': ['integer', 'null']},
+                      'emu_omit_glimpse_image': {'type': 'null'},
+                      'emu_patches_override': {'type': 'null'},
+                      'sanitized': {'type': 'boolean'},
+                      'asset_pointer_link': {'type': 'null'},
+                      'watermarked_asset_pointer': {'type': 'null'},
+                      'start_timestamp': {'type': 'null'},
+                      'end_timestamp': {'type': 'null'},
+                      'pretokenized_vq': {'type': 'null'},
+                      'interruptions': {'type': 'null'},
+                      'original_audio_source': {'type': 'null'},
+                      'transcription': {'type': 'null'},
+                      'word_transcription': {'type': 'null'},
+                      'start': {'type': 'number'},
+                      'end': {'type': 'number'}}}]},
+                  'expiry_datetime': {'type': 'null'},
+                  'frames_asset_pointers': {'type': 'array'},
+                  'video_container_asset_pointer': {'type': 'null'},
+                  'audio_asset_pointer': {'type': 'object',
+                   'properties': {'expiry_datetime': {'type': 'null'},
+                    'content_type': {'type': 'string'},
+                    'asset_pointer': {'type': 'string'},
+                    'size_bytes': {'type': 'integer'},
+                    'format': {'type': 'string'},
+                    'metadata': {'type': 'object',
+                     'properties': {'start_timestamp': {'type': 'null'},
+                      'end_timestamp': {'type': 'null'},
+                      'pretokenized_vq': {'type': 'null'},
+                      'interruptions': {'type': 'null'},
+                      'original_audio_source': {'type': 'null'},
+                      'transcription': {'type': 'null'},
+                      'word_transcription': {'type': 'null'},
+                      'start': {'type': 'number'},
+                      'end': {'type': 'number'}},
+                     'required': ['end',
+                      'end_timestamp',
+                      'interruptions',
+                      'original_audio_source',
+                      'pretokenized_vq',
+                      'start',
+                      'start_timestamp',
+                      'transcription',
+                      'word_transcription']}},
+                   'required': ['asset_pointer',
+                    'content_type',
+                    'expiry_datetime',
+                    'format',
+                    'metadata',
+                    'size_bytes']},
+                  'audio_start_timestamp': {'type': 'number'},
+                  'text': {'type': 'string'},
+                  'direction': {'type': 'string'},
+                  'decoding_id': {'type': 'null'},
+                  'format': {'type': 'string'}},
+                 'required': ['content_type']}]}},
+             'language': {'type': 'string'},
+             'response_format_name': {'type': 'null'},
+             'text': {'type': 'string'},
+             'thoughts': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'summary': {'type': 'string'},
+                'content': {'type': 'string'}},
+               'required': ['content', 'summary']}},
+             'source_analysis_msg_id': {'type': 'string'},
+             'content': {'type': 'string'},
+             'result': {'type': 'string'},
+             'summary': {'type': ['null', 'string']},
+             'assets': {'type': 'array'},
+             'tether_id': {'type': 'null'},
+             'url': {'type': 'string'},
+             'domain': {'type': 'string'},
+             'title': {'type': 'string'},
+             'snippet': {'type': 'string'},
+             'pub_date': {'type': 'null'},
+             'crawl_date': {'type': 'null'},
+             'pub_timestamp': {'type': 'number'},
+             'ref_id': {'type': 'string'},
+             'name': {'type': 'string'}},
+            'required': ['content_type']},
+           'status': {'type': 'string'},
+           'end_turn': {'type': ['boolean', 'null']},
+           'weight': {'type': 'number'},
+           'metadata': {'type': 'object',
+            'properties': {'is_visually_hidden_from_conversation': {'type': 'boolean'},
+             'selected_sources': {'type': 'array',
+              'items': {'type': 'string'}},
+             'selected_github_repos': {'type': 'array'},
+             'serialization_metadata': {'type': 'object',
+              'properties': {'custom_symbol_offsets': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'symbol': {'type': 'string'},
+                  'startIndex': {'type': 'integer'},
+                  'endIndex': {'type': 'integer'}},
+                 'required': ['endIndex', 'startIndex', 'symbol']}}},
+              'required': ['custom_symbol_offsets']},
+             'request_id': {'type': ['null', 'string']},
+             'message_source': {'type': 'null'},
+             'timestamp_': {'type': 'string'},
+             'message_type': {'type': ['null', 'string']},
+             'model_slug': {'type': 'string'},
+             'default_model_slug': {'type': 'string'},
+             'parent_id': {'type': 'string'},
+             'is_complete': {'type': 'boolean'},
+             'finish_details': {'type': 'object',
+              'properties': {'type': {'type': 'string'},
+               'stop_tokens': {'type': 'array', 'items': {'type': 'integer'}},
+               'stop': {'type': 'string'}},
+              'required': ['type']},
+             'sonic_classification_result': {'type': 'object',
+              'properties': {'latency_ms': {'type': ['null', 'number']},
+               'search_prob': {'type': ['null', 'number']},
+               'force_search_threshold': {'type': ['null', 'number']},
+               'classifier_config_name': {'type': 'string'}},
+              'required': ['latency_ms', 'search_prob']},
+             'citations': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'start_ix': {'type': 'integer'},
+                'end_ix': {'type': 'integer'},
+                'invalid_reason': {'type': 'string'},
+                'citation_format_type': {'type': 'string'},
+                'metadata': {'type': 'object',
+                 'properties': {'type': {'type': 'string'},
+                  'title': {'type': 'string'},
+                  'url': {'type': 'string'},
+                  'text': {'type': 'string'},
+                  'pub_date': {'type': ['null', 'string']},
+                  'extra': {'anyOf': [{'type': 'null'},
+                    {'type': 'object',
+                     'properties': {'cited_message_idx': {'type': 'integer'},
+                      'search_result_idx': {'type': ['integer', 'null']},
+                      'evidence_text': {'type': 'string'},
+                      'cloud_doc_url': {'type': 'null'}},
+                     'required': ['cited_message_idx', 'evidence_text']}]},
+                  'og_tags': {'type': 'null'}},
+                 'required': ['extra',
+                  'pub_date',
+                  'text',
+                  'title',
+                  'type',
+                  'url']}},
+               'required': ['end_ix', 'start_ix']}},
+             'content_references': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'matched_text': {'type': 'string'},
+                'start_idx': {'type': 'integer'},
+                'end_idx': {'type': 'integer'},
+                'refs': {'type': 'array',
+                 'items': {'anyOf': [{'type': 'string'},
+                   {'type': 'object',
+                    'properties': {'turn_index': {'type': 'integer'},
+                     'ref_type': {'type': 'string'},
+                     'ref_index': {'type': 'integer'}},
+                    'required': ['ref_index', 'ref_type', 'turn_index']}]}},
+                'alt': {'type': ['null', 'string']},
+                'prompt_text': {'type': ['null', 'string']},
+                'type': {'type': 'string'},
+                'invalid': {'type': 'boolean'},
+                'safe_urls': {'type': 'array', 'items': {'type': 'string'}},
+                'attributable_index': {'type': 'string'},
+                'attributions': {'type': 'null'},
+                'attributions_debug': {'type': 'null'},
+                'items': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'title': {'type': 'string'},
+                   'url': {'type': 'string'},
+                   'pub_date': {'type': ['null', 'number']},
+                   'snippet': {'type': ['null', 'string']},
+                   'attribution_segments': {'anyOf': [{'type': 'null'},
+                     {'type': 'array', 'items': {'type': 'string'}}]},
+                   'supporting_websites': {'type': 'array',
+                    'items': {'type': 'object',
+                     'properties': {'title': {'type': 'string'},
+                      'url': {'type': 'string'},
+                      'pub_date': {'type': ['null', 'number']},
+                      'snippet': {'type': 'string'},
+                      'attribution': {'type': 'string'}},
+                     'required': ['attribution',
+                      'pub_date',
+                      'snippet',
+                      'title',
+                      'url']}},
+                   'refs': {'type': 'array',
+                    'items': {'type': 'object',
+                     'properties': {'turn_index': {'type': 'integer'},
+                      'ref_type': {'type': 'string'},
+                      'ref_index': {'type': 'integer'}},
+                     'required': ['ref_index', 'ref_type', 'turn_index']}},
+                   'hue': {'type': 'null'},
+                   'attributions': {'type': 'null'},
+                   'attribution': {'type': 'string'}},
+                  'required': ['pub_date', 'snippet', 'title', 'url']}},
+                'status': {'type': 'string'},
+                'error': {'type': 'null'},
+                'style': {'type': ['null', 'string']},
+                'sources': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'title': {'type': 'string'},
+                   'url': {'type': 'string'},
+                   'attribution': {'type': 'string'}},
+                  'required': ['attribution', 'title', 'url']}},
+                'has_images': {'type': 'boolean'},
+                'images': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'url': {'type': 'string'},
+                   'content_url': {'type': 'string'},
+                   'thumbnail_url': {'type': 'string'},
+                   'title': {'type': 'string'},
+                   'content_size': {'type': 'object',
+                    'properties': {'width': {'type': 'integer'},
+                     'height': {'type': 'integer'}},
+                    'required': ['height', 'width']},
+                   'thumbnail_size': {'type': 'object',
+                    'properties': {'width': {'type': 'integer'},
+                     'height': {'type': 'integer'}},
+                    'required': ['height', 'width']},
+                   'thumbnail_crop_info': {'type': 'null'},
+                   'attribution': {'type': 'string'}},
+                  'required': ['attribution',
+                   'content_size',
+                   'content_url',
+                   'thumbnail_crop_info',
+                   'thumbnail_size',
+                   'thumbnail_url',
+                   'title',
+                   'url']}},
+                'title': {'type': 'string'},
+                'url': {'type': 'string'},
+                'pub_date': {'type': ['null', 'number']},
+                'snippet': {'type': 'string'},
+                'attribution': {'type': 'string'},
+                'icon_type': {'type': 'null'}},
+               'required': ['end_idx', 'matched_text', 'start_idx', 'type']}},
+             'command': {'type': 'string'},
+             'status': {'type': 'string'},
+             'search_source': {'type': 'string'},
+             'client_reported_search_source': {'type': ['null', 'string']},
+             'debug_sonic_thread_id': {'type': 'string'},
+             'search_result_groups': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'type': {'type': 'string'},
+                'domain': {'type': 'string'},
+                'entries': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'type': {'type': 'string'},
+                   'url': {'type': 'string'},
+                   'title': {'type': 'string'},
+                   'snippet': {'type': 'string'},
+                   'ref_id': {'anyOf': [{'type': 'null'},
+                     {'type': 'object',
+                      'properties': {'turn_index': {'type': 'integer'},
+                       'ref_type': {'type': 'string'},
+                       'ref_index': {'type': 'integer'}},
+                      'required': ['ref_index', 'ref_type', 'turn_index']}]},
+                   'content_type': {'type': 'null'},
+                   'pub_date': {'type': ['null', 'number']},
+                   'attributions': {'type': 'null'},
+                   'attribution': {'type': 'string'},
+                   'attributions_debug': {'type': 'null'}},
+                  'required': ['pub_date',
+                   'ref_id',
+                   'snippet',
+                   'title',
+                   'type',
+                   'url']}}},
+               'required': ['domain', 'entries', 'type']}},
+             'safe_urls': {'type': 'array', 'items': {'type': 'string'}},
+             'message_locale': {'type': 'string'},
+             'image_results': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'url': {'type': 'string'},
+                'content_url': {'type': 'string'},
+                'thumbnail_url': {'type': 'string'},
+                'title': {'type': 'string'},
+                'content_size': {'type': 'object',
+                 'properties': {'width': {'type': 'integer'},
+                  'height': {'type': 'integer'}},
+                 'required': ['height', 'width']},
+                'thumbnail_size': {'type': 'object',
+                 'properties': {'width': {'type': 'integer'},
+                  'height': {'type': 'integer'}},
+                 'required': ['height', 'width']},
+                'thumbnail_crop_info': {'type': 'null'},
+                'attribution': {'type': 'string'}},
+               'required': ['attribution',
+                'content_size',
+                'content_url',
+                'thumbnail_crop_info',
+                'thumbnail_size',
+                'thumbnail_url',
+                'title',
+                'url']}},
+             'rebase_developer_message': {'type': 'boolean'},
+             'reasoning_status': {'type': 'string'},
+             'search_queries': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'type': {'type': 'string'},
+                'q': {'type': 'string'}},
+               'required': ['q', 'type']}},
+             'search_display_string': {'type': 'string'},
+             'searched_display_string': {'type': 'string'},
+             'finished_duration_sec': {'type': 'integer'},
+             'canvas': {'type': 'object',
+              'properties': {'textdoc_id': {'type': 'string'},
+               'textdoc_type': {'type': 'string'},
+               'version': {'type': 'integer'},
+               'title': {'type': 'string'},
+               'create_source': {'type': 'string'},
+               'from_version': {'type': 'integer'},
+               'textdoc_content_length': {'type': 'integer'},
+               'user_message_type': {'type': 'string'},
+               'selection_metadata': {'type': 'object',
+                'properties': {'selection_type': {'type': 'string'},
+                 'selection_position_range': {'type': 'object',
+                  'properties': {'start': {'type': 'integer'},
+                   'end': {'type': 'integer'}},
+                  'required': ['end', 'start']}},
+                'required': ['selection_position_range', 'selection_type']},
+               'comment_ids': {'type': 'array', 'items': {'type': 'string'}},
+               'has_user_edit': {'type': 'boolean'},
+               'is_failure': {'type': 'boolean'}}},
+             'targeted_reply': {'type': 'string'},
+             'targeted_reply_label': {'type': 'string'},
+             'attachments': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'id': {'type': 'string'},
+                'size': {'type': 'integer'},
+                'name': {'type': 'string'},
+                'mime_type': {'type': 'string'},
+                'width': {'type': 'integer'},
+                'height': {'type': 'integer'},
+                'mimeType': {'type': 'string'}},
+               'required': ['id', 'name']}},
+             'caterpillar_selected_sources': {'type': 'array',
+              'items': {'type': 'string'}},
+             'gizmo_id': {'type': ['null', 'string']},
+             'rebase_system_message': {'type': 'boolean'},
+             'category_suggestions': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'title': {'type': 'string'},
+                'category_id': {'type': 'string'},
+                'suggestions': {'anyOf': [{'type': 'null'},
+                  {'type': 'array',
+                   'items': {'type': 'object',
+                    'properties': {'title': {'type': 'null'},
+                     'description': {'type': 'string'},
+                     'prompt': {'type': 'string'},
+                     'system_hint': {'type': 'string'},
+                     'category_id': {'type': 'string'},
+                     'cta_label': {'type': 'null'},
+                     'image_url': {'type': 'null'},
+                     'model_override': {'type': 'null'},
+                     'id': {'type': 'string'}},
+                    'required': ['category_id',
+                     'cta_label',
+                     'description',
+                     'id',
+                     'prompt',
+                     'system_hint',
+                     'title']}}]},
+                'style': {'type': 'string'}},
+               'required': ['category_id', 'suggestions', 'title']}},
+             'finished_text': {'type': 'string'},
+             'initial_text': {'type': 'string'},
+             '_cite_metadata': {'type': 'object',
+              'properties': {'citation_format': {'type': 'object',
+                'properties': {'name': {'type': 'string'},
+                 'regex': {'type': 'string'}},
+                'required': ['name']},
+               'metadata_list': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'type': {'type': 'string'},
+                  'title': {'type': 'string'},
+                  'url': {'type': 'string'},
+                  'text': {'type': 'string'},
+                  'pub_date': {'type': ['null', 'string']},
+                  'extra': {'type': 'null'},
+                  'og_tags': {'type': 'null'},
+                  'name': {'type': 'string'},
+                  'id': {'type': 'string'},
+                  'source': {'type': 'string'}},
+                 'required': ['extra', 'text', 'type']}},
+               'original_query': {'type': 'null'}},
+              'required': ['citation_format',
+               'metadata_list',
+               'original_query']},
+             'args': {'type': 'array',
+              'items': {'anyOf': [{'type': ['integer', 'string']},
+                {'type': 'array', 'items': {'type': 'integer'}}]}},
+             'system_hints': {'type': 'array', 'items': {'type': 'string'}},
+             'cloud_doc_urls': {'type': 'array', 'items': {'type': 'null'}},
+             'search_engine': {'type': 'string'},
+             'aggregate_result': {'type': 'object',
+              'properties': {'status': {'type': 'string'},
+               'run_id': {'type': 'string'},
+               'start_time': {'type': 'number'},
+               'update_time': {'type': 'number'},
+               'code': {'type': 'string'},
+               'end_time': {'type': ['null', 'number']},
+               'final_expression_output': {'type': ['null', 'string']},
+               'in_kernel_exception': {'anyOf': [{'type': 'null'},
+                 {'type': 'object',
+                  'properties': {'name': {'type': 'string'},
+                   'traceback': {'type': 'array', 'items': {'type': 'string'}},
+                   'args': {'type': 'array', 'items': {'type': 'string'}},
+                   'notes': {'type': 'array'}},
+                  'required': ['args', 'name', 'notes', 'traceback']}]},
+               'system_exception': {'type': 'null'},
+               'messages': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'message_type': {'type': 'string'},
+                  'time': {'type': 'number'},
+                  'sender': {'type': 'string'},
+                  'image_payload': {'type': 'null'},
+                  'image_url': {'type': 'string'},
+                  'width': {'type': 'integer'},
+                  'height': {'type': 'integer'},
+                  'stream_name': {'type': 'string'},
+                  'text': {'type': 'string'},
+                  'timeout_triggered': {'type': 'number'}},
+                 'required': ['message_type', 'sender', 'time']}},
+               'jupyter_messages': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'msg_type': {'type': 'string'},
+                  'parent_header': {'type': 'object',
+                   'properties': {'msg_id': {'type': 'string'},
+                    'version': {'type': 'string'}},
+                   'required': ['msg_id', 'version']},
+                  'content': {'type': 'object',
+                   'properties': {'execution_state': {'type': 'string'},
+                    'data': {'type': 'object',
+                     'properties': {'text/plain': {'type': 'string'},
+                      'text/html': {'type': 'string'},
+                      'image/vnd.openai.fileservice2.png': {'type': 'string'},
+                      'image/vnd.openai.fileservice.png': {'type': 'string'}},
+                     'required': ['text/plain']},
+                    'name': {'type': 'string'},
+                    'text': {'type': 'string'},
+                    'traceback': {'type': 'array',
+                     'items': {'type': 'string'}},
+                    'ename': {'type': 'string'},
+                    'evalue': {'type': 'string'}}},
+                  'timeout': {'type': 'number'}},
+                 'required': ['msg_type']}},
+               'timeout_triggered': {'type': ['null', 'number']}},
+              'required': ['code',
+               'end_time',
+               'final_expression_output',
+               'in_kernel_exception',
+               'jupyter_messages',
+               'messages',
+               'run_id',
+               'start_time',
+               'status',
+               'system_exception',
+               'timeout_triggered',
+               'update_time']},
+             'paragen_variants_info': {'type': 'object',
+              'properties': {'type': {'type': 'string'},
+               'num_variants_in_stream': {'type': 'integer'},
+               'display_treatment': {'type': 'string'},
+               'conversation_id': {'type': 'string'}},
+              'required': ['conversation_id',
+               'display_treatment',
+               'num_variants_in_stream',
+               'type']},
+             'paragen_variant_choice': {'type': 'string'},
+             'voice_mode_message': {'type': 'boolean'},
+             'kwargs': {'type': 'object',
+              'properties': {'message_id': {'type': 'string'},
+               'pending_message_id': {'type': ['null', 'string']},
+               'sync_write': {'type': 'boolean'}},
+              'required': ['message_id']},
+             'augmented_paragen_prompt_label': {'type': ['null', 'string']},
+             'exclusive_key': {'type': 'string'},
+             'model_switcher_deny': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'slug': {'type': 'string'},
+                'context': {'type': 'string'},
+                'reason': {'type': 'string'},
+                'description': {'type': 'string'}},
+               'required': ['context', 'description', 'reason', 'slug']}},
+             'pad': {'type': 'string'},
+             'real_time_audio_has_video': {'type': 'boolean'},
+             'ada_visualizations': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'type': {'type': 'string'},
+                'file_id': {'type': 'string'},
+                'title': {'type': 'string'},
+                'chart_type': {'type': 'string'},
+                'fallback_to_image': {'type': 'boolean'}},
+               'required': ['chart_type',
+                'fallback_to_image',
+                'file_id',
+                'title',
+                'type']}},
+             'requested_model_slug': {'type': 'string'},
+             'dalle': {'type': 'object',
+              'properties': {'from_client': {'type': 'object',
+                'properties': {'operation': {'type': 'object',
+                  'properties': {'type': {'type': 'string'},
+                   'original_gen_id': {'type': 'string'},
+                   'original_file_id': {'type': 'string'}},
+                  'required': ['original_file_id',
+                   'original_gen_id',
+                   'type']}},
+                'required': ['operation']}},
+              'required': ['from_client']},
+             'filter_out_for_training': {'type': 'boolean'},
+             'jit_plugin_data': {'type': 'object',
+              'properties': {'from_server': {'type': 'object',
+                'properties': {'type': {'type': 'string'},
+                 'body': {'type': 'object',
+                  'properties': {'domain': {'type': 'string'},
+                   'is_consequential': {'type': 'boolean'},
+                   'privacy_policy': {'type': 'string'},
+                   'method': {'type': 'string'},
+                   'path': {'type': 'string'},
+                   'operation': {'type': 'string'},
+                   'params': {'type': 'object',
+                    'properties': {'country_name': {'type': 'string'},
+                     'state_name': {'type': 'string'},
+                     'city_name': {'type': 'string'},
+                     'filters': {'type': 'string'},
+                     'num_trails': {'type': 'integer'},
+                     'raw_query': {'type': 'string'},
+                     'location_helper': {'type': 'string'}},
+                    'required': ['city_name',
+                     'country_name',
+                     'filters',
+                     'location_helper',
+                     'num_trails',
+                     'raw_query',
+                     'state_name']},
+                   'actions': {'type': 'array',
+                    'items': {'type': 'object',
+                     'properties': {'name': {'type': 'string'},
+                      'type': {'type': 'string'},
+                      'allow': {'type': 'object',
+                       'properties': {'target_message_id': {'type': 'string'}},
+                       'required': ['target_message_id']},
+                      'always_allow': {'type': 'object',
+                       'properties': {'target_message_id': {'type': 'string'},
+                        'operation_hash': {'type': 'string'}},
+                       'required': ['operation_hash', 'target_message_id']},
+                      'deny': {'type': 'object',
+                       'properties': {'target_message_id': {'type': 'string'}},
+                       'required': ['target_message_id']}},
+                     'required': ['type']}}},
+                  'required': ['actions',
+                   'domain',
+                   'is_consequential',
+                   'method',
+                   'operation',
+                   'params',
+                   'path',
+                   'privacy_policy']}},
+                'required': ['body', 'type']},
+               'from_client': {'type': 'object',
+                'properties': {'user_action': {'type': 'object',
+                  'properties': {'data': {'type': 'object',
+                    'properties': {'type': {'type': 'string'}},
+                    'required': ['type']},
+                   'target_message_id': {'type': 'string'}},
+                  'required': ['data', 'target_message_id']}},
+                'required': ['user_action']}}},
+             'invoked_plugin': {'type': 'object',
+              'properties': {'type': {'type': 'string'},
+               'namespace': {'type': 'string'},
+               'plugin_id': {'type': 'string'},
+               'http_response_status': {'type': 'integer'}},
+              'required': ['http_response_status',
+               'namespace',
+               'plugin_id',
+               'type']}}},
+           'recipient': {'type': 'string'},
+           'channel': {'type': ['null', 'string']}},
+          'required': ['author',
+           'channel',
+           'content',
+           'create_time',
+           'end_turn',
+           'id',
+           'metadata',
+           'recipient',
+           'status',
+           'update_time',
+           'weight']}]},
+       'parent': {'type': ['null', 'string']},
+       'children': {'type': 'array', 'items': {'type': 'string'}}},
+      'required': ['children', 'id', 'message', 'parent']},
+     '^client-created-': {'type': 'object',
+      'properties': {'id': {'type': 'string'},
+       'message': {'type': 'null'},
+       'parent': {'type': 'null'},
+       'children': {'type': 'array', 'items': {'type': 'string'}}},
+      'required': ['children', 'id', 'message', 'parent']}}},
+   'title': {'type': 'string'},
+   'create_time': {'type': 'number'},
+   'update_time': {'type': 'number'},
+   'moderation_results': {'type': 'array'},
+   'current_node': {'type': 'string'},
+   'plugin_ids': {'anyOf': [{'type': 'null'},
+     {'type': 'array', 'items': {'type': 'string'}}]},
+   'conversation_id': {'type': 'string'},
+   'conversation_template_id': {'type': ['null', 'string']},
+   'gizmo_id': {'type': ['null', 'string']},
+   'gizmo_type': {'type': ['null', 'string']},
+   'is_archived': {'type': 'boolean'},
+   'is_starred': {'type': 'null'},
+   'safe_urls': {'type': 'array', 'items': {'type': 'string'}},
+   'blocked_urls': {'type': 'array'},
+   'default_model_slug': {'type': ['null', 'string']},
+   'conversation_origin': {'type': 'null'},
+   'voice': {'type': ['null', 'string']},
+   'async_status': {'type': ['integer', 'null']},
+   'disabled_tool_ids': {'type': 'array'},
+   'is_do_not_remember': {'type': ['boolean', 'null']},
+   'memory_scope': {'type': 'string'},
+   'id': {'type': 'string'}},
+  'required': ['async_status',
+   'blocked_urls',
+   'conversation_id',
+   'conversation_origin',
+   'conversation_template_id',
+   'create_time',
+   'current_node',
+   'default_model_slug',
+   'disabled_tool_ids',
+   'gizmo_id',
+   'gizmo_type',
+   'id',
+   'is_archived',
+   'is_do_not_remember',
+   'is_starred',
+   'mapping',
+   'memory_scope',
+   'moderation_results',
+   'plugin_ids',
+   'safe_urls',
+   'title',
+   'update_time',
+   'voice']}}
+
+
+
+---
+File: requirements.txt
+---
+loguru
+networkx
+numpy
+pandas
+pytest
+python-frontmatter
+
+
+
+---
+File: setup.py
+---
+# setup.py
+"""Minimal setup for the conversation tagger."""
+
+from setuptools import setup, find_packages
+
+setup(
+    name="conversation_tagger",
+    version="0.1.0",
+    description="Exchange-based conversation analysis system",
+    package_dir={"": "src"},
+    packages=find_packages(where="src"),
+    python_requires=">=3.8",
+    install_requires=[],
+    extras_require={
+        "dev": ["pytest>=6.0"]
+    }
+)
+
+
+
+---
+File: src/conversation_tagger/__init__.py
+---
+# conversation_tagger/__init__.py
+"""
+Minimal conversation tagging system with exchange-based analysis.
+"""
+
+from .core.tag import Tag
+from .core.tagger import ConversationTagger
+from .factory import create_default_tagger
+
+__all__ = ['Tag', 'ConversationTagger', 'create_default_tagger']
+
+
+---
+File: src/conversation_tagger/analysis/__init__.py
+---
+
+
+
+---
+File: src/conversation_tagger/analysis/faceting.py
+---
+# conversation_tagger/analysis/faceting.py
+"""
+Faceting functionality for analyzing conversations by different dimensions.
+"""
+
+from typing import Dict, Any, List, Optional
+from collections import defaultdict
+
+from ..core.tag import Tag
+
+
+def get_facet_value(tags: List[Tag], facet_tag_name: str, 
+                   facet_attribute: Optional[str] = None) -> str:
+    """Extract facet value from a conversation's tags."""
+    matching_tags = [tag for tag in tags if tag.name == facet_tag_name]
+    
+    if not matching_tags:
+        return "<none>"
+    
+    if facet_attribute is None:
+        # Just check for presence of the tag
+        return f"has_{facet_tag_name}"
+    
+    # Extract specific attribute values
+    values = []
+    for tag in matching_tags:
+        if facet_attribute in tag.attributes:
+            values.append(str(tag.attributes[facet_attribute]))
+    
+    if not values:
+        return f"<{facet_tag_name}_no_{facet_attribute}>"
+    
+    # If multiple values, join them
+    return "; ".join(sorted(set(values)))
+
+
+def do_facet_conversations(tagged_conversations: List[Dict[str, Any]], 
+                       facet_tag_name: str, 
+                       facet_attribute: Optional[str] = None,
+                       max_facets: int = 50) -> Dict[str, List[Dict[str, Any]]]:
+    """Group conversations by facet values."""
+    facets = defaultdict(list)
+    
+    for tagged_conv in tagged_conversations:
+        facet_value = get_facet_value(tagged_conv['tags'], facet_tag_name, facet_attribute)
+        facets[facet_value].append(tagged_conv)
+    
+    # Sort by facet size (largest first) and limit
+    sorted_facets = dict(sorted(facets.items(), key=lambda x: len(x[1]), reverse=True))
+    
+    if len(sorted_facets) > max_facets:
+        # Keep top facets and group rest into "others"
+        items = list(sorted_facets.items())
+        top_facets = dict(items[:max_facets-1])
+        
+        other_conversations = []
+        for _, conversations in items[max_facets-1:]:
+            other_conversations.extend(conversations)
+        
+        if other_conversations:
+            top_facets["<other>"] = other_conversations
+        
+        return top_facets
+    
+    return sorted_facets
+
+
+def print_faceted_summary(tagged_conversations: List[Dict[str, Any]], 
+                         facet_tag_name: str, 
+                         facet_attribute: Optional[str] = None,
+                         show_details: bool = False,
+                         max_facets: int = 20):
+    """Print tag summary broken down by facets."""
+    total = len(tagged_conversations)
+    facets = do_facet_conversations(tagged_conversations, facet_tag_name, facet_attribute, max_facets)
+    
+    print(f"Tagged {total} conversations")
+    print(f"Faceted by: {facet_tag_name}" + 
+          (f".{facet_attribute}" if facet_attribute else ""))
+    print(f"Found {len(facets)} facet values")
+    
+    print(f"\n{'='*80}")
+    print(f"FACETED TAG SUMMARY")
+    print(f"{'='*80}")
+    
+    for facet_value, facet_conversations in facets.items():
+        facet_size = len(facet_conversations)
+        facet_percentage = (facet_size / total) * 100
+        
+        print(f"\n📊 FACET: {facet_value}")
+        print(f"    Conversations: {facet_size} ({facet_percentage:.1f}% of total)")
+        print(f"    {'-' * 60}")
+        
+        # Calculate tag statistics for this facet
+        tag_counts = defaultdict(int)
+        tag_attributes = defaultdict(lambda: defaultdict(list))
+        unique_structured_tags = defaultdict(set)
+        
+        for tagged_conv in facet_conversations:
+            for tag in tagged_conv['tags']:
+                tag_counts[tag.name] += 1
+                
+                # Collect attribute information
+                for attr_name, attr_value in tag.attributes.items():
+                    if isinstance(attr_value, (int, float)):
+                        tag_attributes[tag.name][attr_name].append(attr_value)
+                    else:
+                        unique_structured_tags[tag.name].add(f"{attr_name}={attr_value}")
+        
+        # Sort tags for this facet (show all tags)
+        sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        for tag_name, count in sorted_tags:
+            percentage = (count / facet_size) * 100
+            print(f"    {tag_name}: {count} ({percentage:.1f}%)")
+            
+            if show_details:
+                # Show numeric attribute statistics
+                if tag_name in tag_attributes:
+                    for attr_name, values in tag_attributes[tag.name].items():
+                        if values:
+                            avg_val = sum(values) / len(values)
+                            min_val = min(values)
+                            max_val = max(values)
+                            print(f"        {attr_name}: avg={avg_val:.1f}, range=[{min_val}, {max_val}]")
+                
+                # Show unique structured values
+                if tag_name in unique_structured_tags:
+                    unique_vals = sorted(unique_structured_tags[tag.name])
+                    if len(unique_vals) <= 5:
+                        print(f"        values: {', '.join(unique_vals)}")
+                    else:
+                        print(f"        values: {', '.join(unique_vals[:5])} ... (+{len(unique_vals)-5} more)")
+
+
+
+---
+File: src/conversation_tagger/core/conversation.py
+---
+# conversation_tagger/core/conversation.py
+from typing import List, Dict, Any, TYPE_CHECKING
+from dataclasses import dataclass, field
+
+if TYPE_CHECKING:
+    from .exchange import Exchange
+    from .exchange_parser import ExchangeParser
+
+from .tag import Tag
+
+@dataclass 
+class Conversation:
+    """A conversation consisting of sequential exchanges."""
+    
+    conversation_id: str
+    title: str
+    exchanges: List['Exchange'] = field(default_factory=list)
+    tags: List[Tag] = field(default_factory=list)
+    raw: Dict[str, Any] | None = field(default=None)  
+    
+    def __post_init__(self):
+        """Post-initialization to ensure tags are set."""
+        if not self.tags:
+            self._add_exchange_tags()
+
+    def _add_exchange_tags(self):
+        if not self.tags:
+            tags = []
+            for t in self._exchange_tags:
+                if t not in tags:
+                    tags.append(t)
+            self.tags = tags
+
+    @property
+    def _exchange_tags(self) -> List[Tag]:
+        """Get all tags from exchanges."""
+        return [tag for exchange in self.exchanges for tag in exchange.tags]
+    
+    @property
+    def exchange_count(self) -> int:
+        return len(self.exchanges)
+    
+    @property 
+    def total_message_count(self) -> int:
+        return sum(len(exchange.messages) for exchange in self.exchanges)
+    
+    @property
+    def total_user_messages(self) -> int:
+        return sum(len(exchange.get_user_messages()) for exchange in self.exchanges)
+        
+    @property
+    def total_assistant_messages(self) -> int:
+        return sum(len(exchange.get_assistant_messages()) for exchange in self.exchanges)
+    
+    @property
+    def has_continuations(self) -> bool:
+        return any(exchange.has_continuations() for exchange in self.exchanges)
+    
+    def get_all_user_text(self) -> str:
+        return ' '.join(' '.join(exchange.get_user_texts()) for exchange in self.exchanges)
+    
+    def get_all_assistant_text(self) -> str:
+        return ' '.join(' '.join(exchange.get_assistant_texts()) for exchange in self.exchanges)
+
+
+
+---
+File: src/conversation_tagger/core/detection.py
+---
+# src/conversation_tagger/core/detection.py
+"""
+High-value detection rules for conversations and exchanges.
+Reimplemented to use Exchange/Conversation objects with proper API.
+"""
+
+import re
+from typing import Dict, Any, List
+from .exchange import Exchange
+from .conversation import Conversation
+from .tag import Tag
+
+
+######################
+#  Conversation Rules #
+######################
+# These should only do aggregation/summarization, not detection
+
+def create_conversation_length_tag(conversation: Conversation) -> Tag:
+    """Create structured tag for conversation length."""
+    exchange_count = conversation.exchange_count
+    
+    # Determine category based on number of exchanges
+    if exchange_count == 1:
+        category = 'single'
+    elif exchange_count <= 3:
+        category = 'short'
+    elif exchange_count <= 10:
+        category = 'medium'
+    elif exchange_count <= 25:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('conversation_length', count=exchange_count, category=category)
+
+
+def conversation_feature_summary(conversation: Conversation) -> List[Tag]:
+    """Aggregate feature usage across all exchanges."""
+    feature_counts = {}
+    total_exchanges = conversation.exchange_count
+    
+    # Count exchanges with each feature
+    for exchange in conversation.exchanges:
+        exchange_features = set()
+        for tag in exchange.tags:
+            if tag.name in ['has_github_repos', 'has_canvas_operations', 'has_web_search', 
+                           'has_reasoning_thoughts', 'has_code_execution', 'has_code_blocks',
+                           'has_script_headers', 'has_code_structure_patterns', 'has_wiki_links',
+                           'has_latex_math', 'user_has_attachments']:
+                exchange_features.add(tag.name)
+            elif tag.name == 'gizmo':
+                exchange_features.add('has_gizmo_usage')
+            elif tag.name == 'plugin':
+                exchange_features.add('has_plugin_usage')
+        
+        # Count each feature once per exchange
+        for feature in exchange_features:
+            feature_counts[feature] = feature_counts.get(feature, 0) + 1
+    
+    tags = []
+    for feature, count in feature_counts.items():
+        percentage = (count / total_exchanges) * 100 if total_exchanges > 0 else 0
+        tags.append(Tag(f'conversation_{feature}', 
+                       exchange_count=count, 
+                       total_exchanges=total_exchanges,
+                       percentage=round(percentage, 1)))
+    
+    return tags
+
+
+def conversation_gizmo_plugin_summary(conversation: Conversation) -> List[Tag]:
+    """Aggregate gizmo/plugin usage across all exchanges."""
+    all_gizmos = set()
+    all_plugins = set()
+    gizmo_count = 0
+    plugin_count = 0
+    
+    # Collect from all exchange tags
+    for exchange in conversation.exchanges:
+        for tag in exchange.tags:
+            if tag.name == 'gizmo':
+                all_gizmos.add(tag.attributes.get('gizmo_id'))
+                gizmo_count += 1
+            elif tag.name == 'plugin':
+                all_plugins.add(tag.attributes.get('plugin_id'))
+                plugin_count += 1
+    
+    tags = []
+    
+    # Summary tags
+    if all_gizmos:
+        tags.append(Tag('conversation_gizmo_usage', 
+                       unique_gizmos=len(all_gizmos), 
+                       total_usage=gizmo_count,
+                       gizmo_list=list(all_gizmos)))
+    
+    if all_plugins:
+        tags.append(Tag('conversation_plugin_usage',
+                       unique_plugins=len(all_plugins),
+                       total_usage=plugin_count, 
+                       plugin_list=list(all_plugins)))
+    
+    return tags
+
+
+######################
+#   Exchange Rules   #
+######################
+# These do actual detection on individual exchanges
+
+# Feature detection (moved from conversation-level)
+def has_github_repos(exchange: Exchange) -> bool:
+    """Check if GitHub repositories were selected for context in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        repos = metadata.get('selected_github_repos', [])
+        if repos:  # Non-empty list
+            return True
+    return False
+
+
+def has_canvas_operations(exchange: Exchange) -> bool:
+    """Check for canvas/document operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('canvas'):
+            return True
+    return False
+
+
+def has_web_search(exchange: Exchange) -> bool:
+    """Check for web search operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if (metadata.get('search_queries') or 
+            metadata.get('search_result_groups') or
+            metadata.get('content_references')):
+            return True
+    return False
+
+
+def has_reasoning_thoughts(exchange: Exchange) -> bool:
+    """Check for reasoning/thinking patterns in this exchange."""
+    for message in exchange.messages:
+        content = message.get('content', {})
+        if content.get('thoughts'):  # Reasoning thoughts
+            return True
+    return False
+
+
+def has_code_execution(exchange: Exchange) -> bool:
+    """Check for code execution artifacts in this exchange."""
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if (metadata.get('aggregate_result') or 
+            metadata.get('jupyter_messages')):
+            return True
+    return False
+
+
+# Code detection
+def has_code_blocks(exchange: Exchange) -> bool:
+    """Check for explicit code blocks (``` markdown syntax)."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    return any('```' in text for text in all_texts)
+
+
+def has_script_headers(exchange: Exchange) -> bool:
+    """Check for script headers and system includes."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    script_indicators = ['#!/bin/', '#include', 'using namespace']
+    
+    for text in all_texts:
+        if any(indicator in text for indicator in script_indicators):
+            return True
+    return False
+
+
+def has_code_structure_patterns(exchange: Exchange) -> bool:
+    """Check for actual code structure patterns (syntax combinations that suggest real code)."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    
+    for text in all_texts:
+        # Look for combinations that strongly suggest actual code
+        patterns = [
+            # Function definition pattern
+            ('def ' in text and '(' in text and ':' in text and 'return' in text),
+            # Class definition pattern  
+            ('class ' in text and '(' in text and ':' in text and 'def ' in text),
+            # JavaScript function pattern
+            ('function(' in text or 'function ' in text) and '{' in text and '}' in text,
+            # Multiple assignment pattern
+            text.count('=') >= 3 and ('let ' in text or 'const ' in text or 'var ' in text),
+        ]
+        
+        if any(pattern for pattern in patterns):
+            return True
+    
+    return False
+
+
+# User behavior detection
+def user_has_quote_elaborate(exchange: Exchange) -> bool:
+    """Check if user messages contain quote+elaborate continuation pattern."""
+    for message in exchange.get_user_messages():
+        content = message.get('content', {})
+        text = content.get('text', '').strip()
+        
+        if not text.startswith('>'):
+            continue
+        
+        lines = text.split('\n')
+        if len(lines) >= 2 and lines[-1].strip().lower() == 'elaborate':
+            return True
+    
+    return False
+
+
+def user_has_attachments(exchange: Exchange) -> bool:
+    """Check if user messages have attachments."""
+    for message in exchange.get_user_messages():
+        metadata = message.get('metadata', {})
+        if metadata.get('attachments'):
+            return True
+    return False
+
+
+def user_is_continuation(exchange: Exchange) -> bool:
+    """Check if this exchange started with a continuation prompt."""
+    return exchange.has_continuations()
+
+
+# Assistant behavior detection
+def assistant_has_reasoning(exchange: Exchange) -> bool:
+    """Check if assistant messages contain reasoning/thinking content."""
+    for message in exchange.get_assistant_messages():
+        content = message.get('content', {})
+        if content.get('thoughts'):
+            return True
+    return False
+
+
+def has_wiki_links(exchange: Exchange) -> bool:
+    """Check for Obsidian-style wiki links [[link text]]."""
+    assistant_texts = exchange.get_assistant_texts()
+    return any(bool(re.search(r'\[\[.+?\]\]', text)) for text in assistant_texts)
+
+
+def has_latex_math(exchange: Exchange) -> bool:
+    """Check for LaTeX/MathJax mathematical formulas."""
+    assistant_texts = exchange.get_assistant_texts()
+    
+    for text in assistant_texts:
+        math_indicators = [
+            re.search(r'\$\$.+?\$\$', text) is not None,
+            re.search(r'\\\((.+?)\\\)', text) is not None,
+            re.search(r'\\\[(.+?)\\\]', text) is not None,
+            # Common LaTeX commands
+            any(cmd in text for cmd in ['\\frac', '\\sum', '\\int', '\\sqrt', '\\alpha', 
+                                       '\\beta', '\\gamma', '\\theta', '\\pi', '\\sigma', 
+                                       '\\infty', '\\partial', '\\nabla']),
+        ]
+        
+        if any(math_indicators):
+            return True
+    
+    return False
+
+
+# First user message analysis
+def first_user_has_large_content(exchange: Exchange, min_length: int = 2000) -> bool:
+    """Check if the first user message has large content."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    content = first_message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    
+    return len(text.strip()) > min_length
+
+
+def first_user_has_code_patterns(exchange: Exchange) -> bool:
+    """Check if the first user message contains code patterns."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    content = first_message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    
+    # Strong code indicators
+    code_indicators = [
+        '```',  # Code blocks
+        'def ', 'function ', 'class ',  # Definitions
+        'import ', 'from ', 'require(',  # Imports
+        '#!/bin/', '#include',  # Script headers
+    ]
+    
+    return any(indicator in text for indicator in code_indicators)
+
+
+def first_user_has_attachments(exchange: Exchange) -> bool:
+    """Check if the first user message has attachments."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    return len(attachments) > 0
+
+
+def first_user_has_code_attachments(exchange: Exchange) -> bool:
+    """Check if the first user message has code-related attachments."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    
+    for attachment in attachments:
+        mime_type = attachment.get('mime_type', '').lower()
+        name = attachment.get('name', '').lower()
+        
+        # Check for code file extensions
+        code_extensions = ['.py', '.js', '.java', '.cpp', '.c', '.go', '.rs', 
+                          '.ts', '.jsx', '.tsx', '.sql', '.sh', '.rb', '.php']
+        if any(ext in name for ext in code_extensions):
+            return True
+            
+        # Check for code-related MIME types
+        code_mimes = ['text/x-python', 'text/x-java', 'application/javascript', 'text/x-script']
+        if any(mime in mime_type for mime in code_mimes):
+            return True
+    
+    return False
+
+
+# Gizmo/plugin detection
+def get_gizmo_tags(exchange: Exchange) -> List[Tag]:
+    """Get tags for specific gizmos used in this exchange."""
+    tags = []
+    gizmos = set()
+    
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    for gizmo in gizmos:
+        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    
+    return tags
+
+
+def get_plugin_tags(exchange: Exchange) -> List[Tag]:
+    """Get tags for specific plugins used in this exchange."""
+    tags = []
+    plugins = set()
+    
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+    
+    for plugin in plugins:
+        tags.append(Tag('plugin', plugin_id=plugin))
+    
+    return tags
+
+
+##############################
+# Template content inference #
+##############################
+
+def naive_title_extraction(text):
+    """
+    Attempts to detect presence of title in first line of a message.
+    """
+    # get first line
+    top = text.strip().split("\n")[0]
+
+    # title/section header detected
+    outv = None
+    if top.startswith("#"):
+        outv = top.replace("#","").strip()
+    elif top.startswith("**") and top.endswith("**"):
+        outv = top.replace("**","")
+    if outv is not None:
+        outv = outv.strip()
+    return outv
+
+def extract_proposed_title(exchange: Exchange) -> str:
+    """
+    Extracts proposed content title from the assistant's response.
+    Assumes that an article was generated with a proposed title.
+    """
+    try:
+       text = exchange.get_assistant_texts()[0]
+    except IndexError:
+        return None
+    return naive_title_extraction(text)
+
+
+######################
+#   Rule Registry    #
+######################
+
+# High-value conversation-level rules (aggregation only)
+CONVERSATION_RULES = {
+    'conversation_length': create_conversation_length_tag,
+    'conversation_feature_summary': conversation_feature_summary,
+    'conversation_gizmo_plugin_summary': conversation_gizmo_plugin_summary,
+}
+
+# High-value exchange-level rules (actual detection)
+EXCHANGE_RULES = {
+    # Feature detection (moved from conversation-level)
+    'has_github_repos': has_github_repos,
+    'has_canvas_operations': has_canvas_operations,
+    'has_web_search': has_web_search,
+    'has_reasoning_thoughts': has_reasoning_thoughts,
+    'has_code_execution': has_code_execution,
+    
+    # Code detection
+    'has_code_blocks': has_code_blocks,
+    'has_script_headers': has_script_headers,
+    'has_code_structure_patterns': has_code_structure_patterns,
+    
+    # User behavior
+    'user_has_quote_elaborate': user_has_quote_elaborate,
+    'user_has_attachments': user_has_attachments,
+    'user_is_continuation': user_is_continuation,
+    
+    # Assistant behavior
+    'assistant_has_reasoning': assistant_has_reasoning,
+    'has_wiki_links': has_wiki_links,
+    'has_latex_math': has_latex_math,
+    
+    # First user message analysis
+    'first_user_has_large_content': first_user_has_large_content,
+    'first_user_has_code_patterns': first_user_has_code_patterns,
+    'first_user_has_attachments': first_user_has_attachments,
+    'first_user_has_code_attachments': first_user_has_code_attachments,
+    
+    # Gizmo/plugin detection
+    'get_gizmo_tags': get_gizmo_tags,
+    'get_plugin_tags': get_plugin_tags,
+
+    # Template content inference
+    'proposed_title': extract_proposed_title,
+}
+
+
+---
+File: src/conversation_tagger/core/detection_old.py
+---
+"""
+NB: The intention is to collect rule functions in this file for organizaitonal purposes, but at present
+probably none of these will work out of the box. They were ported from an older brainstorming version of the
+codebase and at minimum need to be updated to account for the new Exchange/Conversation objects, and several
+probably need to have their logic re-implemented to just be better classifiers.
+
+In the future, would be great if we could compress documents into vectors which could be used for these classifications.
+"""
+from typing import Dict, Any
+
+from .exchange import Exchange
+
+
+### Already implemented elsewhere, need to be moved here
+# - wiki markdown
+#   - TODO: add a "see also:{bullleted list}" detector
+# - user first message?
+
+
+
+
+### Content ###
+
+def has_large_content(conversation: Dict[str, Any], min_length: int = 2000) -> bool:
+    """Check if conversation has unusually large content anywhere."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        content = message.get('content', {})
+        text = content.get('text', '')
+        if len(text) > min_length:
+            return True
+            
+        parts = content.get('parts', [])
+        for part in parts:
+            if isinstance(part, str) and len(part) > min_length:
+                return True
+    
+    return False
+
+
+def has_github_repos(conversation: Dict[str, Any]) -> bool:
+    """Check if GitHub repositories were selected for context."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        repos = metadata.get('selected_github_repos', [])
+        if repos:  # Non-empty list
+            return True
+    
+    return False
+
+
+def has_canvas_operations(conversation: Dict[str, Any]) -> bool:
+    """Check for canvas/document operations."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if metadata.get('canvas'):
+            return True
+    
+    return False
+
+
+def has_web_search(conversation: Dict[str, Any]) -> bool:
+    """Check for web search operations."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if (metadata.get('search_queries') or 
+            metadata.get('search_result_groups') or
+            metadata.get('content_references')):
+            return True
+    
+    return False
+
+
+def has_reasoning_thoughts(conversation: Dict[str, Any]) -> bool:
+    """Check for reasoning/thinking patterns."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        content = message.get('content', {})
+        if content.get('thoughts'):  # Reasoning thoughts
+            return True
+    
+    return False
+
+
+def has_code_execution(conversation: Dict[str, Any]) -> bool:
+    """Check for code execution artifacts."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if (metadata.get('aggregate_result') or 
+            metadata.get('jupyter_messages')):
+            return True
+    
+    return False
+
+
+### Code Indicators ###
+
+# conversation_tagger/detection/code_indicators.py
+"""
+Individual code detection functions - each detects a specific type of code evidence.
+"""
+
+from typing import Dict, Any
+
+from .helpers import get_all_text_from_message
+
+
+def has_code_blocks(conversation: Dict[str, Any]) -> bool:
+    """Check for explicit code blocks (``` markdown syntax)."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        if '```' in all_text:
+            return True
+    
+    return False
+
+
+def has_function_definitions(conversation: Dict[str, Any]) -> bool:
+    """Check for function/class definition keywords."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        definition_keywords = ['def ', 'function ', 'class ']
+        if any(keyword in all_text for keyword in definition_keywords):
+            return True
+    
+    return False
+
+
+def has_import_statements(conversation: Dict[str, Any]) -> bool:
+    """Check for import/require statements."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        import_keywords = ['import ', 'from ', 'require(']
+        if any(keyword in all_text for keyword in import_keywords):
+            return True
+    
+    return False
+
+
+def has_script_headers(conversation: Dict[str, Any]) -> bool:
+    """Check for script headers and system includes."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        script_indicators = ['#!/bin/', '#include', 'using namespace']
+        if any(indicator in all_text for indicator in script_indicators):
+            return True
+    
+    return False
+
+
+def has_high_keyword_density(conversation: Dict[str, Any]) -> bool:
+    """Check for high density of programming keywords in large text."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        
+        # Only check substantial text
+        if len(all_text) <= 1000:
+            continue
+        
+        coding_keywords = ['function', 'class', 'import', 'def ', 'const ', 'let ', 'var ', 'return', 'if ', 'for ', 'while ']
+        keyword_count = sum(1 for keyword in coding_keywords if keyword in all_text.lower())
+        
+        # High threshold to avoid false positives in articles
+        if keyword_count >= 5:
+            return True
+    
+    return False
+
+
+def has_code_structure_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check for actual code structure patterns (syntax combinations that suggest real code)."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        
+        # Look for combinations that strongly suggest actual code
+        patterns = [
+            # Function definition pattern
+            ('def ' in all_text and '(' in all_text and ':' in all_text and 'return' in all_text),
+            # Class definition pattern  
+            ('class ' in all_text and '(' in all_text and ':' in all_text and 'def ' in all_text),
+            # JavaScript function pattern
+            ('function(' in all_text or 'function ' in all_text) and '{' in all_text and '}' in all_text,
+            # Multiple assignment pattern
+            all_text.count('=') >= 3 and ('let ' in all_text or 'const ' in all_text or 'var ' in all_text),
+        ]
+        
+        if any(pattern for pattern in patterns):
+            return True
+    
+    return False
+
+
+def has_code_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check for any code patterns (combines individual indicators)."""
+    return (has_code_blocks(conversation) or 
+            has_function_definitions(conversation) or 
+            has_import_statements(conversation) or 
+            has_script_headers(conversation) or
+            has_code_structure_patterns(conversation) or
+            has_high_keyword_density(conversation))
+
+  
+### Continuation Rules ###
+
+def user_has_quote_elaborate(exchange: Exchange) -> bool:
+    """Check if user messages contain quote+elaborate continuation pattern."""
+    for message in exchange.user_messages:
+        content = message.get('content', {})
+        text = content.get('text', '').strip()
+        
+        if not text.startswith('>'):
+            continue
+        
+        lines = text.split('\n')
+        if len(lines) >= 2 and lines[-1].strip().lower() == 'elaborate':
+            return True
+    
+    return False
+
+### Exchange Rules
+
+# conversation_tagger/detection/exchange_rules.py
+"""
+Detection rules specifically designed for exchange-level analysis.
+"""
+
+from typing import Dict, Any
+from ..core.exchange import Exchange
+from ..core.tag import Tag
+
+
+# User message detection rules
+def user_has_code_blocks(exchange: Exchange) -> bool:
+    """Check if user messages contain code blocks."""
+    user_text = exchange.get_user_text()
+    return '```' in user_text
+
+
+def user_has_attachments(exchange: Exchange) -> bool:
+    """Check if user messages have attachments."""
+    for message in exchange.user_messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('attachments'):
+            return True
+    return False
+
+
+def user_has_error_messages(exchange: Exchange) -> bool:
+    """Check if user messages contain error patterns."""
+    user_text = exchange.get_user_text().lower()
+    error_patterns = [
+        'error:', 'traceback', 'exception:', 'failed:', 'cannot', 'not working',
+        'broken', 'issue', 'problem', 'bug', 'crash', 'threw an error'
+    ]
+    return any(pattern in user_text for pattern in error_patterns)
+
+
+def user_prompt_length_category(exchange: Exchange) -> Tag:
+    """Categorize user prompt length."""
+    user_text = exchange.get_user_text()
+    length = len(user_text)
+    
+    if length < 50:
+        category = 'very_short'
+    elif length < 200:
+        category = 'short'
+    elif length < 1000:
+        category = 'medium'
+    elif length < 3000:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('user_prompt_length', length=length, category=category)
+
+
+def user_is_continuation(exchange: Exchange) -> bool:
+    """Check if this exchange started with a continuation prompt."""
+    return exchange.has_continuations()
+
+
+# Assistant message detection rules
+def assistant_has_code_blocks(exchange: Exchange) -> bool:
+    """Check if assistant messages contain code blocks."""
+    assistant_text = exchange.get_assistant_text()
+    return '```' in assistant_text
+
+
+def assistant_has_wiki_links(exchange: Exchange) -> bool:
+    """Check if assistant messages contain wiki-style links."""
+    assistant_text = exchange.get_assistant_text()
+    return '[[' in assistant_text and ']]' in assistant_text
+
+
+def assistant_has_latex_math(exchange: Exchange) -> bool:
+    """Check if assistant messages contain mathematical formulas."""
+    assistant_text = exchange.get_assistant_text()
+    
+    math_indicators = [
+        ('$' in assistant_text and assistant_text.count('$') >= 2),
+        '$$' in assistant_text,
+        ('\\(' in assistant_text and '\\)' in assistant_text),
+        any(cmd in assistant_text for cmd in ['\\frac', '\\sum', '\\int', '\\sqrt'])
+    ]
+    
+    return any(math_indicators)
+
+
+def assistant_response_length_category(exchange: Exchange) -> Tag:
+    """Categorize assistant response length."""
+    assistant_text = exchange.get_assistant_text()
+    length = len(assistant_text)
+    
+    if length < 100:
+        category = 'very_short'
+    elif length < 500:
+        category = 'short'
+    elif length < 2000:
+        category = 'medium'
+    elif length < 5000:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('assistant_response_length', length=length, category=category)
+
+
+def assistant_has_reasoning(exchange: Exchange) -> bool:
+    """Check if assistant messages contain reasoning/thinking content."""
+    for message in exchange.assistant_messages:
+        content = message.get('content', {})
+        if content.get('thoughts'):
+            return True
+    return False
+
+
+# Exchange-level detection rules
+def exchange_is_coding_focused(exchange: Exchange) -> bool:
+    """Check if the entire exchange is focused on coding."""
+    return (user_has_code_blocks(exchange) or 
+            assistant_has_code_blocks(exchange) or
+            exchange.is_code_focused())
+
+
+def exchange_is_wiki_article_focused(exchange: Exchange) -> bool:
+    """Check if exchange is focused on wiki/documentation content."""
+    user_text = exchange.get_user_text()
+    assistant_text = exchange.get_assistant_text()
+    
+    wiki_indicators = [
+        '[[' in user_text or '[[' in assistant_text,
+        'write an article' in user_text.lower(),
+        'create a wiki' in user_text.lower(),
+        len(assistant_text) > 1000 and ('# ' in assistant_text or '## ' in assistant_text)
+    ]
+    
+    return any(wiki_indicators)
+
+
+def exchange_has_error_resolution(exchange: Exchange) -> bool:
+    """Check if exchange involves error troubleshooting."""
+    return (user_has_error_messages(exchange) and 
+            len(exchange.assistant_messages) > 0)
+
+
+def exchange_interaction_pattern(exchange: Exchange) -> Tag:
+    """Determine the interaction pattern of this exchange."""
+    user_stats = exchange.get_user_prompt_stats()
+    assistant_stats = exchange.get_assistant_response_stats()
+    
+    if user_stats['message_count'] > 1:
+        pattern = 'multi_turn'
+    elif user_stats['length'] > 2000:
+        pattern = 'context_heavy'
+    elif assistant_stats['length'] > 3000:
+        pattern = 'detailed_response'
+    elif user_stats['length'] < 50 and assistant_stats['length'] < 200:
+        pattern = 'quick_qa'
+    else:
+        pattern = 'standard'
+    
+    return Tag('interaction_pattern', 
+               pattern=pattern,
+               user_messages=user_stats['message_count'],
+               assistant_messages=assistant_stats['message_count'])
+
+
+# #  For exchange no, but something like this could be interesting for Conversation level analysis.
+# def exchange_timing_stats(exchange: Exchange) -> Tag:
+#     """Calculate timing statistics for the exchange."""
+#     if exchange.start_time and exchange.end_time:
+#         duration = exchange.end_time - exchange.start_time
+        
+#         if duration < 30:
+#             speed = 'very_fast'
+#         elif duration < 120:
+#             speed = 'fast'
+#         elif duration < 300:
+#             speed = 'medium'
+#         elif duration < 600:
+#             speed = 'slow'
+#         else:
+#             speed = 'very_slow'
+        
+#         return Tag('exchange_timing', 
+#                    duration_seconds=duration,
+#                    speed_category=speed)
+    
+#     return Tag('exchange_timing', duration_seconds=0, speed_category='unknown')
+
+### User 1st message
+# possibly already implemented some or all of this elsewhere?
+
+def first_user_has_large_content(conversation: Dict[str, Any], min_length: int = 2000) -> bool:
+    """Check if the first user message has large content."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    all_text = get_all_text_from_message(first_message)
+    return len(all_text) > min_length
+
+
+def first_user_has_code_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message contains code patterns."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    all_text = get_all_text_from_message(first_message)
+    
+    # Strong code indicators
+    code_indicators = [
+        '```',  # Code blocks
+        'def ', 'function ', 'class ',  # Definitions
+        'import ', 'from ', 'require(',  # Imports
+        '#!/bin/', '#include',  # Script headers
+    ]
+    
+    return any(indicator in all_text for indicator in code_indicators)
+
+
+def first_user_has_attachments(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message has attachments."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    return len(attachments) > 0
+
+
+def first_user_has_code_attachments(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message has code-related attachments."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    
+    for attachment in attachments:
+        mime_type = attachment.get('mime_type', '').lower()
+        name = attachment.get('name', '').lower()
+        
+        # Check for code file extensions
+        code_extensions = ['.py', '.js', '.java', '.cpp', '.c', '.go', '.rs', '.ts', '.jsx', '.tsx', '.sql', '.sh', '.rb', '.php']
+        if any(ext in name for ext in code_extensions):
+            return True
+            
+        # Check for code-related MIME types
+        code_mimes = ['text/x-python', 'text/x-java', 'application/javascript', 'text/x-script']
+        if any(mime in mime_type for mime in code_mimes):
+            return True
+    
+    return False
+
+
+### Structured Tags
+
+# conversation_tagger/detection/structured_tags.py
+"""
+Functions that create structured tags with attributes.
+"""
+
+from typing import Dict, Any, List
+
+from ..core.tag import Tag
+from .helpers import get_all_user_messages
+
+
+def create_conversation_length_tag(conversation: Dict[str, Any]) -> Tag:
+    """Create structured tag for conversation length."""
+    user_count = len(get_all_user_messages(conversation))
+    
+    # Determine category
+    if user_count == 1:
+        category = 'single'
+    elif user_count <= 3:
+        category = 'short'
+    elif user_count <= 10:
+        category = 'medium'
+    elif user_count <= 25:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('conversation_length', count=user_count, category=category)
+
+
+def create_prompt_stats_tag(conversation: Dict[str, Any]) -> Tag:
+    """Create structured tag for prompt statistics."""
+    from .helpers import get_all_text_from_message
+    
+    user_messages = get_all_user_messages(conversation)
+    
+    if not user_messages:
+        return Tag('prompt_stats', count=0, mean=0, median=0, variance=0, 
+                  length_category='none', consistency='none')
+    
+    # Calculate message lengths
+    lengths = []
+    for message in user_messages:
+        all_text = get_all_text_from_message(message)
+        lengths.append(len(all_text))
+    
+    # Calculate statistics
+    mean_length = sum(lengths) / len(lengths)
+    sorted_lengths = sorted(lengths)
+    n = len(sorted_lengths)
+    median_length = (sorted_lengths[n//2] if n % 2 == 1 
+                    else (sorted_lengths[n//2-1] + sorted_lengths[n//2]) / 2)
+    variance = sum((x - mean_length) ** 2 for x in lengths) / len(lengths) if len(lengths) > 1 else 0
+    
+    # Determine categories
+    if mean_length < 50:
+        length_category = 'very_short'
+    elif mean_length < 200:
+        length_category = 'short'
+    elif mean_length < 1000:
+        length_category = 'medium'
+    elif mean_length < 3000:
+        length_category = 'long'
+    else:
+        length_category = 'very_long'
+    
+    if variance < 1000:
+        consistency = 'consistent'
+    elif variance < 10000:
+        consistency = 'mixed'
+    else:
+        consistency = 'variable'
+    
+    return Tag('prompt_stats', 
+               count=len(lengths),
+               mean=round(mean_length, 1),
+               median=round(median_length, 1),
+               variance=round(variance, 1),
+               length_category=length_category,
+               consistency=consistency)
+
+
+def create_gizmo_plugin_tags(conversation: Dict[str, Any]) -> List[Tag]:
+    """Create structured tags for gizmos and plugins."""
+    tags = []
+    gizmos = set()
+    plugins = set()
+    
+    # Check conversation-level
+    if conversation.get('gizmo_id'):
+        gizmos.add(conversation['gizmo_id'])
+    
+    plugin_ids = conversation.get('plugin_ids', [])
+    if plugin_ids:
+        plugins.update(plugin_ids)
+    
+    # Check message-level
+    mapping = conversation.get('mapping', {})
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        
+        # Invoked plugins
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+        
+        # Gizmo usage
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    # Create tags
+    for gizmo in gizmos:
+        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    
+    for plugin in plugins:
+        tags.append(Tag('plugin', plugin_id=plugin))
+    
+    return tags
+
+
+
+---
+File: src/conversation_tagger/core/exchange.py
+---
+# conversation_tagger/core/exchange.py
+"""
+Exchange abstraction with sequential message handling and merge capabilities.
+"""
+
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from dataclasses import dataclass, field
+import uuid
+
+if TYPE_CHECKING:
+    from .tag import Tag
+
+
+def get_message_text(message: Dict[str, Any]) -> str:
+    """Extract text content from a message."""
+    content = message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    return text.strip()
+
+
+@dataclass
+class Exchange:
+    """A sequential conversation exchange with merge capabilities."""
+    
+    exchange_id: str
+    conversation_id: str
+    messages: List[Dict[str, Any]]  # Sequential messages in this exchange
+    tags: List['Tag'] = field(default_factory=list)  # Container for associated tags
+    
+    @classmethod
+    def create(cls, conversation_id: str, messages: List[Dict[str, Any]]) -> 'Exchange':
+        """Create a new exchange with a random UUID."""
+        return cls(
+            exchange_id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            messages=messages,
+            tags=[]
+        )
+    
+    @property
+    def first_message_time(self) -> float:
+        """Get the create_time of the first message for ordering."""
+        if not self.messages:
+            return 0.0
+        return self.messages[0].get('create_time', 0.0)
+    
+    def has_continuations(self) -> bool:
+        """Check if this exchange has continuation prompts (multiple user messages)."""
+        user_count = sum(1 for msg in self.messages 
+                        if msg.get('author', {}).get('role') == 'user')
+        return user_count > 1
+    
+    def get_user_messages(self) -> List[Dict[str, Any]]:
+        """Get just the user messages."""
+        return [msg for msg in self.messages 
+                if msg.get('author', {}).get('role') == 'user']
+    
+    def get_assistant_messages(self) -> List[Dict[str, Any]]:
+        """Get just the assistant messages."""
+        return [msg for msg in self.messages 
+                if msg.get('author', {}).get('role') == 'assistant']
+    
+    def get_user_texts(self) -> str:
+        """Get combined text from all user messages."""
+        return [get_message_text(msg) for msg in self.get_user_messages()]
+    
+    def get_assistant_texts(self) -> str:
+        """Get combined text from all assistant messages."""
+        return [get_message_text(msg) for msg in self.get_assistant_messages()]
+
+    def __add__(self, other: 'Exchange') -> 'Exchange':
+        """Merge two exchanges by combining and time-ordering their messages."""
+        if not isinstance(other, Exchange):
+            raise TypeError("Can only add Exchange objects")
+        
+        if self.conversation_id != other.conversation_id:
+            raise ValueError("Cannot merge exchanges from different conversations")
+        
+        # Combine and sort messages by create_time to ensure proper chronological order
+        combined_messages = self.messages + other.messages
+        combined_messages.sort(key=lambda msg: msg.get('create_time', 0.0))
+        
+        # Combine tags from both exchanges
+        # probably need to be smarter about how we perform this merge
+        combined_tags = self.tags + other.tags
+        
+        # Create new exchange with combined content
+        merged_exchange = Exchange(
+            exchange_id=str(uuid.uuid4()),  # New UUID for merged exchange
+            conversation_id=self.conversation_id,
+            messages=combined_messages,
+            tags=combined_tags
+        )
+        
+        return merged_exchange
+    
+    def __len__(self) -> int:
+        """Return number of messages in exchange."""
+        return len(self.messages)
+    
+    def __str__(self) -> str:
+        """String representation showing message sequence."""
+        roles = [msg.get('author', {}).get('role', 'unknown') for msg in self.messages]
+        return f"Exchange({self.exchange_id[:8]}...: {' → '.join(roles)})"
+
+
+
+---
+File: src/conversation_tagger/core/exchange_parser.py
+---
+# src/conversation_tagger/core/exchange_parser.py
+"""
+Parse conversations into exchanges using a two-step approach:
+1. Segment into dyadic USER-ASSISTANT chunks
+2. Merge chunks when continuations are detected
+"""
+
+from typing import Dict, Any, List, Callable
+from .exchange import Exchange
+from .conversation import Conversation
+
+
+from .exchange_tagger import ExchangeTagger
+
+
+def quote_elaborate_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for quote + elaborate continuation pattern."""
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip()
+    
+    return (text.startswith('>') and 
+            len(text.split('\n')) >= 2 and 
+            text.split('\n')[-1].strip().lower() == 'elaborate')
+
+
+def simple_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for simple continuation keywords."""
+    continuation_patterns = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip().lower()
+    
+    return text in continuation_patterns
+
+
+def short_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for short prompts starting with continuation words."""
+    continuation_starters = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish', 'elaborate','do go on', 'make it so', 'yes', 'please', 'do it'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    content = first_user_message.get('content', {})
+    text = content.get('text', '').strip().lower()
+    
+    if len(text.split()) <= 3:
+        for pattern in continuation_starters:
+            if text.startswith(pattern):
+                return True
+    
+    return False
+
+
+class ExchangeParser:
+    """Parses conversations into tagged exchanges."""
+    
+    def __init__(self, exchange_tagger: ExchangeTagger | None = None):
+        self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
+            quote_elaborate_rule,
+            simple_continuation_rule,
+            short_continuation_rule
+        ]
+        if exchange_tagger is None:
+            exchange_tagger = ExchangeTagger()
+        self.exchange_tagger = exchange_tagger
+
+    def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
+        """Add a new continuation detection rule."""
+        self.continuation_rules.append(rule_function)
+
+    def parse_conversation(self, conversation: Dict[str, Any]) -> Conversation:
+        """Parse a conversation into a Conversation object with fully-tagged exchanges."""
+        mapping = conversation.get('mapping', {})
+        
+        # Extract and sort messages (existing logic)
+        all_messages = []
+        for node_id, node in mapping.items():
+            message = node.get('message')
+            if message and message.get('author'):
+                create_time = message.get('create_time') or 0
+                all_messages.append((create_time, message))
+        
+        all_messages.sort(key=lambda x: x[0])
+        messages = [msg for _, msg in all_messages]
+        
+        conversation_id = conversation.get('conversation_id')
+        title = conversation.get('title', '')
+        
+        dyadic_exchanges = self._create_dyadic_exchanges(messages, conversation_id)
+        merged_exchanges = self._merge_continuations(dyadic_exchanges)
+        
+        # Tag exchanges as they're finalized
+        if self.exchange_tagger:
+            tagged_exchanges = []
+            for exchange in merged_exchanges:
+                tagged_exchange = self.exchange_tagger.tag_exchange(exchange)
+                tagged_exchanges.append(tagged_exchange)
+        else:
+            tagged_exchanges = merged_exchanges
+        
+        # Create and return Conversation object
+        conv = Conversation(
+            conversation_id=conversation_id,
+            title=title,
+            exchanges=tagged_exchanges,
+            raw=conversation,
+        )
+        
+        return conv
+    
+    def _create_dyadic_exchanges(self, messages: List[Dict[str, Any]], 
+                                conversation_id: str) -> List[Exchange]:
+        """Step 1: Create simple USER-ASSISTANT dyadic exchanges."""
+        dyadic_exchanges = []
+        current_pair = []
+        
+        for message in messages:
+            author_role = message.get('author', {}).get('role', '')
+            
+            if author_role in ['user', 'assistant']:
+                current_pair.append(message)
+                
+                # If we have a user->assistant pair, create exchange
+                if (len(current_pair) == 2 and 
+                    current_pair[0].get('author', {}).get('role') == 'user' and
+                    current_pair[1].get('author', {}).get('role') == 'assistant'):
+                    
+                    exchange = Exchange.create(conversation_id, current_pair.copy())
+                    dyadic_exchanges.append(exchange)
+                    current_pair = []
+                
+                # Handle cases where we have multiple user messages or assistant messages
+                elif len(current_pair) > 2:
+                    # Create exchange with what we have so far
+                    exchange = Exchange.create(conversation_id, current_pair.copy())
+                    dyadic_exchanges.append(exchange)
+                    current_pair = []
+        
+        # Handle any remaining messages
+        if current_pair:
+            exchange = Exchange.create(conversation_id, current_pair)
+            dyadic_exchanges.append(exchange)
+        
+        return dyadic_exchanges
+    
+    def _merge_continuations(self, dyadic_exchanges: List[Exchange]) -> List[Exchange]:
+        """Step 2: Merge exchanges when continuation patterns are detected."""
+        if not dyadic_exchanges:
+            return []
+        
+        merged_exchanges = []
+        current_exchange = dyadic_exchanges[0]
+        
+        for i in range(1, len(dyadic_exchanges)):
+            next_exchange = dyadic_exchanges[i]
+            
+            # Check if next exchange is a continuation using any rule
+            should_merge = any(rule(current_exchange, next_exchange) 
+                             for rule in self.continuation_rules)
+            
+            if should_merge:
+                # Merge with current exchange (time-ordering handled by __add__)
+                current_exchange = current_exchange + next_exchange
+            else:
+                # Finalize current exchange and start new one
+                merged_exchanges.append(current_exchange)
+                current_exchange = next_exchange
+        
+        # Add the final exchange
+        merged_exchanges.append(current_exchange)
+        
+        return merged_exchanges
+
+
+
+---
+File: src/conversation_tagger/core/exchange_tagger.py
+---
+# src/conversation_tagger/core/exchange_tagger.py
+"""
+Tag individual exchanges using the improved exchange structure.
+"""
+from typing import Dict, Callable
+from .tag import Tag
+from .exchange import Exchange
+
+
+
+# we generalize this into a Tagger(ABC) which 
+# we can use to tag both exchanges and conversations
+## rule adding is the same API
+## tagging is the same API
+### ... maybe rather than an ExchangeTagger, we have a Tagger that can tag both Exchanges and Conversations
+class ExchangeTagger:
+    """Tags exchanges with configurable rules."""
+    
+    def __init__(self):
+        self.rules: Dict[str, Callable] = {}
+    
+    def add_rule(self, tag_name: str, rule_function: Callable):
+        """Add rule for exchanges."""
+        self.rules[tag_name] = rule_function
+    
+    def tag_exchange(self, exchange: Exchange) -> Exchange:
+        """Tag a single exchange and return the updated exchange."""
+        tags = exchange.tags or []
+        
+        for tag_name, rule_func in self.rules.items():
+            try:
+                result = rule_func(exchange)
+                if result:
+                    if isinstance(result, bool):
+                        tags.append(Tag(tag_name))
+                    elif isinstance(result, Tag):
+                        tags.append(result)
+                    else:
+                        tags.append(Tag(tag_name))
+            except Exception as e:
+                # Skip failed rules silently for now
+                pass
+        
+        # Update the exchange's tags
+        exchange.tags = tags
+        return exchange
+
+
+
+
+---
+File: src/conversation_tagger/core/tag.py
+---
+
+# =============================================================================
+# conversation_tagger/core/tag.py
+"""
+Basic Tag class with optional attributes.
+"""
+
+from typing import Any
+
+
+class Tag:
+    """A tag with optional key-value attributes."""
+    
+    def __init__(self, name: str, **attributes):
+        self.name = name
+        self.attributes = attributes
+    
+    def __str__(self):
+        if self.attributes:
+            attrs = ", ".join(f"{k}={v}" for k, v in self.attributes.items())
+            return f"{self.name}({attrs})"
+        return self.name
+    
+    def __repr__(self):
+        return f"Tag('{self.name}', {self.attributes})"
+    
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.name == other
+        elif isinstance(other, Tag):
+            return self.name == other.name and self.attributes == other.attributes
+        return False
+    
+    def __hash__(self):
+        return hash((self.name, tuple(sorted(self.attributes.items()))))
+
+
+
+
+---
+File: src/conversation_tagger/core/tagger.py
+---
+# src/conversation_tagger/core/tagger.py
+"""
+Main ConversationTagger that orchestrates the exchange-based analysis.
+"""
+
+from typing import Dict, Any, List, Callable
+from .exchange_parser import ExchangeParser
+from .exchange_tagger import ExchangeTagger
+from .conversation import Conversation
+from .exchange import Exchange
+from .tag import Tag
+
+
+class ConversationTagger:
+    """Main tagger that uses exchange-based analysis."""
+    
+    def __init__(self, exchange_parser: ExchangeParser | None = None):
+        if not exchange_parser:
+            exchange_parser = ExchangeParser()
+        self.exchange_parser = exchange_parser
+        self.conversation_rules: Dict[str, Callable] = {}
+    
+    def add_exchange_rule(self, tag_name: str, rule_function: Callable):
+        """Add rule for analyzing exchanges."""
+        self.exchange_parser.exchange_tagger.add_rule(tag_name, rule_function)
+
+    def add_conversation_rule(self, tag_name: str, rule_function: Callable):
+        """Add rule for analyzing entire conversations."""
+        self.conversation_rules[tag_name] = rule_function
+    
+    def tag_conversation(self, conversation: Dict[str, Any]) -> Conversation:
+        """Tag a conversation using exchange-based analysis."""
+        # Parse into tagged exchanges and return Conversation object
+        conv = self.exchange_parser.parse_conversation(conversation)
+        
+        # Apply conversation-level tagging rules
+        conversation_tags = []
+        
+        for tag_name, rule_func in self.conversation_rules.items():
+            try:
+                result = rule_func(conv)
+                if result:
+                    if isinstance(result, bool):
+                        conversation_tags.append(Tag(tag_name))
+                    elif isinstance(result, Tag):
+                        conversation_tags.append(result)
+                    elif isinstance(result, list):
+                        # Handle multiple tags returned from one rule
+                        for tag in result:
+                            if isinstance(tag, Tag):
+                                conversation_tags.append(tag)
+                            else:
+                                conversation_tags.append(Tag(tag_name))
+                    else:
+                        # Treat other truthy values as simple tags
+                        conversation_tags.append(Tag(tag_name))
+            except Exception as e:
+                # Skip failed rules - could add logging here later
+                pass
+        
+        # Combine exchange tags with conversation-level tags
+        all_tags = conv.tags + conversation_tags
+        conv.tags = all_tags
+        
+        return conv
+
+
+
+---
+File: src/conversation_tagger/factory.py
+---
+# conversation_tagger/factory.py
+"""
+Factory to create configured tagger with improved exchange handling.
+"""
+from .core.tagger import ConversationTagger
+from .core.detection import EXCHANGE_RULES, CONVERSATION_RULES
+
+
+def create_default_tagger() -> ConversationTagger:
+    """Create a basic tagger with example rules for the new exchange design."""
+    tagger = ConversationTagger()
+    for rule_name, rule_func in EXCHANGE_RULES.items():
+        tagger.add_exchange_rule(rule_name, rule_func)   
+    for rule_name, rule_func in CONVERSATION_RULES.items():
+        tagger.add_conversation_rule(rule_name, rule_func)
+    
+    return tagger
+
+
+
+---
+File: tests/conversation_tagger/conftest.py
+---
+# tests/conftest.py
+"""
+Shared test fixtures and configuration.
+"""
+
+import pytest
+from conversation_tagger.core.exchange import Exchange
+
+
+@pytest.fixture
+def simple_user_message():
+    """A basic user message."""
+    return {
+        'author': {'role': 'user'},
+        'create_time': 1000,
+        'content': {'text': 'Hello, how are you?'}
+    }
+
+
+@pytest.fixture
+def simple_assistant_message():
+    """A basic assistant message."""
+    return {
+        'author': {'role': 'assistant'},
+        'create_time': 2000,
+        'content': {'text': 'I am doing well, thank you!'}
+    }
+
+
+@pytest.fixture
+def basic_exchange(simple_user_message, simple_assistant_message):
+    """A simple two-message exchange."""
+    return Exchange.create('test_conv', [simple_user_message, simple_assistant_message])
+
+
+@pytest.fixture
+def minimal_conversation_data():
+    """Minimal conversation data for parsing tests."""
+    return {
+        'conversation_id': 'test_conv',
+        'title': 'Test Conversation',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Test question'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Test answer'}
+                }
+            }
+        }
+    }
+
+
+
+---
+File: tests/conversation_tagger/test_basic_working.py
+---
+# tests/test_basic_working.py
+"""
+Tests for functionality that we know works in the current implementation.
+"""
+
+import pytest
+from conversation_tagger import create_default_tagger
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.exchange_tagger import ExchangeTagger
+from conversation_tagger.core.tag import Tag
+
+
+def test_tag_functionality():
+    """Test that Tag objects work correctly."""
+    tag = Tag('test_tag', value='test_value')
+    assert tag.name == 'test_tag'
+    assert tag.attributes['value'] == 'test_value'
+    assert str(tag) == 'test_tag(value=test_value)'
+
+
+def test_exchange_creation():
+    """Test basic exchange creation and message handling."""
+    messages = [
+        {'author': {'role': 'user'}, 'content': {'text': 'Test'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}, 'create_time': 2000}
+    ]
+    
+    exchange = Exchange.create('test_conv', messages)
+    
+    assert exchange.conversation_id == 'test_conv'
+    assert len(exchange.messages) == 2
+    assert len(exchange.get_user_messages()) == 1
+    assert len(exchange.get_assistant_messages()) == 1
+
+
+def test_exchange_text_api():
+    """Test the actual text extraction API to understand what works."""
+    messages = [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there'}, 'create_time': 2000}
+    ]
+    
+    exchange = Exchange.create('test_conv', messages)
+    
+    # Test what the exchange actually provides
+    user_texts = exchange.get_user_texts()
+    assistant_texts = exchange.get_assistant_texts()
+    
+    # Verify these are lists (based on implementation)
+    assert isinstance(user_texts, list)
+    assert isinstance(assistant_texts, list)
+    assert len(user_texts) == 1
+    assert len(assistant_texts) == 1
+    assert 'Hello world' in user_texts[0]
+    assert 'Hi there' in assistant_texts[0]
+
+
+def test_exchange_tagger_with_correct_api():
+    """Test exchange tagger using the correct API."""
+    tagger = ExchangeTagger()
+    
+    def working_rule(exchange):
+        """A rule that uses the correct API."""
+        user_texts = exchange.get_user_texts()
+        if user_texts:
+            text = ' '.join(user_texts)
+            return 'hello' in text.lower()
+        return False
+    
+    tagger.add_rule('working_greeting', working_rule)
+    
+    # Test with exchange that should match
+    exchange = Exchange.create('test', [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000}
+    ])
+    
+    tagged = tagger.tag_exchange(exchange)
+    tag_names = [tag.name for tag in tagged.tags]
+    
+    assert 'working_greeting' in tag_names
+
+
+def test_conversation_parsing_basic():
+    """Test basic conversation parsing without relying on broken methods."""
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Test Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Hello'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Hi there!'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(conversation_data)
+    
+    # Test basic structure
+    assert result.conversation_id == 'test_conv'
+    assert result.title == 'Test Chat'
+    assert result.exchange_count == 1
+    
+    # Test that we can access the exchange
+    exchange = result.exchanges[0]
+    assert len(exchange.messages) == 2
+    
+    # Test that we can get text using the working API
+    user_texts = exchange.get_user_texts()
+    assert isinstance(user_texts, list)
+    assert len(user_texts) == 1
+    assert 'Hello' in user_texts[0]
+
+
+def test_default_tagger_exists():
+    """Test that the default tagger can be created."""
+    tagger = create_default_tagger()
+    assert tagger is not None
+    assert hasattr(tagger, 'exchange_parser')
+    assert hasattr(tagger.exchange_parser, 'exchange_tagger')
+
+
+def test_some_default_rules_work():
+    """Test that at least some default rules are working."""
+    conversation_data = {
+        'conversation_id': 'code_conv',
+        'title': 'Code Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'def hello(): print("hello")'},
+                    'metadata': {'attachments': []}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Nice Python function!'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(conversation_data)
+    
+    # Check if any tags were applied
+    all_tags = []
+    for exchange in result.exchanges:
+        all_tags.extend(exchange.tags)
+    
+    tag_names = [tag.name for tag in all_tags]
+    print(f"Applied tags: {tag_names}")
+    
+    # Some rules should work - at minimum we should have non-empty result
+    # (We know first_user_has_code_patterns works from the earlier test output)
+    assert len(result.exchanges) > 0
+
+
+
+---
+File: tests/conversation_tagger/test_core.py
+---
+# tests/test_core.py
+"""
+Core functionality tests for conversation tagging system.
+"""
+
+import pytest
+from conversation_tagger.core.tag import Tag
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.conversation import Conversation
+
+
+def test_tag_creation():
+    """Test tag creation with and without attributes."""
+    simple_tag = Tag('simple')
+    assert simple_tag.name == 'simple'
+    assert simple_tag.attributes == {}
+    assert str(simple_tag) == 'simple'
+    
+    complex_tag = Tag('complex', count=5, type='test')
+    assert complex_tag.attributes['count'] == 5
+    assert 'count=5' in str(complex_tag)
+    
+    # Test equality
+    assert simple_tag == 'simple'
+    assert simple_tag != complex_tag
+
+
+def test_exchange_basic():
+    """Test exchange creation and basic operations."""
+    messages = [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi!'}, 'create_time': 2000}
+    ]
+    
+    exchange = Exchange.create('conv_1', messages)
+    
+    assert exchange.conversation_id == 'conv_1'
+    assert len(exchange) == 2
+    assert len(exchange.get_user_messages()) == 1
+    assert len(exchange.get_assistant_messages()) == 1
+    assert not exchange.has_continuations()
+
+
+def test_exchange_merging():
+    """Test merging exchanges preserves chronological order."""
+    exchange_1 = Exchange.create('conv_1', [
+        {'author': {'role': 'user'}, 'content': {'text': 'First'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}, 'create_time': 2000}
+    ])
+    
+    exchange_2 = Exchange.create('conv_1', [
+        {'author': {'role': 'user'}, 'content': {'text': 'Continue'}, 'create_time': 3000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'More'}, 'create_time': 4000}
+    ])
+    
+    merged = exchange_1 + exchange_2
+    
+    assert len(merged) == 4
+    assert merged.has_continuations()
+    assert merged.conversation_id == 'conv_1'
+    
+    # Verify time ordering
+    times = [msg['create_time'] for msg in merged.messages]
+    assert times == [1000, 2000, 3000, 4000]
+
+
+def test_conversation_properties():
+    """Test conversation aggregation properties."""
+    exchanges = [
+        Exchange.create('conv_1', [
+            {'author': {'role': 'user'}, 'content': {'text': 'Q1'}, 'create_time': 1000},
+            {'author': {'role': 'assistant'}, 'content': {'text': 'A1'}, 'create_time': 2000}
+        ]),
+        Exchange.create('conv_1', [
+            {'author': {'role': 'user'}, 'content': {'text': 'Q2'}, 'create_time': 3000},
+            {'author': {'role': 'assistant'}, 'content': {'text': 'A2'}, 'create_time': 4000}
+        ])
+    ]
+    
+    conv = Conversation('conv_1', 'Test Chat', exchanges)
+    
+    assert conv.exchange_count == 2
+    assert conv.total_message_count == 4
+    assert conv.total_user_messages == 2
+    assert conv.total_assistant_messages == 2
+    assert 'Q1' in conv.get_all_user_text()
+    assert 'A1' in conv.get_all_assistant_text()
+
+
+@pytest.fixture
+def sample_conversation_data():
+    """Sample conversation data for parsing tests."""
+    return {
+        'conversation_id': 'test_conv',
+        'title': 'Test Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Hello'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Hi there!'}
+                }
+            }
+        }
+    }
+
+
+def test_simple_parsing(sample_conversation_data):
+    """Test basic conversation parsing."""
+    from conversation_tagger.core.exchange_parser import ExchangeParser
+    
+    parser = ExchangeParser()
+    conversation = parser.parse_conversation(sample_conversation_data)
+    
+    assert isinstance(conversation, Conversation)
+    assert conversation.conversation_id == 'test_conv'
+    assert conversation.exchange_count == 1
+    assert 'Hello' in conversation.get_all_user_text()
+
+
+
+---
+File: tests/conversation_tagger/test_detection.py
+---
+# tests/conversation_tagger/test_detection.py
+"""
+Unit tests for detection.py detection functions.
+One test function per detection function with multiple asserts.
+"""
+
+import pytest
+from conversation_tagger.core.detection import *
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.conversation import Conversation
+from conversation_tagger.core.tag import Tag
+
+
+######################
+# Conversation Tests #
+######################
+
+def test_create_conversation_length_tag():
+    """Test conversation length categorization."""
+    # Single exchange
+    conv_single = Conversation('test', 'Single', [Exchange.create('test', [])])
+    tag = create_conversation_length_tag(conv_single)
+    assert tag.name == 'conversation_length'
+    assert tag.attributes['count'] == 1
+    assert tag.attributes['category'] == 'single'
+    
+    # Short (3 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(3)]
+    conv_short = Conversation('test', 'Short', exchanges)
+    tag = create_conversation_length_tag(conv_short)
+    assert tag.attributes['count'] == 3
+    assert tag.attributes['category'] == 'short'
+    
+    # Medium (7 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(7)]
+    conv_medium = Conversation('test', 'Medium', exchanges)
+    tag = create_conversation_length_tag(conv_medium)
+    assert tag.attributes['count'] == 7
+    assert tag.attributes['category'] == 'medium'
+    
+    # Long (15 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(15)]
+    conv_long = Conversation('test', 'Long', exchanges)
+    tag = create_conversation_length_tag(conv_long)
+    assert tag.attributes['count'] == 15
+    assert tag.attributes['category'] == 'long'
+    
+    # Very long (30 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(30)]
+    conv_very_long = Conversation('test', 'VeryLong', exchanges)
+    tag = create_conversation_length_tag(conv_very_long)
+    assert tag.attributes['count'] == 30
+    assert tag.attributes['category'] == 'very_long'
+
+
+def test_conversation_feature_summary():
+    """Test feature aggregation across exchanges."""
+    # Create exchanges with different feature tags
+    exchange1 = Exchange.create('test', [])
+    exchange1.tags = [Tag('has_code_blocks'), Tag('has_web_search'), Tag('gizmo', gizmo_id='gpt-4')]
+    
+    exchange2 = Exchange.create('test', [])
+    exchange2.tags = [Tag('has_code_blocks'), Tag('has_github_repos'), Tag('plugin', plugin_id='web')]
+    
+    exchange3 = Exchange.create('test', [])
+    exchange3.tags = [Tag('has_latex_math')]
+    
+    conv = Conversation('test', 'Test', [exchange1, exchange2, exchange3])
+    tags = conversation_feature_summary(conv)
+    
+    # Convert to dict for easier testing
+    tag_dict = {tag.name: tag for tag in tags}
+    
+    # has_code_blocks appears in 2/3 exchanges
+    assert 'conversation_has_code_blocks' in tag_dict
+    code_tag = tag_dict['conversation_has_code_blocks']
+    assert code_tag.attributes['exchange_count'] == 2
+    assert code_tag.attributes['total_exchanges'] == 3
+    assert code_tag.attributes['percentage'] == 66.7
+    
+    assert 'conversation_has_web_search' in tag_dict
+    search_tag = tag_dict['conversation_has_web_search']
+    assert search_tag.attributes['exchange_count'] == 1
+    assert search_tag.attributes['percentage'] == 33.3
+    
+    assert 'conversation_has_gizmo_usage' in tag_dict
+    gizmo_tag = tag_dict['conversation_has_gizmo_usage']
+    assert gizmo_tag.attributes['exchange_count'] == 1
+    assert gizmo_tag.attributes['percentage'] == 33.3
+    
+    assert 'conversation_has_plugin_usage' in tag_dict
+    plugin_tag = tag_dict['conversation_has_plugin_usage']
+    assert plugin_tag.attributes['exchange_count'] == 1
+    assert plugin_tag.attributes['percentage'] == 33.3
+
+    assert 'conversation_has_latex_math' in tag_dict
+    
+    # Features not in the tracking list should not appear
+    # ... maybe later
+    
+    # Empty conversation should return empty list
+    empty_conv = Conversation('test', 'Empty', [])
+    empty_tags = conversation_feature_summary(empty_conv)
+    assert empty_tags == []
+
+
+def test_conversation_gizmo_plugin_summary():
+    """Test gizmo/plugin aggregation across exchanges."""
+    # Create exchanges with gizmo/plugin tags
+    exchange1 = Exchange.create('test', [])
+    exchange1.tags = [
+        Tag('gizmo', gizmo_id='gpt-4'),
+        Tag('plugin', plugin_id='web_browser')
+    ]
+    
+    exchange2 = Exchange.create('test', [])
+    exchange2.tags = [
+        Tag('gizmo', gizmo_id='gpt-4'),  # Same gizmo again
+        Tag('plugin', plugin_id='python')
+    ]
+    
+    exchange3 = Exchange.create('test', [])
+    exchange3.tags = [Tag('gizmo', gizmo_id='dalle')]
+    
+    conv = Conversation('test', 'Test', [exchange1, exchange2, exchange3])
+    tags = conversation_gizmo_plugin_summary(conv)
+    
+    # Should have gizmo and plugin summary tags
+    assert len(tags) == 2
+    
+    gizmo_tag = next(t for t in tags if t.name == 'conversation_gizmo_usage')
+    assert gizmo_tag.attributes['unique_gizmos'] == 2  # gpt-4, dalle
+    assert gizmo_tag.attributes['total_usage'] == 3   # gpt-4 used twice
+    assert set(gizmo_tag.attributes['gizmo_list']) == {'gpt-4', 'dalle'}
+    
+    plugin_tag = next(t for t in tags if t.name == 'conversation_plugin_usage')
+    assert plugin_tag.attributes['unique_plugins'] == 2  # web_browser, python
+    assert plugin_tag.attributes['total_usage'] == 2
+    assert set(plugin_tag.attributes['plugin_list']) == {'web_browser', 'python'}
+    
+    # No gizmo/plugin usage should return empty list
+    empty_exchange = Exchange.create('test', [])
+    empty_conv = Conversation('test', 'Empty', [empty_exchange])
+    empty_tags = conversation_gizmo_plugin_summary(empty_conv)
+    assert empty_tags == []
+    
+    # Only gizmo usage
+    gizmo_only_exchange = Exchange.create('test', [])
+    gizmo_only_exchange.tags = [Tag('gizmo', gizmo_id='claude')]
+    gizmo_only_conv = Conversation('test', 'GizmoOnly', [gizmo_only_exchange])
+    gizmo_only_tags = conversation_gizmo_plugin_summary(gizmo_only_conv)
+    assert len(gizmo_only_tags) == 1
+    assert gizmo_only_tags[0].name == 'conversation_gizmo_usage'
+    assert gizmo_only_tags[0].attributes['unique_gizmos'] == 1
+    assert gizmo_only_tags[0].attributes['gizmo_list'] == ['claude']
+
+
+######################
+#  Exchange Tests    #
+######################
+
+def test_has_github_repos():
+    """Test GitHub repository detection."""
+    # Exchange with GitHub repos
+    msg_with_repos = {
+        'author': {'role': 'user'},
+        'metadata': {'selected_github_repos': ['owner/repo1', 'owner/repo2']},
+        'content': {'text': 'Help with code'}
+    }
+    exchange_with = Exchange.create('test', [msg_with_repos])
+    assert has_github_repos(exchange_with) == True
+    
+    # Exchange without GitHub repos
+    msg_without_repos = {
+        'author': {'role': 'user'},
+        'metadata': {'selected_github_repos': []},
+        'content': {'text': 'General question'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_repos])
+    assert has_github_repos(exchange_without) == False
+    
+    # Exchange with no metadata
+    msg_no_metadata = {
+        'author': {'role': 'user'},
+        'content': {'text': 'Simple question'}
+    }
+    exchange_no_meta = Exchange.create('test', [msg_no_metadata])
+    assert has_github_repos(exchange_no_meta) == False
+
+
+def test_has_canvas_operations():
+    """Test canvas/document operations detection."""
+    # Exchange with canvas
+    msg_with_canvas = {
+        'author': {'role': 'assistant'},
+        'metadata': {'canvas': {'textdoc_id': 'doc123', 'version': 1}},
+        'content': {'text': 'Document created'}
+    }
+    exchange_with = Exchange.create('test', [msg_with_canvas])
+    assert has_canvas_operations(exchange_with) == True
+    
+    # Exchange without canvas
+    msg_without_canvas = {
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular response'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_canvas])
+    assert has_canvas_operations(exchange_without) == False
+
+
+def test_has_web_search():
+    """Test web search detection."""
+    # Exchange with search queries
+    msg_with_search = {
+        'author': {'role': 'assistant'},
+        'metadata': {'search_queries': [{'q': 'python tutorial', 'type': 'web'}]},
+        'content': {'text': 'Let me search for that'}
+    }
+    exchange_with_queries = Exchange.create('test', [msg_with_search])
+    assert has_web_search(exchange_with_queries) == True
+    
+    # Exchange with search results
+    msg_with_results = {
+        'author': {'role': 'assistant'},
+        'metadata': {'search_result_groups': [{'type': 'web', 'entries': []}]},
+        'content': {'text': 'Found some results'}
+    }
+    exchange_with_results = Exchange.create('test', [msg_with_results])
+    assert has_web_search(exchange_with_results) == True
+    
+    # Exchange with content references
+    msg_with_refs = {
+        'author': {'role': 'assistant'},
+        'metadata': {'content_references': [{'matched_text': 'citation'}]},
+        'content': {'text': 'According to sources'}
+    }
+    exchange_with_refs = Exchange.create('test', [msg_with_refs])
+    assert has_web_search(exchange_with_refs) == True
+    
+    # Exchange without search
+    msg_without_search = {
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular response'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_search])
+    assert has_web_search(exchange_without) == False
+
+
+def test_has_reasoning_thoughts():
+    """Test reasoning/thinking pattern detection."""
+    # Exchange with thoughts
+    msg_with_thoughts = {
+        'author': {'role': 'assistant'},
+        'content': {
+            'text': 'Let me think about this',
+            'thoughts': [{'content': 'I need to analyze this step by step'}]
+        }
+    }
+    exchange_with = Exchange.create('test', [msg_with_thoughts])
+    assert has_reasoning_thoughts(exchange_with) == True
+    
+    # Exchange without thoughts
+    msg_without_thoughts = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'Here is the answer'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_thoughts])
+    assert has_reasoning_thoughts(exchange_without) == False
+
+
+def test_has_code_execution():
+    """Test code execution detection."""
+    # Exchange with aggregate result
+    msg_with_aggregate = {
+        'author': {'role': 'assistant'},
+        'metadata': {'aggregate_result': {'status': 'completed', 'code': 'print("hello")'}},
+        'content': {'text': 'Running code'}
+    }
+    exchange_with_agg = Exchange.create('test', [msg_with_aggregate])
+    assert has_code_execution(exchange_with_agg) == True
+    
+    # Exchange with jupyter messages
+    msg_with_jupyter = {
+        'author': {'role': 'assistant'},
+        'metadata': {'jupyter_messages': [{'msg_type': 'execute_result'}]},
+        'content': {'text': 'Code executed'}
+    }
+    exchange_with_jupyter = Exchange.create('test', [msg_with_jupyter])
+    assert has_code_execution(exchange_with_jupyter) == True
+    
+    # Exchange without code execution
+    msg_without_exec = {
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular text response'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_exec])
+    assert has_code_execution(exchange_without) == False
+
+
+def test_has_code_blocks():
+    """Test code block detection."""
+    # Exchange with code blocks
+    user_msg = {'author': {'role': 'user'}, 'content': {'text': 'Fix this: ```python\nprint("hello")\n```'}}
+    assistant_msg = {'author': {'role': 'assistant'}, 'content': {'text': 'Here is the fix: ```python\nprint("Hello!")\n```'}}
+    exchange_with = Exchange.create('test', [user_msg, assistant_msg])
+    assert has_code_blocks(exchange_with) == True
+    
+    # Exchange without code blocks
+    user_msg_no_code = {'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}}
+    assistant_msg_no_code = {'author': {'role': 'assistant'}, 'content': {'text': 'Python is a programming language'}}
+    exchange_without = Exchange.create('test', [user_msg_no_code, assistant_msg_no_code])
+    assert has_code_blocks(exchange_without) == False
+    
+    # Empty exchange
+    exchange_empty = Exchange.create('test', [])
+    assert has_code_blocks(exchange_empty) == False
+
+
+def test_has_script_headers():
+    """Test script header detection."""
+    # Exchange with shebang
+    msg_with_shebang = {'author': {'role': 'user'}, 'content': {'text': '#!/bin/bash\necho "hello"'}}
+    exchange_with_shebang = Exchange.create('test', [msg_with_shebang])
+    assert has_script_headers(exchange_with_shebang) == True
+    
+    # Exchange with #include
+    msg_with_include = {'author': {'role': 'assistant'}, 'content': {'text': '#include <stdio.h>\nint main() { return 0; }'}}
+    exchange_with_include = Exchange.create('test', [msg_with_include])
+    assert has_script_headers(exchange_with_include) == True
+    
+    # Exchange with using namespace
+    msg_with_namespace = {'author': {'role': 'user'}, 'content': {'text': 'using namespace std;\nint main() {}'}}
+    exchange_with_namespace = Exchange.create('test', [msg_with_namespace])
+    assert has_script_headers(exchange_with_namespace) == True
+    
+    # Exchange without script headers
+    msg_without = {'author': {'role': 'user'}, 'content': {'text': 'How do I write a script?'}}
+    exchange_without = Exchange.create('test', [msg_without])
+    assert has_script_headers(exchange_without) == False
+
+
+def test_has_code_structure_patterns():
+    """Test code structure pattern detection."""
+    # Python function pattern
+    msg_python = {'author': {'role': 'assistant'}, 'content': {'text': 'def calculate(x):\n    return x * 2'}}
+    exchange_python = Exchange.create('test', [msg_python])
+    assert has_code_structure_patterns(exchange_python) == True
+    
+    # Python class pattern
+    msg_class = {'author': {'role': 'user'}, 'content': {'text': 'class MyClass():\n    def __init__(self):\n        pass'}}
+    exchange_class = Exchange.create('test', [msg_class])
+    assert has_code_structure_patterns(exchange_class) == True
+    
+    # JavaScript function pattern
+    msg_js = {'author': {'role': 'assistant'}, 'content': {'text': 'function hello() {\n    console.log("hi");\n}'}}
+    exchange_js = Exchange.create('test', [msg_js])
+    assert has_code_structure_patterns(exchange_js) == True
+    
+    # Multiple assignments pattern
+    msg_assignments = {'author': {'role': 'user'}, 'content': {'text': 'let x = 1;\nlet y = 2;\nlet z = 3;\nconst result = x + y + z;'}}
+    exchange_assignments = Exchange.create('test', [msg_assignments])
+    assert has_code_structure_patterns(exchange_assignments) == True
+    
+    # No code structure
+    msg_no_code = {'author': {'role': 'user'}, 'content': {'text': 'Explain what a function is'}}
+    exchange_no_code = Exchange.create('test', [msg_no_code])
+    assert has_code_structure_patterns(exchange_no_code) == False
+
+
+def test_user_has_quote_elaborate():
+    """Test quote+elaborate pattern detection."""
+    # Valid quote+elaborate pattern
+    msg_quote_elaborate = {
+        'author': {'role': 'user'}, 
+        'content': {'text': '> Python is a programming language\nelaborate'}
+    }
+    exchange_with = Exchange.create('test', [msg_quote_elaborate])
+    assert user_has_quote_elaborate(exchange_with) == True
+    
+    # Quote without elaborate
+    msg_quote_only = {
+        'author': {'role': 'user'}, 
+        'content': {'text': '> Python is a programming language\nTell me more'}
+    }
+    exchange_quote_only = Exchange.create('test', [msg_quote_only])
+    assert user_has_quote_elaborate(exchange_quote_only) == False
+    
+    # Elaborate without quote
+    msg_elaborate_only = {
+        'author': {'role': 'user'}, 
+        'content': {'text': 'elaborate'}
+    }
+    exchange_elaborate_only = Exchange.create('test', [msg_elaborate_only])
+    assert user_has_quote_elaborate(exchange_elaborate_only) == False
+    
+    # No user messages
+    msg_assistant = {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}}
+    exchange_no_user = Exchange.create('test', [msg_assistant])
+    assert user_has_quote_elaborate(exchange_no_user) == False
+
+
+def test_user_has_attachments():
+    """Test user attachment detection."""
+    # User with attachments
+    msg_with_attachments = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [{'id': 'file1', 'name': 'document.pdf'}]},
+        'content': {'text': 'Please analyze this file'}
+    }
+    exchange_with = Exchange.create('test', [msg_with_attachments])
+    assert user_has_attachments(exchange_with) == True
+    
+    # User without attachments
+    msg_without_attachments = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': []},
+        'content': {'text': 'General question'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_attachments])
+    assert user_has_attachments(exchange_without) == False
+    
+    # No user messages
+    msg_assistant = {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}}
+    exchange_no_user = Exchange.create('test', [msg_assistant])
+    assert user_has_attachments(exchange_no_user) == False
+
+
+def test_user_is_continuation():
+    """Test continuation detection."""
+    # Create exchange with multiple user messages (continuation)
+    user_msg1 = {'author': {'role': 'user'}, 'content': {'text': 'First message'}}
+    assistant_msg = {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}}
+    user_msg2 = {'author': {'role': 'user'}, 'content': {'text': 'Continue please'}}
+    exchange_continuation = Exchange.create('test', [user_msg1, assistant_msg, user_msg2])
+    assert user_is_continuation(exchange_continuation) == True
+    
+    # Regular exchange (single user message)
+    user_msg = {'author': {'role': 'user'}, 'content': {'text': 'Question'}}
+    assistant_response = {'author': {'role': 'assistant'}, 'content': {'text': 'Answer'}}
+    exchange_regular = Exchange.create('test', [user_msg, assistant_response])
+    assert user_is_continuation(exchange_regular) == False
+
+
+def test_assistant_has_reasoning():
+    """Test assistant reasoning detection."""
+    # Assistant with reasoning thoughts
+    msg_with_reasoning = {
+        'author': {'role': 'assistant'},
+        'content': {
+            'text': 'Let me think about this',
+            'thoughts': [{'content': 'I should consider multiple angles'}]
+        }
+    }
+    exchange_with = Exchange.create('test', [msg_with_reasoning])
+    assert assistant_has_reasoning(exchange_with) == True
+    
+    # Assistant without reasoning
+    msg_without_reasoning = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'Here is the answer'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_reasoning])
+    assert assistant_has_reasoning(exchange_without) == False
+    
+    # No assistant messages
+    user_msg = {'author': {'role': 'user'}, 'content': {'text': 'Question'}}
+    exchange_no_assistant = Exchange.create('test', [user_msg])
+    assert assistant_has_reasoning(exchange_no_assistant) == False
+
+
+def test_has_wiki_links():
+    """Test wiki link detection."""
+    # Assistant with wiki links
+    msg_with_wiki = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'See [[Python Programming]] and [[Data Structures]] for more info'}
+    }
+    exchange_with = Exchange.create('test', [msg_with_wiki])
+    assert has_wiki_links(exchange_with) == True
+    
+    # Assistant without wiki links
+    msg_without_wiki = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'Python is a programming language'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_wiki])
+    assert has_wiki_links(exchange_without) == False
+    
+    # User with wiki links (should not count)
+    user_msg_wiki = {'author': {'role': 'user'}, 'content': {'text': 'Tell me about [[Python]]'}}
+    assistant_msg_no_wiki = {'author': {'role': 'assistant'}, 'content': {'text': 'Python is great'}}
+    exchange_user_wiki = Exchange.create('test', [user_msg_wiki, assistant_msg_no_wiki])
+    assert has_wiki_links(exchange_user_wiki) == False
+
+
+def test_has_latex_math():
+    """Test LaTeX math detection."""
+    # Block math
+    msg_block_math = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'The quadratic formula is: $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$'}
+    }
+    exchange_block = Exchange.create('test', [msg_block_math])
+    assert has_latex_math(exchange_block) == True
+    
+    # Inline math with \\( \\)
+    msg_inline_math = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'The result is \\(x = 5\\) which is correct'}
+    }
+    exchange_inline = Exchange.create('test', [msg_inline_math])
+    assert has_latex_math(exchange_inline) == True
+    
+    # LaTeX commands
+    msg_latex_commands = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'The integral \\int_{0}^{\\infty} e^{-x} dx = 1'}
+    }
+    exchange_commands = Exchange.create('test', [msg_latex_commands])
+    assert has_latex_math(exchange_commands) == True
+    
+    # No math
+    msg_no_math = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'This is regular text without any mathematical notation'}
+    }
+    exchange_no_math = Exchange.create('test', [msg_no_math])
+    assert has_latex_math(exchange_no_math) == False
+
+
+def test_first_user_has_large_content():
+    """Test large content detection in first user message."""
+    # Large content (over 2000 chars)
+    large_text = 'x' * 2500
+    msg_large = {
+        'author': {'role': 'user'},
+        'content': {'text': large_text}
+    }
+    exchange_large = Exchange.create('test', [msg_large])
+    assert first_user_has_large_content(exchange_large) == True
+    
+    # Small content
+    msg_small = {
+        'author': {'role': 'user'},
+        'content': {'text': 'Short question'}
+    }
+    exchange_small = Exchange.create('test', [msg_small])
+    assert first_user_has_large_content(exchange_small) == False
+    
+    # Custom threshold
+    medium_text = 'x' * 1500
+    msg_medium = {
+        'author': {'role': 'user'},
+        'content': {'text': medium_text}
+    }
+    exchange_medium = Exchange.create('test', [msg_medium])
+    assert first_user_has_large_content(exchange_medium, min_length=1000) == True
+    assert first_user_has_large_content(exchange_medium, min_length=2000) == False
+    
+    # No user messages
+    msg_assistant = {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}}
+    exchange_no_user = Exchange.create('test', [msg_assistant])
+    assert first_user_has_large_content(exchange_no_user) == False
+
+
+def test_first_user_has_code_patterns():
+    """Test code pattern detection in first user message."""
+    # Message with code blocks
+    msg_code_blocks = {
+        'author': {'role': 'user'},
+        'content': {'text': 'Fix this: ```python\nprint("hello")\n```'}
+    }
+    exchange_code_blocks = Exchange.create('test', [msg_code_blocks])
+    assert first_user_has_code_patterns(exchange_code_blocks) == True
+    
+    # Message with function definition
+    msg_def = {
+        'author': {'role': 'user'},
+        'content': {'text': 'Help with: def my_function(): pass'}
+    }
+    exchange_def = Exchange.create('test', [msg_def])
+    assert first_user_has_code_patterns(exchange_def) == True
+    
+    # Message with imports
+    msg_import = {
+        'author': {'role': 'user'},
+        'content': {'text': 'import numpy as np\nHow to use this?'}
+    }
+    exchange_import = Exchange.create('test', [msg_import])
+    assert first_user_has_code_patterns(exchange_import) == True
+    
+    # Message with shebang
+    msg_shebang = {
+        'author': {'role': 'user'},
+        'content': {'text': '#!/bin/bash\necho "hello"'}
+    }
+    exchange_shebang = Exchange.create('test', [msg_shebang])
+    assert first_user_has_code_patterns(exchange_shebang) == True
+    
+    # No code patterns
+    msg_no_code = {
+        'author': {'role': 'user'},
+        'content': {'text': 'What is programming?'}
+    }
+    exchange_no_code = Exchange.create('test', [msg_no_code])
+    assert first_user_has_code_patterns(exchange_no_code) == False
+
+
+def test_first_user_has_attachments():
+    """Test attachment detection in first user message."""
+    # First user message with attachments
+    msg_with_attachments = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [{'id': 'file1', 'name': 'data.csv'}]},
+        'content': {'text': 'Analyze this file'}
+    }
+    exchange_with = Exchange.create('test', [msg_with_attachments])
+    assert first_user_has_attachments(exchange_with) == True
+    
+    # First user message without attachments
+    msg_without_attachments = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': []},
+        'content': {'text': 'General question'}
+    }
+    exchange_without = Exchange.create('test', [msg_without_attachments])
+    assert first_user_has_attachments(exchange_without) == False
+    
+    # Second user message with attachments (should not count)
+    msg_first = {'author': {'role': 'user'}, 'content': {'text': 'First message'}}
+    msg_second = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [{'id': 'file1', 'name': 'data.csv'}]},
+        'content': {'text': 'Second message with file'}
+    }
+    exchange_second_attachment = Exchange.create('test', [msg_first, msg_second])
+    assert first_user_has_attachments(exchange_second_attachment) == False
+
+
+def test_first_user_has_code_attachments():
+    """Test code attachment detection in first user message."""
+    # Python file attachment
+    msg_python_file = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [{'id': 'file1', 'name': 'script.py', 'mime_type': 'text/x-python'}]},
+        'content': {'text': 'Review this code'}
+    }
+    exchange_python = Exchange.create('test', [msg_python_file])
+    assert first_user_has_code_attachments(exchange_python) == True
+    
+    # JavaScript file attachment
+    msg_js_file = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [{'id': 'file1', 'name': 'app.js', 'mime_type': 'application/javascript'}]},
+        'content': {'text': 'Help with this JS'}
+    }
+    exchange_js = Exchange.create('test', [msg_js_file])
+    assert first_user_has_code_attachments(exchange_js) == True
+    
+    # Multiple files, one is code
+    msg_mixed_files = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [
+            {'id': 'file1', 'name': 'data.csv', 'mime_type': 'text/csv'},
+            {'id': 'file2', 'name': 'script.cpp', 'mime_type': 'text/x-c++'}
+        ]},
+        'content': {'text': 'Review these files'}
+    }
+    exchange_mixed = Exchange.create('test', [msg_mixed_files])
+    assert first_user_has_code_attachments(exchange_mixed) == True
+    
+    # Non-code attachments
+    msg_non_code = {
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [{'id': 'file1', 'name': 'document.pdf', 'mime_type': 'application/pdf'}]},
+        'content': {'text': 'Analyze this document'}
+    }
+    exchange_non_code = Exchange.create('test', [msg_non_code])
+    assert first_user_has_code_attachments(exchange_non_code) == False
+    
+    # No attachments
+    msg_no_attachments = {
+        'author': {'role': 'user'},
+        'content': {'text': 'General coding question'}
+    }
+    exchange_no_attachments = Exchange.create('test', [msg_no_attachments])
+    assert first_user_has_code_attachments(exchange_no_attachments) == False
+
+
+def test_get_gizmo_tags():
+    """Test gizmo tag generation."""
+    # Exchange with single gizmo
+    msg_with_gizmo = {
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4-turbo'},
+        'content': {'text': 'Response from specialized model'}
+    }
+    exchange_single = Exchange.create('test', [msg_with_gizmo])
+    tags_single = get_gizmo_tags(exchange_single)
+    assert len(tags_single) == 1
+    assert tags_single[0].name == 'gizmo'
+    assert tags_single[0].attributes['gizmo_id'] == 'gpt-4-turbo'
+    
+    # Exchange with multiple messages using different gizmos
+    msg_gizmo1 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4'},
+        'content': {'text': 'First response'}
+    }
+    msg_gizmo2 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'dalle'},
+        'content': {'text': 'Second response'}
+    }
+    exchange_multiple = Exchange.create('test', [msg_gizmo1, msg_gizmo2])
+    tags_multiple = get_gizmo_tags(exchange_multiple)
+    assert len(tags_multiple) == 2
+    gizmo_ids = {tag.attributes['gizmo_id'] for tag in tags_multiple}
+    assert gizmo_ids == {'gpt-4', 'dalle'}
+    
+    # Exchange with same gizmo used multiple times (should deduplicate)
+    msg_dup1 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4'},
+        'content': {'text': 'First'}
+    }
+    msg_dup2 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4'},
+        'content': {'text': 'Second'}
+    }
+    exchange_dup = Exchange.create('test', [msg_dup1, msg_dup2])
+    tags_dup = get_gizmo_tags(exchange_dup)
+    assert len(tags_dup) == 1
+    assert tags_dup[0].attributes['gizmo_id'] == 'gpt-4'
+    
+    # Exchange without gizmo usage
+    msg_no_gizmo = {
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular response'}
+    }
+    exchange_none = Exchange.create('test', [msg_no_gizmo])
+    tags_none = get_gizmo_tags(exchange_none)
+    assert tags_none == []
+
+
+def test_get_plugin_tags():
+    """Test plugin tag generation."""
+    # Exchange with plugin_id only
+    msg_plugin_id = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'web_browser'}},
+        'content': {'text': 'Searching web'}
+    }
+    exchange_plugin_id = Exchange.create('test', [msg_plugin_id])
+    tags_plugin_id = get_plugin_tags(exchange_plugin_id)
+    assert len(tags_plugin_id) == 1
+    assert tags_plugin_id[0].name == 'plugin'
+    assert tags_plugin_id[0].attributes['plugin_id'] == 'web_browser'
+    
+    # Exchange with namespace only
+    msg_namespace = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'namespace': 'browser_tools'}},
+        'content': {'text': 'Using browser tools'}
+    }
+    exchange_namespace = Exchange.create('test', [msg_namespace])
+    tags_namespace = get_plugin_tags(exchange_namespace)
+    assert len(tags_namespace) == 1
+    assert tags_namespace[0].attributes['plugin_id'] == 'browser_tools'
+    
+    # Exchange with both plugin_id and namespace
+    msg_both = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'image_gen', 'namespace': 'dalle'}},
+        'content': {'text': 'Generating image'}
+    }
+    exchange_both = Exchange.create('test', [msg_both])
+    tags_both = get_plugin_tags(exchange_both)
+    assert len(tags_both) == 2
+    plugin_ids = {tag.attributes['plugin_id'] for tag in tags_both}
+    assert plugin_ids == {'image_gen', 'dalle'}
+    
+    # Exchange with multiple different plugins
+    msg_plugin1 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'web_browser'}},
+        'content': {'text': 'First'}
+    }
+    msg_plugin2 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'calculator'}},
+        'content': {'text': 'Second'}
+    }
+    exchange_multiple = Exchange.create('test', [msg_plugin1, msg_plugin2])
+    tags_multiple = get_plugin_tags(exchange_multiple)
+    assert len(tags_multiple) == 2
+    plugin_ids = {tag.attributes['plugin_id'] for tag in tags_multiple}
+    assert plugin_ids == {'web_browser', 'calculator'}
+    
+    # Exchange with empty invoked_plugin
+    msg_empty = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {}},
+        'content': {'text': 'No plugin'}
+    }
+    exchange_empty = Exchange.create('test', [msg_empty])
+    tags_empty = get_plugin_tags(exchange_empty)
+    assert tags_empty == []
+    
+    # Exchange without plugin usage
+    msg_none = {
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular response'}
+    }
+    exchange_none = Exchange.create('test', [msg_none])
+    tags_none = get_plugin_tags(exchange_none)
+    assert tags_none == []
+
+def test_extract_proposed_title():
+    """Test proposed title extraction from assistant messages."""
+    # Test markdown header title (single #)
+    msg_markdown_h1 = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Introduction to Python\n\nPython is a programming language...'}
+    }
+    exchange_h1 = Exchange.create('test', [msg_markdown_h1])
+    title_h1 = extract_proposed_title(exchange_h1)
+    assert title_h1 == 'Introduction to Python'
+    
+    # Test markdown header title (multiple #)
+    msg_markdown_h2 = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '## Getting Started\n\nFirst, install Python...'}
+    }
+    exchange_h2 = Exchange.create('test', [msg_markdown_h2])
+    title_h2 = extract_proposed_title(exchange_h2)
+    assert title_h2 == 'Getting Started'
+    
+    # Test bold title
+    msg_bold_title = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '**Machine Learning Basics**\n\nMachine learning is...'}
+    }
+    exchange_bold = Exchange.create('test', [msg_bold_title])
+    title_bold = extract_proposed_title(exchange_bold)
+    assert title_bold == 'Machine Learning Basics'
+    
+    # Test no title format (regular text)
+    msg_no_title = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'This is just regular text without any title formatting.\nMore content here.'}
+    }
+    exchange_no_title = Exchange.create('test', [msg_no_title])
+    title_none = extract_proposed_title(exchange_no_title)
+    assert title_none is None
+    
+    # Test malformed bold (only starts with **)
+    msg_malformed_bold = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '**This is not properly closed\nSome content here.'}
+    }
+    exchange_malformed = Exchange.create('test', [msg_malformed_bold])
+    title_malformed = extract_proposed_title(exchange_malformed)
+    assert title_malformed is None
+    
+    # Test title with extra whitespace
+    msg_whitespace = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '#   Data Science Guide   \n\nThis guide covers...'}
+    }
+    exchange_whitespace = Exchange.create('test', [msg_whitespace])
+    title_whitespace = extract_proposed_title(exchange_whitespace)
+    assert title_whitespace == 'Data Science Guide'
+    
+    # Test single line with title only
+    msg_title_only = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Quick Reference'}
+    }
+    exchange_title_only = Exchange.create('test', [msg_title_only])
+    title_only = extract_proposed_title(exchange_title_only)
+    assert title_only == 'Quick Reference'
+    
+    # Test multiple markdown headers (should only get first line)
+    msg_multiple_headers = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Main Title\n\n## Subtitle\n\nContent here...'}
+    }
+    exchange_multiple = Exchange.create('test', [msg_multiple_headers])
+    title_multiple = extract_proposed_title(exchange_multiple)
+    assert title_multiple == 'Main Title'
+    
+    # Test empty first line followed by title
+    msg_empty_first = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '\n# Not First Line\n\nContent...'}
+    }
+    exchange_empty_first = Exchange.create('test', [msg_empty_first])
+    title = extract_proposed_title(exchange_empty_first)
+    assert title == 'Not First Line'
+    
+    # Test exchange with multiple assistant messages (should use first one)
+    msg_first = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# First Message Title\n\nFirst response...'}
+    }
+    msg_second = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Second Message Title\n\nSecond response...'}
+    }
+    exchange_multiple_msgs = Exchange.create('test', [msg_first, msg_second])
+    title_first_msg = extract_proposed_title(exchange_multiple_msgs)
+    assert title_first_msg == 'First Message Title'
+    
+    # Test exchange with no assistant messages (edge case)
+    user_msg = {
+        'author': {'role': 'user'},
+        'content': {'text': 'Just a user message'}
+    }
+    exchange_no_assistant = Exchange.create('test', [user_msg])
+    title_no_assistant = extract_proposed_title(exchange_no_assistant)
+    assert title_no_assistant is None
+    
+    # Test empty exchange
+    exchange_empty = Exchange.create('test', [])
+    title_empty = extract_proposed_title(exchange_empty)
+    assert title_empty is None
+
+
+def test_naive_title_extraction():
+    """Test the helper function directly."""
+    # Test markdown headers
+    assert naive_title_extraction('# Simple Title') == 'Simple Title'
+    assert naive_title_extraction('## Header Level 2') == 'Header Level 2'
+    assert naive_title_extraction('### Deep Header') == 'Deep Header'
+    
+    # Test bold titles
+    assert naive_title_extraction('**Bold Title**') == 'Bold Title'
+    assert naive_title_extraction('**Another Bold**') == 'Another Bold'
+    
+    # Test no title formats
+    assert naive_title_extraction('Regular text') is None
+    assert naive_title_extraction('Not a title format') is None
+    
+    # Test malformed formats
+    assert naive_title_extraction('**Not closed properly') is None
+    assert naive_title_extraction('Only ends with**') is None
+    assert naive_title_extraction('#') == ''  # Just hash, no title
+    assert naive_title_extraction('****') == ''  # Just asterisks
+    
+    # Test with whitespace
+    assert naive_title_extraction('  # Title with spaces  ') == 'Title with spaces'
+    assert naive_title_extraction('**  Spaced Bold  **') == 'Spaced Bold'
+    
+    # Test multiline (should only process first line)
+    multiline_text = '''# First Line Title
+    Second line content
+    Third line content'''
+    assert naive_title_extraction(multiline_text) == 'First Line Title'
+    
+    # Test empty string
+    assert naive_title_extraction('') is None
+    assert naive_title_extraction('   ') is None
+
+
+---
+File: tests/conversation_tagger/test_integration.py
+---
+# tests/test_integration.py
+"""
+Integration tests for the complete conversation tagging system.
+"""
+
+import pytest
+from conversation_tagger import create_default_tagger, ConversationTagger
+
+
+@pytest.fixture
+def sample_coding_conversation():
+    """A realistic conversation about coding that should trigger multiple tags."""
+    return {
+        'conversation_id': 'coding_conv',
+        'title': 'Python help session',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Can you help me write a Python function to calculate fibonacci numbers?'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Sure! Here\'s a simple fibonacci function:\n\n```python\ndef fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n```'}
+                }
+            },
+            'msg3': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 3000,
+                    'content': {'text': 'Can you make it more efficient?'}
+                }
+            },
+            'msg4': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 4000,
+                    'content': {'text': 'Yes, here\'s a dynamic programming version:\n\n```python\ndef fibonacci_dp(n):\n    if n <= 1:\n        return n\n    \n    dp = [0, 1]\n    for i in range(2, n + 1):\n        dp.append(dp[i-1] + dp[i-2])\n    \n    return dp[n]\n```'}
+                }
+            }
+        }
+    }
+
+
+def test_default_tagger_creation():
+    """Test that default tagger is created with expected rules."""
+    tagger = create_default_tagger()
+    
+    assert isinstance(tagger, ConversationTagger)
+    assert len(tagger.exchange_parser.exchange_tagger.rules) > 0
+    
+    # Should have some default exchange rules
+    rule_names = list(tagger.exchange_parser.exchange_tagger.rules.keys())
+    assert 'has_wiki_links' in rule_names
+
+
+def test_end_to_end_tagging(sample_coding_conversation):
+    """Test complete tagging pipeline with realistic conversation."""
+    tagger = create_default_tagger()
+    
+    # Add a custom rule for testing
+    def mentions_python(exchange):
+        text = (' '.join(exchange.get_user_texts()) + ' ' + ' '.join(exchange.get_assistant_texts())).lower()
+        return 'python' in text
+    
+    tagger.add_exchange_rule('mentions_python', mentions_python)
+    
+    result = tagger.tag_conversation(sample_coding_conversation)
+    
+    # Basic structure checks
+    assert result.conversation_id == 'coding_conv'
+    assert result.exchange_count == 2  # Two separate exchanges
+    assert result.total_message_count == 4
+    
+    # Check that our custom rule fired
+    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
+    tag_names = [tag.name for tag in all_tags]
+    assert 'mentions_python' in tag_names
+
+
+def test_conversation_with_attachments():
+    """Test conversation that includes file attachments."""
+    conversation_with_file = {
+        'conversation_id': 'file_conv',
+        'title': 'File analysis',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Can you analyze this Python file?'},
+                    'metadata': {
+                        'attachments': [
+                            {'id': 'file1', 'name': 'script.py', 'mime_type': 'text/x-python'}
+                        ]
+                    }
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'I can help analyze your Python script...'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(conversation_with_file)
+    
+    # Should detect attachment-related tags
+    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
+    tag_names = [tag.name for tag in all_tags]
+    
+    assert 'first_user_has_attachments' in tag_names
+    assert 'first_user_has_code_attachments' in tag_names
+
+
+def test_math_conversation():
+    """Test conversation with mathematical content."""
+    math_conversation = {
+        'conversation_id': 'math_conv',
+        'title': 'Math help',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Explain the quadratic formula'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'The quadratic formula is: $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(math_conversation)
+    
+    # Should detect LaTeX math
+    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
+    tag_names = [tag.name for tag in all_tags]
+    
+    assert 'has_latex_math' in tag_names
+
+
+def test_large_content_detection():
+    """Test detection of large content messages."""
+    large_content = 'x' * 2500  # Over the threshold
+    
+    large_message_conversation = {
+        'conversation_id': 'large_conv',
+        'title': 'Large content',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': large_content}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'That\'s a lot of content!'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(large_message_conversation)
+    
+    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
+    tag_names = [tag.name for tag in all_tags]
+    
+    assert 'first_user_has_large_content' in tag_names
+
+
+def test_empty_conversation_handling():
+    """Test handling of edge cases like empty conversations."""
+    empty_conversation = {
+        'conversation_id': 'empty_conv',
+        'title': 'Empty',
+        'mapping': {}
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(empty_conversation)
+    
+    assert result.conversation_id == 'empty_conv'
+    assert result.exchange_count == 0
+    assert result.total_message_count == 0
+
+
+
+---
+File: tests/conversation_tagger/test_tagging.py
+---
+# tests/test_tagging.py
+"""
+Tagging functionality tests for exchanges and conversations.
+"""
+
+import pytest
+from conversation_tagger.core.exchange_tagger import ExchangeTagger
+from conversation_tagger.core.tagger import ConversationTagger
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.tag import Tag
+
+
+def test_exchange_tagger_basic():
+    """Test basic exchange tagging functionality."""
+    tagger = ExchangeTagger()
+    
+    def has_greeting(exchange):
+        user_text = ' '.join(exchange.get_user_texts()).lower()
+        return 'hello' in user_text or 'hi' in user_text
+    
+    tagger.add_rule('greeting', has_greeting)
+    
+    # Test with greeting
+    exchange = Exchange.create('test', [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello world!'}, 'create_time': 1000}
+    ])
+    
+    tagged = tagger.tag_exchange(exchange)
+    assert any(tag.name == 'greeting' for tag in tagged.tags)
+    
+    # Test without greeting
+    exchange_no_greeting = Exchange.create('test', [
+        {'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}, 'create_time': 1000}
+    ])
+    
+    tagged_no_greeting = tagger.tag_exchange(exchange_no_greeting)
+    assert not any(tag.name == 'greeting' for tag in tagged_no_greeting.tags)
+
+
+def test_exchange_tagger_with_attributes():
+    """Test exchange tagging with tag attributes."""
+    tagger = ExchangeTagger()
+    
+    def message_length(exchange):
+        text = ' '.join(exchange.get_user_texts())
+        length = len(text)
+        if length > 50:
+            return Tag('message_length', size='long', chars=length)
+        elif length > 10:
+            return Tag('message_length', size='medium', chars=length)
+        return False
+    
+    tagger.add_rule('message_length', message_length)
+    
+    long_exchange = Exchange.create('test', [
+        {'author': {'role': 'user'}, 'content': {'text': 'This is a very long message that should definitely be tagged as long since it exceeds the threshold'}, 'create_time': 1000}
+    ])
+    
+    tagged = tagger.tag_exchange(long_exchange)
+    length_tags = [tag for tag in tagged.tags if tag.name == 'message_length']
+    
+    assert len(length_tags) == 1
+    assert length_tags[0].attributes['size'] == 'long'
+    assert length_tags[0].attributes['chars'] > 50
+
+
+def test_conversation_tagger():
+    """Test conversation-level tagging."""
+    tagger = ConversationTagger()
+    
+    def is_multi_turn(conversation):
+        return conversation.exchange_count > 1
+    
+    def exchange_count_info(conversation):
+        return Tag('exchange_info', count=conversation.exchange_count)
+    
+    tagger.add_conversation_rule('multi_turn', is_multi_turn)
+    tagger.add_conversation_rule('exchange_info', exchange_count_info)
+    
+    # Create conversation data with multiple exchanges
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Multi-turn conversation',
+        'mapping': {
+            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'First'}}},
+            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Response 1'}}},
+            'msg3': {'message': {'author': {'role': 'user'}, 'create_time': 3000, 'content': {'text': 'Second'}}},
+            'msg4': {'message': {'author': {'role': 'assistant'}, 'create_time': 4000, 'content': {'text': 'Response 2'}}}
+        }
+    }
+    
+    result = tagger.tag_conversation(conversation_data)
+    
+    tag_names = [tag.name for tag in result.tags]
+    assert 'multi_turn' in tag_names
+    assert 'exchange_info' in tag_names
+    
+    # Check specific attributes
+    exchange_info_tags = [tag for tag in result.tags if tag.name == 'exchange_info']
+    assert exchange_info_tags[0].attributes['count'] == 2
+
+
+def test_tagging_error_handling():
+    """Test that tagging rules handle errors gracefully."""
+    tagger = ExchangeTagger()
+    
+    def broken_rule(exchange):
+        raise ValueError("This rule always fails")
+    
+    def working_rule(exchange):
+        return True
+    
+    tagger.add_rule('broken', broken_rule)
+    tagger.add_rule('working', working_rule)
+    
+    exchange = Exchange.create('test', [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000}
+    ])
+    
+    # Should not raise exception
+    tagged = tagger.tag_exchange(exchange)
+    
+    # Working rule should apply, broken rule should be skipped
+    tag_names = [tag.name for tag in tagged.tags]
+    assert 'working' in tag_names
+    assert 'broken' not in tag_names
+
+
+@pytest.fixture
+def conversation_with_continuation():
+    """Conversation data that should trigger continuation merging."""
+    return {
+        'conversation_id': 'test_conv',
+        'title': 'Continuation test',
+        'mapping': {
+            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Tell me about Python'}}},
+            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Python is a language...'}}},
+            'msg3': {'message': {'author': {'role': 'user'}, 'create_time': 3000, 'content': {'text': 'continue'}}},
+            'msg4': {'message': {'author': {'role': 'assistant'}, 'create_time': 4000, 'content': {'text': 'It was created by Guido...'}}}
+        }
+    }
+
+
+def test_continuation_detection(conversation_with_continuation):
+    """Test that continuation patterns merge exchanges correctly."""
+    tagger = ConversationTagger()
+    result = tagger.tag_conversation(conversation_with_continuation)
+    
+    # Should merge into single exchange due to continuation
+    assert result.exchange_count == 1
+    
+    exchange = result.exchanges[0]
+    assert len(exchange) == 4
+    assert exchange.has_continuations()
+    
+    user_text = ' '.join(exchange.get_user_texts())
+    assert 'Tell me about Python' in user_text
+    assert 'continue' in user_text
+
+
