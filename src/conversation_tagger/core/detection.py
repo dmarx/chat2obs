@@ -42,12 +42,21 @@ def conversation_feature_summary(conversation: Conversation) -> List[Tag]:
     
     # Count exchanges with each feature
     for exchange in conversation.exchanges:
+        exchange_features = set()
         for tag in exchange.tags:
             if tag.name in ['has_github_repos', 'has_canvas_operations', 'has_web_search', 
                            'has_reasoning_thoughts', 'has_code_execution', 'has_code_blocks',
                            'has_script_headers', 'has_code_structure_patterns', 'has_wiki_links',
                            'has_latex_math', 'user_has_attachments']:
-                feature_counts[tag.name] = feature_counts.get(tag.name, 0) + 1
+                exchange_features.add(tag.name)
+            elif tag.name == 'gizmo':
+                exchange_features.add('has_gizmo_usage')
+            elif tag.name == 'plugin':
+                exchange_features.add('has_plugin_usage')
+        
+        # Count each feature once per exchange
+        for feature in exchange_features:
+            feature_counts[feature] = feature_counts.get(feature, 0) + 1
     
     tags = []
     for feature, count in feature_counts.items():
@@ -343,31 +352,35 @@ def first_user_has_code_attachments(exchange: Exchange) -> bool:
 
 
 # Gizmo/plugin detection
-def exchange_uses_gizmo_plugin(exchange: Exchange) -> List[Tag]:
-    """Detect gizmo/plugin usage in an exchange."""
+def get_gizmo_tags(exchange: Exchange) -> List[Tag]:
+    """Get tags for specific gizmos used in this exchange."""
     tags = []
     gizmos = set()
-    plugins = set()
     
-    # Check message-level metadata
     for message in exchange.messages:
         metadata = message.get('metadata', {})
-        
-        # Invoked plugins
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    for gizmo in gizmos:
+        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    
+    return tags
+
+
+def get_plugin_tags(exchange: Exchange) -> List[Tag]:
+    """Get tags for specific plugins used in this exchange."""
+    tags = []
+    plugins = set()
+    
+    for message in exchange.messages:
+        metadata = message.get('metadata', {})
         invoked_plugin = metadata.get('invoked_plugin', {})
         if invoked_plugin:
             if invoked_plugin.get('plugin_id'):
                 plugins.add(invoked_plugin['plugin_id'])
             if invoked_plugin.get('namespace'):
                 plugins.add(invoked_plugin['namespace'])
-        
-        # Gizmo usage
-        if metadata.get('gizmo_id'):
-            gizmos.add(metadata['gizmo_id'])
-    
-    # Create tags
-    for gizmo in gizmos:
-        tags.append(Tag('gizmo', gizmo_id=gizmo))
     
     for plugin in plugins:
         tags.append(Tag('plugin', plugin_id=plugin))
@@ -417,5 +430,6 @@ EXCHANGE_RULES = {
     'first_user_has_code_attachments': first_user_has_code_attachments,
     
     # Gizmo/plugin detection
-    'exchange_uses_gizmo_plugin': exchange_uses_gizmo_plugin,
+    'get_gizmo_tags': get_gizmo_tags,
+    'get_plugin_tags': get_plugin_tags,
 }

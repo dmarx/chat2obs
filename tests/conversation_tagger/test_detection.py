@@ -57,10 +57,10 @@ def test_conversation_feature_summary():
     """Test feature aggregation across exchanges."""
     # Create exchanges with different feature tags
     exchange1 = Exchange.create('test', [])
-    exchange1.tags = [Tag('has_code_blocks'), Tag('has_web_search')]
+    exchange1.tags = [Tag('has_code_blocks'), Tag('has_web_search'), Tag('gizmo', gizmo_id='gpt-4')]
     
     exchange2 = Exchange.create('test', [])
-    exchange2.tags = [Tag('has_code_blocks'), Tag('has_github_repos')]
+    exchange2.tags = [Tag('has_code_blocks'), Tag('has_github_repos'), Tag('plugin', plugin_id='web')]
     
     exchange3 = Exchange.create('test', [])
     exchange3.tags = [Tag('has_latex_math')]
@@ -78,17 +78,25 @@ def test_conversation_feature_summary():
     assert code_tag.attributes['total_exchanges'] == 3
     assert code_tag.attributes['percentage'] == 66.7
     
-    # has_web_search appears in 1/3 exchanges  
     assert 'conversation_has_web_search' in tag_dict
     search_tag = tag_dict['conversation_has_web_search']
     assert search_tag.attributes['exchange_count'] == 1
     assert search_tag.attributes['percentage'] == 33.3
     
-    # has_latex_math appears in 1/3 exchanges (it IS in the tracking list)
+    assert 'conversation_has_gizmo_usage' in tag_dict
+    gizmo_tag = tag_dict['conversation_has_gizmo_usage']
+    assert gizmo_tag.attributes['exchange_count'] == 1
+    assert gizmo_tag.attributes['percentage'] == 33.3
+    
+    assert 'conversation_has_plugin_usage' in tag_dict
+    plugin_tag = tag_dict['conversation_has_plugin_usage']
+    assert plugin_tag.attributes['exchange_count'] == 1
+    assert plugin_tag.attributes['percentage'] == 33.3
+
     assert 'conversation_has_latex_math' in tag_dict
-    latex_tag = tag_dict['conversation_has_latex_math'] 
-    assert latex_tag.attributes['exchange_count'] == 1
-    assert latex_tag.attributes['percentage'] == 33.3
+    
+    # Features not in the tracking list should not appear
+    # ... maybe later
     
     # Empty conversation should return empty list
     empty_conv = Conversation('test', 'Empty', [])
@@ -135,6 +143,16 @@ def test_conversation_gizmo_plugin_summary():
     empty_conv = Conversation('test', 'Empty', [empty_exchange])
     empty_tags = conversation_gizmo_plugin_summary(empty_conv)
     assert empty_tags == []
+    
+    # Only gizmo usage
+    gizmo_only_exchange = Exchange.create('test', [])
+    gizmo_only_exchange.tags = [Tag('gizmo', gizmo_id='claude')]
+    gizmo_only_conv = Conversation('test', 'GizmoOnly', [gizmo_only_exchange])
+    gizmo_only_tags = conversation_gizmo_plugin_summary(gizmo_only_conv)
+    assert len(gizmo_only_tags) == 1
+    assert gizmo_only_tags[0].name == 'conversation_gizmo_usage'
+    assert gizmo_only_tags[0].attributes['unique_gizmos'] == 1
+    assert gizmo_only_tags[0].attributes['gizmo_list'] == ['claude']
 
 
 ######################
@@ -672,55 +690,134 @@ def test_first_user_has_code_attachments():
     assert first_user_has_code_attachments(exchange_no_attachments) == False
 
 
-def test_exchange_uses_gizmo_plugin():
-    """Test gizmo/plugin usage detection."""
-    # Exchange with gizmo usage
+def test_get_gizmo_tags():
+    """Test gizmo tag generation."""
+    # Exchange with single gizmo
     msg_with_gizmo = {
         'author': {'role': 'assistant'},
         'metadata': {'gizmo_id': 'gpt-4-turbo'},
         'content': {'text': 'Response from specialized model'}
     }
-    exchange_gizmo = Exchange.create('test', [msg_with_gizmo])
-    tags_gizmo = exchange_uses_gizmo_plugin(exchange_gizmo)
-    assert len(tags_gizmo) == 1
-    assert tags_gizmo[0].name == 'gizmo'
-    assert tags_gizmo[0].attributes['gizmo_id'] == 'gpt-4-turbo'
+    exchange_single = Exchange.create('test', [msg_with_gizmo])
+    tags_single = get_gizmo_tags(exchange_single)
+    assert len(tags_single) == 1
+    assert tags_single[0].name == 'gizmo'
+    assert tags_single[0].attributes['gizmo_id'] == 'gpt-4-turbo'
     
-    # Exchange with plugin usage
-    msg_with_plugin = {
+    # Exchange with multiple messages using different gizmos
+    msg_gizmo1 = {
         'author': {'role': 'assistant'},
-        'metadata': {'invoked_plugin': {'plugin_id': 'web_browser', 'namespace': 'browser'}},
-        'content': {'text': 'Let me search the web'}
+        'metadata': {'gizmo_id': 'gpt-4'},
+        'content': {'text': 'First response'}
     }
-    exchange_plugin = Exchange.create('test', [msg_with_plugin])
-    tags_plugin = exchange_uses_gizmo_plugin(exchange_plugin)
-    assert len(tags_plugin) == 2  # Both plugin_id and namespace
-    plugin_ids = [tag.attributes.get('plugin_id') for tag in tags_plugin if tag.name == 'plugin']
-    assert 'web_browser' in plugin_ids
-    assert 'browser' in plugin_ids
-    
-    # Exchange with both gizmo and plugin
-    msg_both = {
+    msg_gizmo2 = {
         'author': {'role': 'assistant'},
-        'metadata': {
-            'gizmo_id': 'dalle',
-            'invoked_plugin': {'plugin_id': 'image_gen'}
-        },
-        'content': {'text': 'Creating image'}
+        'metadata': {'gizmo_id': 'dalle'},
+        'content': {'text': 'Second response'}
     }
-    exchange_both = Exchange.create('test', [msg_both])
-    tags_both = exchange_uses_gizmo_plugin(exchange_both)
-    assert len(tags_both) == 2
-    tag_names = [tag.name for tag in tags_both]
-    assert 'gizmo' in tag_names
-    assert 'plugin' in tag_names
+    exchange_multiple = Exchange.create('test', [msg_gizmo1, msg_gizmo2])
+    tags_multiple = get_gizmo_tags(exchange_multiple)
+    assert len(tags_multiple) == 2
+    gizmo_ids = {tag.attributes['gizmo_id'] for tag in tags_multiple}
+    assert gizmo_ids == {'gpt-4', 'dalle'}
     
-    # Exchange without gizmo/plugin usage
-    msg_regular = {
+    # Exchange with same gizmo used multiple times (should deduplicate)
+    msg_dup1 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4'},
+        'content': {'text': 'First'}
+    }
+    msg_dup2 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4'},
+        'content': {'text': 'Second'}
+    }
+    exchange_dup = Exchange.create('test', [msg_dup1, msg_dup2])
+    tags_dup = get_gizmo_tags(exchange_dup)
+    assert len(tags_dup) == 1
+    assert tags_dup[0].attributes['gizmo_id'] == 'gpt-4'
+    
+    # Exchange without gizmo usage
+    msg_no_gizmo = {
         'author': {'role': 'assistant'},
         'metadata': {},
         'content': {'text': 'Regular response'}
     }
-    exchange_regular = Exchange.create('test', [msg_regular])
-    tags_regular = exchange_uses_gizmo_plugin(exchange_regular)
-    assert tags_regular == []
+    exchange_none = Exchange.create('test', [msg_no_gizmo])
+    tags_none = get_gizmo_tags(exchange_none)
+    assert tags_none == []
+
+
+def test_get_plugin_tags():
+    """Test plugin tag generation."""
+    # Exchange with plugin_id only
+    msg_plugin_id = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'web_browser'}},
+        'content': {'text': 'Searching web'}
+    }
+    exchange_plugin_id = Exchange.create('test', [msg_plugin_id])
+    tags_plugin_id = get_plugin_tags(exchange_plugin_id)
+    assert len(tags_plugin_id) == 1
+    assert tags_plugin_id[0].name == 'plugin'
+    assert tags_plugin_id[0].attributes['plugin_id'] == 'web_browser'
+    
+    # Exchange with namespace only
+    msg_namespace = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'namespace': 'browser_tools'}},
+        'content': {'text': 'Using browser tools'}
+    }
+    exchange_namespace = Exchange.create('test', [msg_namespace])
+    tags_namespace = get_plugin_tags(exchange_namespace)
+    assert len(tags_namespace) == 1
+    assert tags_namespace[0].attributes['plugin_id'] == 'browser_tools'
+    
+    # Exchange with both plugin_id and namespace
+    msg_both = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'image_gen', 'namespace': 'dalle'}},
+        'content': {'text': 'Generating image'}
+    }
+    exchange_both = Exchange.create('test', [msg_both])
+    tags_both = get_plugin_tags(exchange_both)
+    assert len(tags_both) == 2
+    plugin_ids = {tag.attributes['plugin_id'] for tag in tags_both}
+    assert plugin_ids == {'image_gen', 'dalle'}
+    
+    # Exchange with multiple different plugins
+    msg_plugin1 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'web_browser'}},
+        'content': {'text': 'First'}
+    }
+    msg_plugin2 = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'calculator'}},
+        'content': {'text': 'Second'}
+    }
+    exchange_multiple = Exchange.create('test', [msg_plugin1, msg_plugin2])
+    tags_multiple = get_plugin_tags(exchange_multiple)
+    assert len(tags_multiple) == 2
+    plugin_ids = {tag.attributes['plugin_id'] for tag in tags_multiple}
+    assert plugin_ids == {'web_browser', 'calculator'}
+    
+    # Exchange with empty invoked_plugin
+    msg_empty = {
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {}},
+        'content': {'text': 'No plugin'}
+    }
+    exchange_empty = Exchange.create('test', [msg_empty])
+    tags_empty = get_plugin_tags(exchange_empty)
+    assert tags_empty == []
+    
+    # Exchange without plugin usage
+    msg_none = {
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular response'}
+    }
+    exchange_none = Exchange.create('test', [msg_none])
+    tags_none = get_plugin_tags(exchange_none)
+    assert tags_none == []
