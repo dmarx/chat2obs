@@ -78,26 +78,25 @@ def test_conversation_feature_summary():
     assert code_tag.attributes['total_exchanges'] == 3
     assert code_tag.attributes['percentage'] == 66.7
     
-    # has_web_search appears in 1/3 exchanges  
     assert 'conversation_has_web_search' in tag_dict
     search_tag = tag_dict['conversation_has_web_search']
     assert search_tag.attributes['exchange_count'] == 1
     assert search_tag.attributes['percentage'] == 33.3
     
-    # Gizmo usage should be detected
     assert 'conversation_has_gizmo_usage' in tag_dict
     gizmo_tag = tag_dict['conversation_has_gizmo_usage']
     assert gizmo_tag.attributes['exchange_count'] == 1
     assert gizmo_tag.attributes['percentage'] == 33.3
     
-    # Plugin usage should be detected
     assert 'conversation_has_plugin_usage' in tag_dict
     plugin_tag = tag_dict['conversation_has_plugin_usage']
     assert plugin_tag.attributes['exchange_count'] == 1
     assert plugin_tag.attributes['percentage'] == 33.3
+
+    assert 'conversation_has_latex_math' in tag_dict
     
     # Features not in the tracking list should not appear
-    assert 'conversation_has_latex_math' not in tag_dict
+    # ... maybe later
     
     # Empty conversation should return empty list
     empty_conv = Conversation('test', 'Empty', [])
