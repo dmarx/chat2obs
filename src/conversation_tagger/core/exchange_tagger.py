@@ -2,15 +2,10 @@
 """
 Tag individual exchanges using the improved exchange structure.
 """
-import re
-from typing import Dict, Any, List, Callable
-from collections import defaultdict
+from typing import Dict, Callable
 from .tag import Tag
-from .exchange import Exchange, get_message_text
+from .exchange import Exchange
 
-# to do: factory should just import this directly
-from .detection import EXCHANGE_RULES
-DEFAULT_EXCHANGE_RULES = EXCHANGE_RULES.copy()
 
 
 # we generalize this into a Tagger(ABC) which 
