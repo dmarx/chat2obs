@@ -414,7 +414,10 @@ def extract_proposed_title(exchange: Exchange) -> str:
     Extracts proposed content title from the assistant's response.
     Assumes that an article was generated with a proposed title.
     """
-    text = exchange.get_assistant_texts()[0]
+    try:
+       text = exchange.get_assistant_texts()[0]
+    except IndexError:
+        return None
     return naive_title_extraction(text)
 
 
