@@ -55,8 +55,7 @@ def test_default_tagger_creation():
     
     # Should have some default exchange rules
     rule_names = list(tagger.exchange_parser.exchange_tagger.rules.keys())
-    assert 'exchange_type' in rule_names
-    assert 'has_multiple_turns' in rule_names
+    assert 'has_wiki_links' in rule_names
 
 
 def test_end_to_end_tagging(sample_coding_conversation):
