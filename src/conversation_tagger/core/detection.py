@@ -388,6 +388,39 @@ def get_plugin_tags(exchange: Exchange) -> List[Tag]:
     return tags
 
 
+##############################
+# Template content inference #
+##############################
+
+def naive_title_extraction(text):
+    """
+    Attempts to detect presence of title in first line of a message.
+    """
+    # get first line
+    top = text.strip().split("\n")[0]
+
+    # title/section header detected
+    outv = None
+    if top.startswith("#"):
+        outv = top.replace("#","").strip()
+    elif top.startswith("**") and top.endswith("**"):
+        outv = top.replace("**","")
+    if outv is not None:
+        outv = outv.strip()
+    return outv
+
+def extract_proposed_title(exchange: Exchange) -> str:
+    """
+    Extracts proposed content title from the assistant's response.
+    Assumes that an article was generated with a proposed title.
+    """
+    try:
+       text = exchange.get_assistant_texts()[0]
+    except IndexError:
+        return None
+    return naive_title_extraction(text)
+
+
 ######################
 #   Rule Registry    #
 ######################
@@ -432,4 +465,7 @@ EXCHANGE_RULES = {
     # Gizmo/plugin detection
     'get_gizmo_tags': get_gizmo_tags,
     'get_plugin_tags': get_plugin_tags,
+
+    # Template content inference
+    'proposed_title': extract_proposed_title,
 }

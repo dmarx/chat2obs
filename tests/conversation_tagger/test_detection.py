@@ -821,3 +821,149 @@ def test_get_plugin_tags():
     exchange_none = Exchange.create('test', [msg_none])
     tags_none = get_plugin_tags(exchange_none)
     assert tags_none == []
+
+def test_extract_proposed_title():
+    """Test proposed title extraction from assistant messages."""
+    # Test markdown header title (single #)
+    msg_markdown_h1 = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Introduction to Python\n\nPython is a programming language...'}
+    }
+    exchange_h1 = Exchange.create('test', [msg_markdown_h1])
+    title_h1 = extract_proposed_title(exchange_h1)
+    assert title_h1 == 'Introduction to Python'
+    
+    # Test markdown header title (multiple #)
+    msg_markdown_h2 = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '## Getting Started\n\nFirst, install Python...'}
+    }
+    exchange_h2 = Exchange.create('test', [msg_markdown_h2])
+    title_h2 = extract_proposed_title(exchange_h2)
+    assert title_h2 == 'Getting Started'
+    
+    # Test bold title
+    msg_bold_title = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '**Machine Learning Basics**\n\nMachine learning is...'}
+    }
+    exchange_bold = Exchange.create('test', [msg_bold_title])
+    title_bold = extract_proposed_title(exchange_bold)
+    assert title_bold == 'Machine Learning Basics'
+    
+    # Test no title format (regular text)
+    msg_no_title = {
+        'author': {'role': 'assistant'},
+        'content': {'text': 'This is just regular text without any title formatting.\nMore content here.'}
+    }
+    exchange_no_title = Exchange.create('test', [msg_no_title])
+    title_none = extract_proposed_title(exchange_no_title)
+    assert title_none is None
+    
+    # Test malformed bold (only starts with **)
+    msg_malformed_bold = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '**This is not properly closed\nSome content here.'}
+    }
+    exchange_malformed = Exchange.create('test', [msg_malformed_bold])
+    title_malformed = extract_proposed_title(exchange_malformed)
+    assert title_malformed is None
+    
+    # Test title with extra whitespace
+    msg_whitespace = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '#   Data Science Guide   \n\nThis guide covers...'}
+    }
+    exchange_whitespace = Exchange.create('test', [msg_whitespace])
+    title_whitespace = extract_proposed_title(exchange_whitespace)
+    assert title_whitespace == 'Data Science Guide'
+    
+    # Test single line with title only
+    msg_title_only = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Quick Reference'}
+    }
+    exchange_title_only = Exchange.create('test', [msg_title_only])
+    title_only = extract_proposed_title(exchange_title_only)
+    assert title_only == 'Quick Reference'
+    
+    # Test multiple markdown headers (should only get first line)
+    msg_multiple_headers = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Main Title\n\n## Subtitle\n\nContent here...'}
+    }
+    exchange_multiple = Exchange.create('test', [msg_multiple_headers])
+    title_multiple = extract_proposed_title(exchange_multiple)
+    assert title_multiple == 'Main Title'
+    
+    # Test empty first line followed by title
+    msg_empty_first = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '\n# Not First Line\n\nContent...'}
+    }
+    exchange_empty_first = Exchange.create('test', [msg_empty_first])
+    title = extract_proposed_title(exchange_empty_first)
+    assert title == 'Not First Line'
+    
+    # Test exchange with multiple assistant messages (should use first one)
+    msg_first = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# First Message Title\n\nFirst response...'}
+    }
+    msg_second = {
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Second Message Title\n\nSecond response...'}
+    }
+    exchange_multiple_msgs = Exchange.create('test', [msg_first, msg_second])
+    title_first_msg = extract_proposed_title(exchange_multiple_msgs)
+    assert title_first_msg == 'First Message Title'
+    
+    # Test exchange with no assistant messages (edge case)
+    user_msg = {
+        'author': {'role': 'user'},
+        'content': {'text': 'Just a user message'}
+    }
+    exchange_no_assistant = Exchange.create('test', [user_msg])
+    title_no_assistant = extract_proposed_title(exchange_no_assistant)
+    assert title_no_assistant is None
+    
+    # Test empty exchange
+    exchange_empty = Exchange.create('test', [])
+    title_empty = extract_proposed_title(exchange_empty)
+    assert title_empty is None
+
+
+def test_naive_title_extraction():
+    """Test the helper function directly."""
+    # Test markdown headers
+    assert naive_title_extraction('# Simple Title') == 'Simple Title'
+    assert naive_title_extraction('## Header Level 2') == 'Header Level 2'
+    assert naive_title_extraction('### Deep Header') == 'Deep Header'
+    
+    # Test bold titles
+    assert naive_title_extraction('**Bold Title**') == 'Bold Title'
+    assert naive_title_extraction('**Another Bold**') == 'Another Bold'
+    
+    # Test no title formats
+    assert naive_title_extraction('Regular text') is None
+    assert naive_title_extraction('Not a title format') is None
+    
+    # Test malformed formats
+    assert naive_title_extraction('**Not closed properly') is None
+    assert naive_title_extraction('Only ends with**') is None
+    assert naive_title_extraction('#') == ''  # Just hash, no title
+    assert naive_title_extraction('****') == ''  # Just asterisks
+    
+    # Test with whitespace
+    assert naive_title_extraction('  # Title with spaces  ') == 'Title with spaces'
+    assert naive_title_extraction('**  Spaced Bold  **') == 'Spaced Bold'
+    
+    # Test multiline (should only process first line)
+    multiline_text = '''# First Line Title
+    Second line content
+    Third line content'''
+    assert naive_title_extraction(multiline_text) == 'First Line Title'
+    
+    # Test empty string
+    assert naive_title_extraction('') is None
+    assert naive_title_extraction('   ') is None
