@@ -84,8 +84,11 @@ def test_conversation_feature_summary():
     assert search_tag.attributes['exchange_count'] == 1
     assert search_tag.attributes['percentage'] == 33.3
     
-    # Features not in the tracking list should not appear
-    assert 'conversation_has_latex_math' not in tag_dict
+    # has_latex_math appears in 1/3 exchanges (it IS in the tracking list)
+    assert 'conversation_has_latex_math' in tag_dict
+    latex_tag = tag_dict['conversation_has_latex_math'] 
+    assert latex_tag.attributes['exchange_count'] == 1
+    assert latex_tag.attributes['percentage'] == 33.3
     
     # Empty conversation should return empty list
     empty_conv = Conversation('test', 'Empty', [])
