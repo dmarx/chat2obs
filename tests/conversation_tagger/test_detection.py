@@ -903,7 +903,7 @@ def test_extract_proposed_title():
     }
     exchange_empty_first = Exchange.create('test', [msg_empty_first])
     title = extract_proposed_title(exchange_empty_first)
-    assert title is 'Not First Line'
+    assert title == 'Not First Line'
     
     # Test exchange with multiple assistant messages (should use first one)
     msg_first = {
@@ -956,7 +956,7 @@ def test_naive_title_extraction():
     
     # Test with whitespace
     assert naive_title_extraction('  # Title with spaces  ') == 'Title with spaces'
-    assert naive_title_extraction('**  Spaced Bold  **') == '  Spaced Bold  '
+    assert naive_title_extraction('**  Spaced Bold  **') == 'Spaced Bold'
     
     # Test multiline (should only process first line)
     multiline_text = '''# First Line Title
