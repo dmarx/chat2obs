@@ -1,48 +1,44 @@
 # conversation_tagger/analysis/faceting.py
 """
 Faceting functionality for analyzing conversations by different dimensions.
+Updated to work with dict-based annotations.
 """
 
 from typing import Dict, Any, List, Optional
 from collections import defaultdict
 
-from ..core.tag import Tag
-
-
-def get_facet_value(tags: List[Tag], facet_tag_name: str, 
+def get_facet_value(annotations: Dict[str, Any], facet_annotation_name: str, 
                    facet_attribute: Optional[str] = None) -> str:
-    """Extract facet value from a conversation's tags."""
-    matching_tags = [tag for tag in tags if tag.name == facet_tag_name]
-    
-    if not matching_tags:
+    """Extract facet value from a conversation's annotations."""
+    if facet_annotation_name not in annotations:
         return "<none>"
     
+    annotation_value = annotations[facet_annotation_name]
+    
     if facet_attribute is None:
-        # Just check for presence of the tag
-        return f"has_{facet_tag_name}"
+        # Just check for presence/value of the annotation
+        if isinstance(annotation_value, bool):
+            return f"has_{facet_annotation_name}" if annotation_value else "<none>"
+        elif isinstance(annotation_value, (int, float, str)):
+            return str(annotation_value)
+        else:
+            return f"has_{facet_annotation_name}"
     
-    # Extract specific attribute values
-    values = []
-    for tag in matching_tags:
-        if facet_attribute in tag.attributes:
-            values.append(str(tag.attributes[facet_attribute]))
+    # Extract specific attribute from nested dict
+    if isinstance(annotation_value, dict) and facet_attribute in annotation_value:
+        return str(annotation_value[facet_attribute])
     
-    if not values:
-        return f"<{facet_tag_name}_no_{facet_attribute}>"
-    
-    # If multiple values, join them
-    return "; ".join(sorted(set(values)))
-
+    return f"<{facet_annotation_name}_no_{facet_attribute}>"
 
 def do_facet_conversations(tagged_conversations: List[Dict[str, Any]], 
-                       facet_tag_name: str, 
+                       facet_annotation_name: str, 
                        facet_attribute: Optional[str] = None,
                        max_facets: int = 50) -> Dict[str, List[Dict[str, Any]]]:
     """Group conversations by facet values."""
     facets = defaultdict(list)
     
     for tagged_conv in tagged_conversations:
-        facet_value = get_facet_value(tagged_conv['tags'], facet_tag_name, facet_attribute)
+        facet_value = get_facet_value(tagged_conv['annotations'], facet_annotation_name, facet_attribute)
         facets[facet_value].append(tagged_conv)
     
     # Sort by facet size (largest first) and limit
@@ -64,23 +60,22 @@ def do_facet_conversations(tagged_conversations: List[Dict[str, Any]],
     
     return sorted_facets
 
-
 def print_faceted_summary(tagged_conversations: List[Dict[str, Any]], 
-                         facet_tag_name: str, 
+                         facet_annotation_name: str, 
                          facet_attribute: Optional[str] = None,
                          show_details: bool = False,
                          max_facets: int = 20):
-    """Print tag summary broken down by facets."""
+    """Print annotation summary broken down by facets."""
     total = len(tagged_conversations)
-    facets = do_facet_conversations(tagged_conversations, facet_tag_name, facet_attribute, max_facets)
+    facets = do_facet_conversations(tagged_conversations, facet_annotation_name, facet_attribute, max_facets)
     
     print(f"Tagged {total} conversations")
-    print(f"Faceted by: {facet_tag_name}" + 
+    print(f"Faceted by: {facet_annotation_name}" + 
           (f".{facet_attribute}" if facet_attribute else ""))
     print(f"Found {len(facets)} facet values")
     
     print(f"\n{'='*80}")
-    print(f"FACETED TAG SUMMARY")
+    print(f"FACETED ANNOTATION SUMMARY")
     print(f"{'='*80}")
     
     for facet_value, facet_conversations in facets.items():
@@ -91,43 +86,33 @@ def print_faceted_summary(tagged_conversations: List[Dict[str, Any]],
         print(f"    Conversations: {facet_size} ({facet_percentage:.1f}% of total)")
         print(f"    {'-' * 60}")
         
-        # Calculate tag statistics for this facet
-        tag_counts = defaultdict(int)
-        tag_attributes = defaultdict(lambda: defaultdict(list))
-        unique_structured_tags = defaultdict(set)
+        # Calculate annotation statistics for this facet
+        annotation_counts = defaultdict(int)
+        numeric_annotations = defaultdict(list)
         
         for tagged_conv in facet_conversations:
-            for tag in tagged_conv['tags']:
-                tag_counts[tag.name] += 1
+            for annotation_name, annotation_value in tagged_conv['annotations'].items():
+                annotation_counts[annotation_name] += 1
                 
-                # Collect attribute information
-                for attr_name, attr_value in tag.attributes.items():
-                    if isinstance(attr_value, (int, float)):
-                        tag_attributes[tag.name][attr_name].append(attr_value)
-                    else:
-                        unique_structured_tags[tag.name].add(f"{attr_name}={attr_value}")
+                # Collect numeric values for statistics
+                if isinstance(annotation_value, (int, float)):
+                    numeric_annotations[annotation_name].append(annotation_value)
+                elif isinstance(annotation_value, dict):
+                    for attr_name, attr_value in annotation_value.items():
+                        if isinstance(attr_value, (int, float)):
+                            numeric_annotations[f"{annotation_name}.{attr_name}"].append(attr_value)
         
-        # Sort tags for this facet (show all tags)
-        sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
+        # Sort annotations for this facet
+        sorted_annotations = sorted(annotation_counts.items(), key=lambda x: x[1], reverse=True)
         
-        for tag_name, count in sorted_tags:
+        for annotation_name, count in sorted_annotations:
             percentage = (count / facet_size) * 100
-            print(f"    {tag_name}: {count} ({percentage:.1f}%)")
+            print(f"    {annotation_name}: {count} ({percentage:.1f}%)")
             
-            if show_details:
-                # Show numeric attribute statistics
-                if tag_name in tag_attributes:
-                    for attr_name, values in tag_attributes[tag.name].items():
-                        if values:
-                            avg_val = sum(values) / len(values)
-                            min_val = min(values)
-                            max_val = max(values)
-                            print(f"        {attr_name}: avg={avg_val:.1f}, range=[{min_val}, {max_val}]")
-                
-                # Show unique structured values
-                if tag_name in unique_structured_tags:
-                    unique_vals = sorted(unique_structured_tags[tag.name])
-                    if len(unique_vals) <= 5:
-                        print(f"        values: {', '.join(unique_vals)}")
-                    else:
-                        print(f"        values: {', '.join(unique_vals[:5])} ... (+{len(unique_vals)-5} more)")
+            if show_details and annotation_name in numeric_annotations:
+                values = numeric_annotations[annotation_name]
+                if values:
+                    avg_val = sum(values) / len(values)
+                    min_val = min(values)
+                    max_val = max(values)
+                    print(f"        avg={avg_val:.1f}, range=[{min_val}, {max_val}]")# conversation_tagger/core/exchange.py
