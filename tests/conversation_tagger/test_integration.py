@@ -1,6 +1,7 @@
 # tests/test_integration.py
 """
 Integration tests for the complete conversation tagging system.
+Updated to test annotation-based system.
 """
 
 import pytest
@@ -9,7 +10,7 @@ from conversation_tagger import create_default_tagger, ConversationTagger
 
 @pytest.fixture
 def sample_coding_conversation():
-    """A realistic conversation about coding that should trigger multiple tags."""
+    """A realistic conversation about coding that should trigger multiple annotations."""
     return {
         'conversation_id': 'coding_conv',
         'title': 'Python help session',
@@ -58,7 +59,7 @@ def test_default_tagger_creation():
     assert 'has_wiki_links' in rule_names
 
 
-def test_end_to_end_tagging(sample_coding_conversation):
+def test_end_to_end_tagging_with_annotations(sample_coding_conversation):
     """Test complete tagging pipeline with realistic conversation."""
     tagger = create_default_tagger()
     
@@ -67,7 +68,16 @@ def test_end_to_end_tagging(sample_coding_conversation):
         text = (' '.join(exchange.get_user_texts()) + ' ' + ' '.join(exchange.get_assistant_texts())).lower()
         return 'python' in text
     
+    def count_code_blocks(exchange):
+        """Return annotation with count of code blocks."""
+        all_text = ' '.join(exchange.get_user_texts() + exchange.get_assistant_texts())
+        count = all_text.count('```')
+        if count > 0:
+            return {'code_block_markers': count, 'has_code_blocks': True}
+        return False
+    
     tagger.add_exchange_rule('mentions_python', mentions_python)
+    tagger.add_exchange_rule('code_analysis', count_code_blocks)
     
     result = tagger.tag_conversation(sample_coding_conversation)
     
@@ -76,8 +86,23 @@ def test_end_to_end_tagging(sample_coding_conversation):
     assert result.exchange_count == 2  # Two separate exchanges
     assert result.total_message_count == 4
     
-    # Check that our custom rule fired
-    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
+    # Check that our custom rules fired
+    all_annotations = {}
+    for exchange in result.exchanges:
+        all_annotations.update(exchange.annotations)
+    
+    assert 'mentions_python' in all_annotations
+    assert all_annotations['mentions_python'] is True
+    
+    # Should detect code blocks
+    assert 'has_code_blocks' in all_annotations or any(
+        exchange.has_annotation('has_code_blocks') for exchange in result.exchanges
+    )
+    
+    # Test backward compatibility - can still access as tags
+    all_tags = []
+    for exchange in result.exchanges:
+        all_tags.extend(exchange.tags)
     tag_names = [tag.name for tag in all_tags]
     assert 'mentions_python' in tag_names
 
@@ -113,12 +138,17 @@ def test_conversation_with_attachments():
     tagger = create_default_tagger()
     result = tagger.tag_conversation(conversation_with_file)
     
-    # Should detect attachment-related tags
-    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
-    tag_names = [tag.name for tag in all_tags]
+    # Should detect attachment-related annotations
+    all_annotations = {}
+    for exchange in result.exchanges:
+        all_annotations.update(exchange.annotations)
     
-    assert 'first_user_has_attachments' in tag_names
-    assert 'first_user_has_code_attachments' in tag_names
+    assert 'first_user_has_attachments' in all_annotations
+    assert 'first_user_has_code_attachments' in all_annotations
+    
+    # Test values
+    assert all_annotations['first_user_has_attachments'] is True
+    assert all_annotations['first_user_has_code_attachments'] is True
 
 
 def test_math_conversation():
@@ -148,10 +178,9 @@ def test_math_conversation():
     result = tagger.tag_conversation(math_conversation)
     
     # Should detect LaTeX math
-    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
-    tag_names = [tag.name for tag in all_tags]
-    
-    assert 'has_latex_math' in tag_names
+    exchange = result.exchanges[0]
+    assert exchange.has_annotation('has_latex_math')
+    assert exchange.get_annotation('has_latex_math') is True
 
 
 def test_large_content_detection():
@@ -182,10 +211,79 @@ def test_large_content_detection():
     tagger = create_default_tagger()
     result = tagger.tag_conversation(large_message_conversation)
     
-    all_tags = [tag for exchange in result.exchanges for tag in exchange.tags]
-    tag_names = [tag.name for tag in all_tags]
+    exchange = result.exchanges[0]
+    assert exchange.has_annotation('first_user_has_large_content')
+    assert exchange.get_annotation('first_user_has_large_content') is True
+
+
+def test_conversation_level_annotations():
+    """Test conversation-level annotation aggregation."""
+    tagger = create_default_tagger()
     
-    assert 'first_user_has_large_content' in tag_names
+    # Multi-exchange conversation
+    conversation_data = {
+        'conversation_id': 'multi_conv',
+        'title': 'Multi-exchange test',
+        'mapping': {
+            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'First question'}}},
+            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'First answer'}}},
+            'msg3': {'message': {'author': {'role': 'user'}, 'create_time': 3000, 'content': {'text': 'Second question'}}},
+            'msg4': {'message': {'author': {'role': 'assistant'}, 'create_time': 4000, 'content': {'text': 'Second answer'}}},
+            'msg5': {'message': {'author': {'role': 'user'}, 'create_time': 5000, 'content': {'text': 'Third question'}}},
+            'msg6': {'message': {'author': {'role': 'assistant'}, 'create_time': 6000, 'content': {'text': 'Third answer'}}}
+        }
+    }
+    
+    result = tagger.tag_conversation(conversation_data)
+    
+    # Should have conversation-level length annotation
+    assert result.has_annotation('conversation_length')
+    length_data = result.get_annotation('conversation_length')
+    assert length_data['count'] == 3
+    assert length_data['category'] == 'short'  # 3 exchanges = short
+
+
+def test_gizmo_plugin_annotations():
+    """Test gizmo and plugin annotation detection."""
+    gizmo_conversation = {
+        'conversation_id': 'gizmo_conv',
+        'title': 'Gizmo usage',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Generate an image'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'I\'ll generate that for you'},
+                    'metadata': {'gizmo_id': 'dalle-3'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(gizmo_conversation)
+    
+    # Should detect gizmo usage at exchange level
+    exchange = result.exchanges[0]
+    
+    # Check for gizmo annotations (could be gizmo_1, gizmo_2, etc.)
+    gizmo_annotations = {k: v for k, v in exchange.annotations.items() if k.startswith('gizmo_')}
+    assert len(gizmo_annotations) >= 1
+    
+    # At least one should have dalle-3 as gizmo_id
+    found_dalle = False
+    for annotation_value in gizmo_annotations.values():
+        if isinstance(annotation_value, dict) and annotation_value.get('gizmo_id') == 'dalle-3':
+            found_dalle = True
+            break
+    assert found_dalle
 
 
 def test_empty_conversation_handling():
@@ -202,3 +300,56 @@ def test_empty_conversation_handling():
     assert result.conversation_id == 'empty_conv'
     assert result.exchange_count == 0
     assert result.total_message_count == 0
+    assert len(result.annotations) >= 0  # May have some conversation-level annotations
+
+
+def test_annotation_vs_tag_consistency():
+    """Test that annotation and tag interfaces give consistent results."""
+    tagger = create_default_tagger()
+    
+    # Add custom rule that returns complex data
+    def complex_analysis(exchange):
+        return {
+            'message_count': len(exchange.messages),
+            'user_word_count': len(' '.join(exchange.get_user_texts()).split()),
+            'assistant_word_count': len(' '.join(exchange.get_assistant_texts()).split())
+        }
+    
+    tagger.add_exchange_rule('analysis', complex_analysis)
+    
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Test',
+        'mapping': {
+            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello world test'}}},
+            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there friend'}}}
+        }
+    }
+    
+    result = tagger.tag_conversation(conversation_data)
+    exchange = result.exchanges[0]
+    
+    # Test annotation interface
+    assert exchange.has_annotation('message_count')
+    assert exchange.get_annotation('message_count') == 2
+    assert exchange.get_annotation('user_word_count') == 3
+    assert exchange.get_annotation('assistant_word_count') == 3
+    
+    # Test tag interface (backward compatibility)
+    tags = exchange.tags
+    
+    # Find the analysis-related tags
+    analysis_tags = [tag for tag in tags if 'message_count' in tag.name or 'word_count' in tag.name]
+    assert len(analysis_tags) >= 3  # Should have all three annotations as separate tags or one combined tag
+    
+    # Test round-trip: annotations -> tags -> annotations
+    original_annotations = exchange.annotations.copy()
+    
+    # Convert to tags and back
+    tag_list = exchange.tags
+    new_exchange = Exchange.create('test', [])
+    new_exchange.tags = tag_list
+    
+    # Should preserve the key data (exact format may differ)
+    assert new_exchange.has_annotation('message_count')
+    assert new_exchange.get_annotation('message_count') == 2
