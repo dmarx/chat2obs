@@ -6,7 +6,7 @@ Updated to test annotation-based system.
 
 import pytest
 from conversation_tagger import create_default_tagger, ConversationTagger
-
+from conversation_tagger.core.exchange import Exchange
 
 @pytest.fixture
 def sample_coding_conversation():
