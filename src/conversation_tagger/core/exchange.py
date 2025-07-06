@@ -1,6 +1,7 @@
 # conversation_tagger/core/exchange.py
 """
 Exchange abstraction with sequential message handling and merge capabilities.
+Updated to use dictionary-based annotations.
 """
 
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
@@ -29,7 +30,7 @@ class Exchange:
     exchange_id: str
     conversation_id: str
     messages: List[Dict[str, Any]]  # Sequential messages in this exchange
-    tags: List['Tag'] = field(default_factory=list)  # Container for associated tags
+    annotations: Dict[str, Any] = field(default_factory=dict)  # Dictionary-based annotations
     
     @classmethod
     def create(cls, conversation_id: str, messages: List[Dict[str, Any]]) -> 'Exchange':
@@ -38,7 +39,7 @@ class Exchange:
             exchange_id=str(uuid.uuid4()),
             conversation_id=conversation_id,
             messages=messages,
-            tags=[]
+            annotations={}
         )
     
     @property
@@ -64,13 +65,47 @@ class Exchange:
         return [msg for msg in self.messages 
                 if msg.get('author', {}).get('role') == 'assistant']
     
-    def get_user_texts(self) -> str:
-        """Get combined text from all user messages."""
+    def get_user_texts(self) -> List[str]:
+        """Get text from all user messages."""
         return [get_message_text(msg) for msg in self.get_user_messages()]
     
-    def get_assistant_texts(self) -> str:
-        """Get combined text from all assistant messages."""
+    def get_assistant_texts(self) -> List[str]:
+        """Get text from all assistant messages."""
         return [get_message_text(msg) for msg in self.get_assistant_messages()]
+
+    def add_annotation(self, name: str, value: Any = True) -> None:
+        """Add an annotation to this exchange."""
+        self.annotations[name] = value
+    
+    def has_annotation(self, name: str) -> bool:
+        """Check if annotation exists."""
+        return name in self.annotations
+    
+    def get_annotation(self, name: str, default: Any = None) -> Any:
+        """Get annotation value."""
+        return self.annotations.get(name, default)
+
+    # Legacy compatibility
+    @property 
+    def tags(self) -> List['Tag']:
+        """Convert annotations back to Tag objects for backward compatibility."""
+        from .tag import Tag
+        tags = []
+        for name, value in self.annotations.items():
+            if value is True:
+                tags.append(Tag(name))
+            elif isinstance(value, dict):
+                tags.append(Tag(name, **value))
+            else:
+                tags.append(Tag(name, value=value))
+        return tags
+    
+    @tags.setter
+    def tags(self, tag_list: List['Tag']) -> None:
+        """Convert Tag objects to annotations for backward compatibility."""
+        self.annotations = {}
+        for tag in tag_list:
+            self.annotations.update(tag.to_dict())
 
     def __add__(self, other: 'Exchange') -> 'Exchange':
         """Merge two exchanges by combining and time-ordering their messages."""
@@ -84,16 +119,17 @@ class Exchange:
         combined_messages = self.messages + other.messages
         combined_messages.sort(key=lambda msg: msg.get('create_time', 0.0))
         
-        # Combine tags from both exchanges
-        # probably need to be smarter about how we perform this merge
-        combined_tags = self.tags + other.tags
+        # Merge annotations from both exchanges
+        combined_annotations = {}
+        combined_annotations.update(self.annotations)
+        combined_annotations.update(other.annotations)
         
         # Create new exchange with combined content
         merged_exchange = Exchange(
             exchange_id=str(uuid.uuid4()),  # New UUID for merged exchange
             conversation_id=self.conversation_id,
             messages=combined_messages,
-            tags=combined_tags
+            annotations=combined_annotations
         )
         
         return merged_exchange
