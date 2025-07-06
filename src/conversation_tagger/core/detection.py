@@ -1,14 +1,14 @@
 # src/conversation_tagger/core/detection.py
 """
 High-value detection rules for conversations and exchanges.
-Reimplemented to use Exchange/Conversation objects with proper API.
+Updated to use dictionary-based annotations.
 """
 
 import re
 from typing import Dict, Any, List
 from .exchange import Exchange
 from .conversation import Conversation
-from .tag import Tag
+from .tag import Tag, create_annotation
 
 
 ######################
@@ -16,8 +16,8 @@ from .tag import Tag
 ######################
 # These should only do aggregation/summarization, not detection
 
-def create_conversation_length_tag(conversation: Conversation) -> Tag:
-    """Create structured tag for conversation length."""
+def create_conversation_length_annotation(conversation: Conversation) -> Dict[str, Any]:
+    """Create annotation for conversation length."""
     exchange_count = conversation.exchange_count
     
     # Determine category based on number of exchanges
@@ -32,10 +32,13 @@ def create_conversation_length_tag(conversation: Conversation) -> Tag:
     else:
         category = 'very_long'
     
-    return Tag('conversation_length', count=exchange_count, category=category)
+    return create_annotation('conversation_length', {
+        'count': exchange_count,
+        'category': category
+    })
 
 
-def conversation_feature_summary(conversation: Conversation) -> List[Tag]:
+def conversation_feature_summary(conversation: Conversation) -> Dict[str, Any]:
     """Aggregate feature usage across all exchanges."""
     feature_counts = {}
     total_exchanges = conversation.exchange_count
@@ -43,65 +46,70 @@ def conversation_feature_summary(conversation: Conversation) -> List[Tag]:
     # Count exchanges with each feature
     for exchange in conversation.exchanges:
         exchange_features = set()
-        for tag in exchange.tags:
-            if tag.name in ['has_github_repos', 'has_canvas_operations', 'has_web_search', 
-                           'has_reasoning_thoughts', 'has_code_execution', 'has_code_blocks',
-                           'has_script_headers', 'has_code_structure_patterns', 'has_wiki_links',
-                           'has_latex_math', 'user_has_attachments']:
-                exchange_features.add(tag.name)
-            elif tag.name == 'gizmo':
+        for annotation_name in exchange.annotations:
+            if annotation_name in ['has_github_repos', 'has_canvas_operations', 'has_web_search', 
+                                 'has_reasoning_thoughts', 'has_code_execution', 'has_code_blocks',
+                                 'has_script_headers', 'has_code_structure_patterns', 'has_wiki_links',
+                                 'has_latex_math', 'user_has_attachments']:
+                exchange_features.add(annotation_name)
+            elif annotation_name.startswith('gizmo_'):
                 exchange_features.add('has_gizmo_usage')
-            elif tag.name == 'plugin':
+            elif annotation_name.startswith('plugin_'):
                 exchange_features.add('has_plugin_usage')
         
         # Count each feature once per exchange
         for feature in exchange_features:
             feature_counts[feature] = feature_counts.get(feature, 0) + 1
     
-    tags = []
+    annotations = {}
     for feature, count in feature_counts.items():
         percentage = (count / total_exchanges) * 100 if total_exchanges > 0 else 0
-        tags.append(Tag(f'conversation_{feature}', 
-                       exchange_count=count, 
-                       total_exchanges=total_exchanges,
-                       percentage=round(percentage, 1)))
+        annotations[f'conversation_{feature}'] = {
+            'exchange_count': count,
+            'total_exchanges': total_exchanges,
+            'percentage': round(percentage, 1)
+        }
     
-    return tags
+    return annotations
 
 
-def conversation_gizmo_plugin_summary(conversation: Conversation) -> List[Tag]:
+def conversation_gizmo_plugin_summary(conversation: Conversation) -> Dict[str, Any]:
     """Aggregate gizmo/plugin usage across all exchanges."""
     all_gizmos = set()
     all_plugins = set()
     gizmo_count = 0
     plugin_count = 0
     
-    # Collect from all exchange tags
+    # Collect from all exchange annotations
     for exchange in conversation.exchanges:
-        for tag in exchange.tags:
-            if tag.name == 'gizmo':
-                all_gizmos.add(tag.attributes.get('gizmo_id'))
+        for name, value in exchange.annotations.items():
+            if name.startswith('gizmo_'):
+                if isinstance(value, dict) and 'gizmo_id' in value:
+                    all_gizmos.add(value['gizmo_id'])
                 gizmo_count += 1
-            elif tag.name == 'plugin':
-                all_plugins.add(tag.attributes.get('plugin_id'))
+            elif name.startswith('plugin_'):
+                if isinstance(value, dict) and 'plugin_id' in value:
+                    all_plugins.add(value['plugin_id'])
                 plugin_count += 1
     
-    tags = []
+    annotations = {}
     
-    # Summary tags
+    # Summary annotations
     if all_gizmos:
-        tags.append(Tag('conversation_gizmo_usage', 
-                       unique_gizmos=len(all_gizmos), 
-                       total_usage=gizmo_count,
-                       gizmo_list=list(all_gizmos)))
+        annotations['conversation_gizmo_usage'] = {
+            'unique_gizmos': len(all_gizmos),
+            'total_usage': gizmo_count,
+            'gizmo_list': list(all_gizmos)
+        }
     
     if all_plugins:
-        tags.append(Tag('conversation_plugin_usage',
-                       unique_plugins=len(all_plugins),
-                       total_usage=plugin_count, 
-                       plugin_list=list(all_plugins)))
+        annotations['conversation_plugin_usage'] = {
+            'unique_plugins': len(all_plugins),
+            'total_usage': plugin_count,
+            'plugin_list': list(all_plugins)
+        }
     
-    return tags
+    return annotations
 
 
 ######################
@@ -351,10 +359,10 @@ def first_user_has_code_attachments(exchange: Exchange) -> bool:
     return False
 
 
-# Gizmo/plugin detection
-def get_gizmo_tags(exchange: Exchange) -> List[Tag]:
-    """Get tags for specific gizmos used in this exchange."""
-    tags = []
+# Gizmo/plugin detection - now returns annotations directly
+def get_gizmo_annotations(exchange: Exchange) -> Dict[str, Any]:
+    """Get annotations for specific gizmos used in this exchange."""
+    annotations = {}
     gizmos = set()
     
     for message in exchange.messages:
@@ -362,15 +370,15 @@ def get_gizmo_tags(exchange: Exchange) -> List[Tag]:
         if metadata.get('gizmo_id'):
             gizmos.add(metadata['gizmo_id'])
     
-    for gizmo in gizmos:
-        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    for i, gizmo in enumerate(gizmos):
+        annotations[f'gizmo_{i+1}'] = {'gizmo_id': gizmo}
     
-    return tags
+    return annotations
 
 
-def get_plugin_tags(exchange: Exchange) -> List[Tag]:
-    """Get tags for specific plugins used in this exchange."""
-    tags = []
+def get_plugin_annotations(exchange: Exchange) -> Dict[str, Any]:
+    """Get annotations for specific plugins used in this exchange."""
+    annotations = {}
     plugins = set()
     
     for message in exchange.messages:
@@ -382,10 +390,10 @@ def get_plugin_tags(exchange: Exchange) -> List[Tag]:
             if invoked_plugin.get('namespace'):
                 plugins.add(invoked_plugin['namespace'])
     
-    for plugin in plugins:
-        tags.append(Tag('plugin', plugin_id=plugin))
+    for i, plugin in enumerate(plugins):
+        annotations[f'plugin_{i+1}'] = {'plugin_id': plugin}
     
-    return tags
+    return annotations
 
 
 ##############################
@@ -427,7 +435,7 @@ def extract_proposed_title(exchange: Exchange) -> str:
 
 # High-value conversation-level rules (aggregation only)
 CONVERSATION_RULES = {
-    'conversation_length': create_conversation_length_tag,
+    'conversation_length': create_conversation_length_annotation,
     'conversation_feature_summary': conversation_feature_summary,
     'conversation_gizmo_plugin_summary': conversation_gizmo_plugin_summary,
 }
@@ -463,8 +471,8 @@ EXCHANGE_RULES = {
     'first_user_has_code_attachments': first_user_has_code_attachments,
     
     # Gizmo/plugin detection
-    'get_gizmo_tags': get_gizmo_tags,
-    'get_plugin_tags': get_plugin_tags,
+    'get_gizmo_annotations': get_gizmo_annotations,
+    'get_plugin_annotations': get_plugin_annotations,
 
     # Template content inference
     'proposed_title': extract_proposed_title,
