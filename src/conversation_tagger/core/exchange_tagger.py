@@ -1,47 +1,44 @@
 # src/conversation_tagger/core/exchange_tagger.py
 """
 Tag individual exchanges using the improved exchange structure.
+Updated to use dictionary-based annotations.
 """
-from typing import Dict, Callable
+from typing import Dict, Callable, Any
 from .tag import Tag
 from .exchange import Exchange
 
 
-
-# we generalize this into a Tagger(ABC) which 
-# we can use to tag both exchanges and conversations
-## rule adding is the same API
-## tagging is the same API
-### ... maybe rather than an ExchangeTagger, we have a Tagger that can tag both Exchanges and Conversations
 class ExchangeTagger:
-    """Tags exchanges with configurable rules."""
+    """Tags exchanges with configurable rules using annotations."""
     
     def __init__(self):
         self.rules: Dict[str, Callable] = {}
     
-    def add_rule(self, tag_name: str, rule_function: Callable):
+    def add_rule(self, annotation_name: str, rule_function: Callable):
         """Add rule for exchanges."""
-        self.rules[tag_name] = rule_function
+        self.rules[annotation_name] = rule_function
     
     def tag_exchange(self, exchange: Exchange) -> Exchange:
         """Tag a single exchange and return the updated exchange."""
-        tags = exchange.tags or []
-        
-        for tag_name, rule_func in self.rules.items():
+        for annotation_name, rule_func in self.rules.items():
             try:
                 result = rule_func(exchange)
                 if result:
                     if isinstance(result, bool):
-                        tags.append(Tag(tag_name))
+                        # Simple boolean annotation
+                        exchange.add_annotation(annotation_name, True)
+                    elif isinstance(result, dict):
+                        # Multiple annotations returned
+                        for name, value in result.items():
+                            exchange.add_annotation(name, value)
                     elif isinstance(result, Tag):
-                        tags.append(result)
+                        # Legacy Tag object - convert to annotation
+                        exchange.annotations.update(result.to_dict())
                     else:
-                        tags.append(Tag(tag_name))
+                        # Other truthy value - store as annotation value
+                        exchange.add_annotation(annotation_name, result)
             except Exception as e:
                 # Skip failed rules silently for now
                 pass
         
-        # Update the exchange's tags
-        exchange.tags = tags
         return exchange
-
