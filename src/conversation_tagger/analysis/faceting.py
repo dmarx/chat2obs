@@ -1,11 +1,14 @@
 # conversation_tagger/analysis/faceting.py
 """
 Faceting functionality for analyzing conversations by different dimensions.
-Updated to work with dict-based annotations.
+Updated to use dictionary-based annotations.
 """
 
 from typing import Dict, Any, List, Optional
 from collections import defaultdict
+
+from ..core.tag import Tag
+
 
 def get_facet_value(annotations: Dict[str, Any], facet_annotation_name: str, 
                    facet_attribute: Optional[str] = None) -> str:
@@ -16,19 +19,18 @@ def get_facet_value(annotations: Dict[str, Any], facet_annotation_name: str,
     annotation_value = annotations[facet_annotation_name]
     
     if facet_attribute is None:
-        # Just check for presence/value of the annotation
-        if isinstance(annotation_value, bool):
-            return f"has_{facet_annotation_name}" if annotation_value else "<none>"
-        elif isinstance(annotation_value, (int, float, str)):
-            return str(annotation_value)
-        else:
+        # Just check for presence of the annotation
+        if annotation_value is True:
             return f"has_{facet_annotation_name}"
+        else:
+            return str(annotation_value)
     
-    # Extract specific attribute from nested dict
+    # Extract specific attribute values from structured annotation
     if isinstance(annotation_value, dict) and facet_attribute in annotation_value:
         return str(annotation_value[facet_attribute])
     
     return f"<{facet_annotation_name}_no_{facet_attribute}>"
+
 
 def do_facet_conversations(tagged_conversations: List[Dict[str, Any]], 
                        facet_annotation_name: str, 
@@ -38,7 +40,19 @@ def do_facet_conversations(tagged_conversations: List[Dict[str, Any]],
     facets = defaultdict(list)
     
     for tagged_conv in tagged_conversations:
-        facet_value = get_facet_value(tagged_conv['annotations'], facet_annotation_name, facet_attribute)
+        # Handle both old Tag-based format and new annotation format
+        if 'annotations' in tagged_conv:
+            annotations = tagged_conv['annotations']
+        else:
+            # Legacy: convert tags to annotations for compatibility
+            annotations = {}
+            for tag in tagged_conv.get('tags', []):
+                if isinstance(tag, Tag):
+                    annotations.update(tag.to_dict())
+                else:
+                    annotations[str(tag)] = True
+        
+        facet_value = get_facet_value(annotations, facet_annotation_name, facet_attribute)
         facets[facet_value].append(tagged_conv)
     
     # Sort by facet size (largest first) and limit
@@ -59,6 +73,7 @@ def do_facet_conversations(tagged_conversations: List[Dict[str, Any]],
         return top_facets
     
     return sorted_facets
+
 
 def print_faceted_summary(tagged_conversations: List[Dict[str, Any]], 
                          facet_annotation_name: str, 
@@ -88,31 +103,56 @@ def print_faceted_summary(tagged_conversations: List[Dict[str, Any]],
         
         # Calculate annotation statistics for this facet
         annotation_counts = defaultdict(int)
-        numeric_annotations = defaultdict(list)
+        annotation_attributes = defaultdict(lambda: defaultdict(list))
+        unique_structured_annotations = defaultdict(set)
         
         for tagged_conv in facet_conversations:
-            for annotation_name, annotation_value in tagged_conv['annotations'].items():
+            # Handle both new annotation format and legacy tag format
+            if 'annotations' in tagged_conv:
+                annotations = tagged_conv['annotations']
+            else:
+                # Legacy: convert tags to annotations
+                annotations = {}
+                for tag in tagged_conv.get('tags', []):
+                    if isinstance(tag, Tag):
+                        annotations.update(tag.to_dict())
+                    else:
+                        annotations[str(tag)] = True
+            
+            for annotation_name, annotation_value in annotations.items():
                 annotation_counts[annotation_name] += 1
                 
-                # Collect numeric values for statistics
-                if isinstance(annotation_value, (int, float)):
-                    numeric_annotations[annotation_name].append(annotation_value)
-                elif isinstance(annotation_value, dict):
+                # Collect attribute information
+                if isinstance(annotation_value, dict):
                     for attr_name, attr_value in annotation_value.items():
                         if isinstance(attr_value, (int, float)):
-                            numeric_annotations[f"{annotation_name}.{attr_name}"].append(attr_value)
+                            annotation_attributes[annotation_name][attr_name].append(attr_value)
+                        else:
+                            unique_structured_annotations[annotation_name].add(f"{attr_name}={attr_value}")
+                elif isinstance(annotation_value, (int, float)):
+                    annotation_attributes[annotation_name]['value'].append(annotation_value)
         
-        # Sort annotations for this facet
+        # Sort annotations for this facet (show all annotations)
         sorted_annotations = sorted(annotation_counts.items(), key=lambda x: x[1], reverse=True)
         
         for annotation_name, count in sorted_annotations:
             percentage = (count / facet_size) * 100
             print(f"    {annotation_name}: {count} ({percentage:.1f}%)")
             
-            if show_details and annotation_name in numeric_annotations:
-                values = numeric_annotations[annotation_name]
-                if values:
-                    avg_val = sum(values) / len(values)
-                    min_val = min(values)
-                    max_val = max(values)
-                    print(f"        avg={avg_val:.1f}, range=[{min_val}, {max_val}]")# conversation_tagger/core/exchange.py
+            if show_details:
+                # Show numeric attribute statistics
+                if annotation_name in annotation_attributes:
+                    for attr_name, values in annotation_attributes[annotation_name].items():
+                        if values:
+                            avg_val = sum(values) / len(values)
+                            min_val = min(values)
+                            max_val = max(values)
+                            print(f"        {attr_name}: avg={avg_val:.1f}, range=[{min_val}, {max_val}]")
+                
+                # Show unique structured values
+                if annotation_name in unique_structured_annotations:
+                    unique_vals = sorted(unique_structured_annotations[annotation_name])
+                    if len(unique_vals) <= 5:
+                        print(f"        values: {', '.join(unique_vals)}")
+                    else:
+                        print(f"        values: {', '.join(unique_vals[:5])} ... (+{len(unique_vals)-5} more)")
