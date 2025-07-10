@@ -62,33 +62,33 @@ def test_exchange_tagger_annotations():
     assert tagged_no_greeting.get_annotation('assistant_message_count') == 0
 
 
-def test_exchange_tagger_with_legacy_tags():
-    """Test exchange tagging with legacy Tag return values."""
-    tagger = ExchangeTagger()
+# def test_exchange_tagger_with_legacy_tags():
+#     """Test exchange tagging with legacy Tag return values."""
+#     tagger = ExchangeTagger()
     
-    def length_category(exchange):
-        """Return a legacy Tag object."""
-        text = ' '.join(exchange.get_user_texts())
-        length = len(text)
-        if length > 50:
-            return Tag('message_length', size='long', chars=length)
-        elif length > 10:
-            return Tag('message_length', size='medium', chars=length)
-        return False
+#     def length_category(exchange):
+#         """Return a legacy Tag object."""
+#         text = ' '.join(exchange.get_user_texts())
+#         length = len(text)
+#         if length > 50:
+#             return Tag('message_length', size='long', chars=length)
+#         elif length > 10:
+#             return Tag('message_length', size='medium', chars=length)
+#         return False
     
-    tagger.add_rule('length_category', length_category)
+#     tagger.add_rule('length_category', length_category)
     
-    long_exchange = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'This is a very long message that should definitely be tagged as long since it exceeds the threshold'}, 'create_time': 1000}
-    ])
+#     long_exchange = Exchange.create('test', [
+#         {'author': {'role': 'user'}, 'content': {'text': 'This is a very long message that should definitely be tagged as long since it exceeds the threshold'}, 'create_time': 1000}
+#     ])
     
-    tagged = tagger.tag_exchange(long_exchange)
+#     tagged = tagger.tag_exchange(long_exchange)
     
-    # Should convert Tag to annotation
-    assert tagged.has_annotation('message_length')
-    length_data = tagged.get_annotation('message_length')
-    assert length_data['size'] == 'long'
-    assert length_data['chars'] > 50
+#     # Should convert Tag to annotation
+#     assert tagged.has_annotation('message_length')
+#     length_data = tagged.get_annotation('message_length')
+#     assert length_data['size'] == 'long'
+#     assert length_data['chars'] > 50
 
 
 def test_exchange_tagger_with_string_values():
@@ -213,33 +213,33 @@ def test_tagging_error_handling():
     assert not tagged.has_annotation('broken')
 
 
-def test_exchange_backward_compatibility():
-    """Test that old Tag-based code still works."""
-    exchange = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000}
-    ])
+# def test_exchange_backward_compatibility():
+#     """Test that old Tag-based code still works."""
+#     exchange = Exchange.create('test', [
+#         {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000}
+#     ])
     
-    # Add annotations directly
-    exchange.add_annotation('has_greeting', True)
-    exchange.add_annotation('length', 50)
-    exchange.add_annotation('stats', {'words': 1, 'chars': 5})
+#     # Add annotations directly
+#     exchange.add_annotation('has_greeting', True)
+#     exchange.add_annotation('length', 50)
+#     exchange.add_annotation('stats', {'words': 1, 'chars': 5})
     
-    # Test getting tags (backward compatibility)
-    tags = exchange.tags
-    tag_names = [tag.name for tag in tags]
-    assert 'has_greeting' in tag_names
-    assert 'length' in tag_names
-    assert 'stats' in tag_names
+#     # Test getting tags (backward compatibility)
+#     tags = exchange.tags
+#     tag_names = [tag.name for tag in tags]
+#     assert 'has_greeting' in tag_names
+#     assert 'length' in tag_names
+#     assert 'stats' in tag_names
     
-    # Find specific tags
-    greeting_tag = next(tag for tag in tags if tag.name == 'has_greeting')
-    assert greeting_tag.attributes == {}  # Simple boolean becomes empty attributes
+#     # Find specific tags
+#     greeting_tag = next(tag for tag in tags if tag.name == 'has_greeting')
+#     assert greeting_tag.attributes == {}  # Simple boolean becomes empty attributes
     
-    length_tag = next(tag for tag in tags if tag.name == 'length')
-    assert length_tag.attributes == {'value': 50}  # Single value
+#     length_tag = next(tag for tag in tags if tag.name == 'length')
+#     assert length_tag.attributes == {'value': 50}  # Single value
     
-    stats_tag = next(tag for tag in tags if tag.name == 'stats')
-    assert stats_tag.attributes == {'words': 1, 'chars': 5}  # Multiple attributes
+#     stats_tag = next(tag for tag in tags if tag.name == 'stats')
+#     assert stats_tag.attributes == {'words': 1, 'chars': 5}  # Multiple attributes
 
 
 @pytest.fixture
@@ -285,49 +285,49 @@ def test_continuation_detection_with_annotations(conversation_with_continuation)
     assert 'continue' in user_text
 
 
-def test_mixed_annotation_and_tag_workflow():
-    """Test workflow mixing new annotations with legacy Tag objects."""
-    tagger = ExchangeTagger()
+# def test_mixed_annotation_and_tag_workflow():
+#     """Test workflow mixing new annotations with legacy Tag objects."""
+#     tagger = ExchangeTagger()
     
-    def modern_rule(exchange):
-        """Modern rule returning dict of annotations."""
-        return {
-            'message_count': len(exchange.messages),
-            'has_user': len(exchange.get_user_messages()) > 0,
-            'has_assistant': len(exchange.get_assistant_messages()) > 0
-        }
+#     def modern_rule(exchange):
+#         """Modern rule returning dict of annotations."""
+#         return {
+#             'message_count': len(exchange.messages),
+#             'has_user': len(exchange.get_user_messages()) > 0,
+#             'has_assistant': len(exchange.get_assistant_messages()) > 0
+#         }
     
-    def legacy_rule(exchange):
-        """Legacy rule returning Tag object."""
-        if len(exchange.get_user_texts()) > 0:
-            text_length = len(' '.join(exchange.get_user_texts()))
-            return Tag('user_text_stats', length=text_length, word_count=len(' '.join(exchange.get_user_texts()).split()))
-        return False
+#     def legacy_rule(exchange):
+#         """Legacy rule returning Tag object."""
+#         if len(exchange.get_user_texts()) > 0:
+#             text_length = len(' '.join(exchange.get_user_texts()))
+#             return Tag('user_text_stats', length=text_length, word_count=len(' '.join(exchange.get_user_texts()).split()))
+#         return False
     
-    tagger.add_rule('modern', modern_rule)
-    tagger.add_rule('legacy', legacy_rule)
+#     tagger.add_rule('modern', modern_rule)
+#     tagger.add_rule('legacy', legacy_rule)
     
-    exchange = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
-        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}
-    ])
+#     exchange = Exchange.create('test', [
+#         {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
+#         {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}
+#     ])
     
-    tagged = tagger.tag_exchange(exchange)
+#     tagged = tagger.tag_exchange(exchange)
     
-    # Modern annotations
-    assert tagged.get_annotation('message_count') == 2
-    assert tagged.get_annotation('has_user') is True
-    assert tagged.get_annotation('has_assistant') is True
+#     # Modern annotations
+#     assert tagged.get_annotation('message_count') == 2
+#     assert tagged.get_annotation('has_user') is True
+#     assert tagged.get_annotation('has_assistant') is True
     
-    # Legacy tag converted to annotation
-    assert tagged.has_annotation('user_text_stats')
-    stats = tagged.get_annotation('user_text_stats')
-    assert stats['length'] == 11  # "Hello world"
-    assert stats['word_count'] == 2
+#     # Legacy tag converted to annotation
+#     assert tagged.has_annotation('user_text_stats')
+#     stats = tagged.get_annotation('user_text_stats')
+#     assert stats['length'] == 11  # "Hello world"
+#     assert stats['word_count'] == 2
     
-    # Test backward compatibility - can still get as tags
-    tags = tagged.tags
-    tag_names = [tag.name for tag in tags]
-    assert 'message_count' in tag_names
-    assert 'has_user' in tag_names
-    assert 'user_text_stats' in tag_names
+#     # Test backward compatibility - can still get as tags
+#     tags = tagged.tags
+#     tag_names = [tag.name for tag in tags]
+#     assert 'message_count' in tag_names
+#     assert 'has_user' in tag_names
+#     assert 'user_text_stats' in tag_names

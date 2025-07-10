@@ -2,6 +2,13 @@
 """
 Shared test fixtures and configuration.
 """
+from pathlib import Path
+import sys
+#PATH=str((Path().cwd().parent /'src').absolute())
+PATH=str((Path().cwd() /'src').absolute())
+print(PATH)
+if PATH not in sys.path:
+    sys.path.append(PATH)
 
 import pytest
 from conversation_tagger.core.exchange import Exchange

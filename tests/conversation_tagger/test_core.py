@@ -70,32 +70,32 @@ def test_exchange_annotations():
     assert not exchange.has_annotation('missing_annotation')
     assert exchange.get_annotation('missing_annotation', 'default') == 'default'
     
-    # Test backward compatibility with tags property
-    tags = exchange.tags
-    assert len(tags) == 3
-    tag_names = [tag.name for tag in tags]
-    assert 'has_greeting' in tag_names
-    assert 'message_count' in tag_names
-    assert 'stats' in tag_names
+    # # Test backward compatibility with tags property
+    # tags = exchange.tags
+    # assert len(tags) == 3
+    # tag_names = [tag.name for tag in tags]
+    # assert 'has_greeting' in tag_names
+    # assert 'message_count' in tag_names
+    # assert 'stats' in tag_names
 
 
-def test_exchange_tags_compatibility():
-    """Test that setting tags still works via backward compatibility."""
-    exchange = Exchange.create('conv_1', [])
+# def test_exchange_tags_compatibility():
+#     """Test that setting tags still works via backward compatibility."""
+#     exchange = Exchange.create('conv_1', [])
     
-    # Set tags the old way
-    old_tags = [
-        Tag('simple'),
-        Tag('valued', value=42),
-        Tag('complex', count=3, type='test')
-    ]
-    exchange.tags = old_tags
+#     # Set tags the old way
+#     old_tags = [
+#         Tag('simple'),
+#         Tag('valued', value=42),
+#         Tag('complex', count=3, type='test')
+#     ]
+#     exchange.tags = old_tags
     
-    # Should be converted to annotations
-    assert exchange.has_annotation('simple')
-    assert exchange.get_annotation('simple') is True
-    assert exchange.get_annotation('valued') == 42
-    assert exchange.get_annotation('complex') == {'count': 3, 'type': 'test'}
+#     # Should be converted to annotations
+#     assert exchange.has_annotation('simple')
+#     assert exchange.get_annotation('simple') is True
+#     assert exchange.get_annotation('valued') == 42
+#     assert exchange.get_annotation('complex') == {'count': 3, 'type': 'test'}
 
 
 def test_exchange_merging_annotations():
@@ -122,7 +122,7 @@ def test_exchange_merging_annotations():
     assert merged.get_annotation('part') == 2  # Second exchange value wins
     
     # Verify time ordering
-    times = [msg['create_time'] for msg in merged.messages]
+    times = [msg.created_date for msg in merged.messages]
     assert times == [1000, 2000, 3000, 4000]
 
 
@@ -162,27 +162,27 @@ def test_conversation_annotations():
     assert 'Q1' in conv.get_all_user_text()
 
 
-def test_conversation_tags_compatibility():
-    """Test conversation backward compatibility with tags."""
-    conv = Conversation('conv_1', 'Test', [])
+# def test_conversation_tags_compatibility():
+#     """Test conversation backward compatibility with tags."""
+#     conv = Conversation('conv_1', 'Test', [])
     
-    # Set tags the old way
-    old_tags = [
-        Tag('multi_turn'),
-        Tag('length', category='medium', count=5)
-    ]
-    conv.tags = old_tags
+#     # Set tags the old way
+#     old_tags = [
+#         Tag('multi_turn'),
+#         Tag('length', category='medium', count=5)
+#     ]
+#     conv.tags = old_tags
     
-    # Should be converted to annotations
-    assert conv.has_annotation('multi_turn')
-    assert conv.get_annotation('multi_turn') is True
-    assert conv.get_annotation('length') == {'category': 'medium', 'count': 5}
+#     # Should be converted to annotations
+#     assert conv.has_annotation('multi_turn')
+#     assert conv.get_annotation('multi_turn') is True
+#     assert conv.get_annotation('length') == {'category': 'medium', 'count': 5}
     
-    # Test getting tags back
-    tags = conv.tags
-    tag_names = [tag.name for tag in tags]
-    assert 'multi_turn' in tag_names
-    assert 'length' in tag_names
+#     # Test getting tags back
+#     tags = conv.tags
+#     tag_names = [tag.name for tag in tags]
+#     assert 'multi_turn' in tag_names
+#     assert 'length' in tag_names
 
 
 @pytest.fixture

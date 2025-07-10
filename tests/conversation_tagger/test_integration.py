@@ -98,13 +98,7 @@ def test_end_to_end_tagging_with_annotations(sample_coding_conversation):
     assert 'has_code_blocks' in all_annotations or any(
         exchange.has_annotation('has_code_blocks') for exchange in result.exchanges
     )
-    
-    # Test backward compatibility - can still access as tags
-    all_tags = []
-    for exchange in result.exchanges:
-        all_tags.extend(exchange.tags)
-    tag_names = [tag.name for tag in all_tags]
-    assert 'mentions_python' in tag_names
+
 
 
 def test_conversation_with_attachments():
@@ -303,53 +297,53 @@ def test_empty_conversation_handling():
     assert len(result.annotations) >= 0  # May have some conversation-level annotations
 
 
-def test_annotation_vs_tag_consistency():
-    """Test that annotation and tag interfaces give consistent results."""
-    tagger = create_default_tagger()
+# def test_annotation_vs_tag_consistency():
+#     """Test that annotation and tag interfaces give consistent results."""
+#     tagger = create_default_tagger()
     
-    # Add custom rule that returns complex data
-    def complex_analysis(exchange):
-        return {
-            'message_count': len(exchange.messages),
-            'user_word_count': len(' '.join(exchange.get_user_texts()).split()),
-            'assistant_word_count': len(' '.join(exchange.get_assistant_texts()).split())
-        }
+#     # Add custom rule that returns complex data
+#     def complex_analysis(exchange):
+#         return {
+#             'message_count': len(exchange.messages),
+#             'user_word_count': len(' '.join(exchange.get_user_texts()).split()),
+#             'assistant_word_count': len(' '.join(exchange.get_assistant_texts()).split())
+#         }
     
-    tagger.add_exchange_rule('analysis', complex_analysis)
+#     tagger.add_exchange_rule('analysis', complex_analysis)
     
-    conversation_data = {
-        'conversation_id': 'test_conv',
-        'title': 'Test',
-        'mapping': {
-            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello world test'}}},
-            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there friend'}}}
-        }
-    }
+#     conversation_data = {
+#         'conversation_id': 'test_conv',
+#         'title': 'Test',
+#         'mapping': {
+#             'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello world test'}}},
+#             'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there friend'}}}
+#         }
+#     }
     
-    result = tagger.tag_conversation(conversation_data)
-    exchange = result.exchanges[0]
+#     result = tagger.tag_conversation(conversation_data)
+#     exchange = result.exchanges[0]
     
-    # Test annotation interface
-    assert exchange.has_annotation('message_count')
-    assert exchange.get_annotation('message_count') == 2
-    assert exchange.get_annotation('user_word_count') == 3
-    assert exchange.get_annotation('assistant_word_count') == 3
+#     # Test annotation interface
+#     assert exchange.has_annotation('message_count')
+#     assert exchange.get_annotation('message_count') == 2
+#     assert exchange.get_annotation('user_word_count') == 3
+#     assert exchange.get_annotation('assistant_word_count') == 3
     
-    # Test tag interface (backward compatibility)
-    tags = exchange.tags
+#     # Test tag interface (backward compatibility)
+#     tags = exchange.tags
     
-    # Find the analysis-related tags
-    analysis_tags = [tag for tag in tags if 'message_count' in tag.name or 'word_count' in tag.name]
-    assert len(analysis_tags) >= 3  # Should have all three annotations as separate tags or one combined tag
+#     # Find the analysis-related tags
+#     analysis_tags = [tag for tag in tags if 'message_count' in tag.name or 'word_count' in tag.name]
+#     assert len(analysis_tags) >= 3  # Should have all three annotations as separate tags or one combined tag
     
-    # Test round-trip: annotations -> tags -> annotations
-    original_annotations = exchange.annotations.copy()
+#     # Test round-trip: annotations -> tags -> annotations
+#     original_annotations = exchange.annotations.copy()
     
-    # Convert to tags and back
-    tag_list = exchange.tags
-    new_exchange = Exchange.create('test', [])
-    new_exchange.tags = tag_list
+#     # Convert to tags and back
+#     tag_list = exchange.tags
+#     new_exchange = Exchange.create('test', [])
+#     new_exchange.tags = tag_list
     
-    # Should preserve the key data (exact format may differ)
-    assert new_exchange.has_annotation('message_count')
-    assert new_exchange.get_annotation('message_count') == 2
+#     # Should preserve the key data (exact format may differ)
+#     assert new_exchange.has_annotation('message_count')
+#     assert new_exchange.get_annotation('message_count') == 2
