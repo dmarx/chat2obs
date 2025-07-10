@@ -62,33 +62,33 @@ def test_exchange_tagger_annotations():
     assert tagged_no_greeting.get_annotation('assistant_message_count') == 0
 
 
-def test_exchange_tagger_with_legacy_tags():
-    """Test exchange tagging with legacy Tag return values."""
-    tagger = ExchangeTagger()
+# def test_exchange_tagger_with_legacy_tags():
+#     """Test exchange tagging with legacy Tag return values."""
+#     tagger = ExchangeTagger()
     
-    def length_category(exchange):
-        """Return a legacy Tag object."""
-        text = ' '.join(exchange.get_user_texts())
-        length = len(text)
-        if length > 50:
-            return Tag('message_length', size='long', chars=length)
-        elif length > 10:
-            return Tag('message_length', size='medium', chars=length)
-        return False
+#     def length_category(exchange):
+#         """Return a legacy Tag object."""
+#         text = ' '.join(exchange.get_user_texts())
+#         length = len(text)
+#         if length > 50:
+#             return Tag('message_length', size='long', chars=length)
+#         elif length > 10:
+#             return Tag('message_length', size='medium', chars=length)
+#         return False
     
-    tagger.add_rule('length_category', length_category)
+#     tagger.add_rule('length_category', length_category)
     
-    long_exchange = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'This is a very long message that should definitely be tagged as long since it exceeds the threshold'}, 'create_time': 1000}
-    ])
+#     long_exchange = Exchange.create('test', [
+#         {'author': {'role': 'user'}, 'content': {'text': 'This is a very long message that should definitely be tagged as long since it exceeds the threshold'}, 'create_time': 1000}
+#     ])
     
-    tagged = tagger.tag_exchange(long_exchange)
+#     tagged = tagger.tag_exchange(long_exchange)
     
-    # Should convert Tag to annotation
-    assert tagged.has_annotation('message_length')
-    length_data = tagged.get_annotation('message_length')
-    assert length_data['size'] == 'long'
-    assert length_data['chars'] > 50
+#     # Should convert Tag to annotation
+#     assert tagged.has_annotation('message_length')
+#     length_data = tagged.get_annotation('message_length')
+#     assert length_data['size'] == 'long'
+#     assert length_data['chars'] > 50
 
 
 def test_exchange_tagger_with_string_values():

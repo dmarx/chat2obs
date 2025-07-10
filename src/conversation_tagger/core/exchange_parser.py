@@ -20,8 +20,9 @@ def quote_elaborate_rule(previous_exchange: Exchange, current_exchange: Exchange
         return False
     
     first_user_message = user_messages[0]
-    content = first_user_message.get('content', {})
-    text = content.get('text', '').strip()
+    #content = first_user_message.get('content', {})
+    #text = content.get('text', '').strip()
+    text = first_user_message.content
     
     return (text.startswith('>') and 
             len(text.split('\n')) >= 2 and 
@@ -40,8 +41,7 @@ def simple_continuation_rule(previous_exchange: Exchange, current_exchange: Exch
         return False
     
     first_user_message = user_messages[0]
-    content = first_user_message.get('content', {})
-    text = content.get('text', '').strip().lower()
+    text = first_user_message.content
     
     return text in continuation_patterns
 
@@ -58,8 +58,7 @@ def short_continuation_rule(previous_exchange: Exchange, current_exchange: Excha
         return False
     
     first_user_message = user_messages[0]
-    content = first_user_message.get('content', {})
-    text = content.get('text', '').strip().lower()
+    text = first_user_message.content
     
     if len(text.split()) <= 3:
         for pattern in continuation_starters:
