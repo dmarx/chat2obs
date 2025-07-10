@@ -42,4 +42,12 @@ class MessageOpenAI(Message):
         return self.raw.get('create_time', 0.0)
     def _get_author_role(self):
         return self.data.get('author', {}).get('role')
-    
+
+def is_oai_msg(msg):
+    return True
+
+def msg_factory(msg):
+    if is_oai_msg(msg):
+        return MessageOpenAI(data=msg)
+    else:
+        raise NotImplementedError
