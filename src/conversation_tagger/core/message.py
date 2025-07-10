@@ -1,6 +1,9 @@
+from typing import Any
+
+
 class Message:
     def __init__(self, data: dict):
-        self.raw = data
+        self.data = data
     
     @property
     def content(self):
@@ -24,7 +27,7 @@ class Message:
         raise NotImplementedError
     
 
-def get_message_text_chatgpt(message: Dict[str, Any]) -> str:
+def get_message_text_chatgpt(message: dict[str, Any]) -> str:
     """Extract text content from a message."""
     content = message.get('content', {})
     text = content.get('text', '')
@@ -37,9 +40,9 @@ def get_message_text_chatgpt(message: Dict[str, Any]) -> str:
 
 class MessageOpenAI(Message):
     def _get_content(self):
-        return get_message_text_chatgpt(self.raw)
+        return get_message_text_chatgpt(self.data)
     def _get_created_date(self):
-        return self.raw.get('create_time', 0.0)
+        return self.data.get('create_time', 0.0)
     def _get_author_role(self):
         return self.data.get('author', {}).get('role')
 

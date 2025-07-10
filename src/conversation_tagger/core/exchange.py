@@ -8,19 +8,12 @@ from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 import uuid
 
+
 if TYPE_CHECKING:
     from .tag import Tag
 
+from .message import Message, msg_factory
 
-def get_message_text(message: Dict[str, Any]) -> str:
-    """Extract text content from a message."""
-    content = message.get('content', {})
-    text = content.get('text', '')
-    parts = content.get('parts', [])
-    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
-    if joined:
-        text = f"{text} {joined}"
-    return text.strip()
 
 
 @dataclass
@@ -29,7 +22,7 @@ class Exchange:
     
     exchange_id: str
     conversation_id: str
-    messages: List[Dict[str, Any]]  # Sequential messages in this exchange
+    messages: list[Message]
     annotations: Dict[str, Any] = field(default_factory=dict)  # Dictionary-based annotations
     
     @classmethod
@@ -38,7 +31,7 @@ class Exchange:
         return cls(
             exchange_id=str(uuid.uuid4()),
             conversation_id=conversation_id,
-            messages=messages,
+            messages=[msg_factory(m) for m in messages],
             annotations={}
         )
     
@@ -47,31 +40,27 @@ class Exchange:
         """Get the create_time of the first message for ordering."""
         if not self.messages:
             return 0.0
-        return self.messages[0].get('create_time', 0.0)
+        return self.messages[0].created_date
     
     def has_continuations(self) -> bool:
         """Check if this exchange has continuation prompts (multiple user messages)."""
-        user_count = sum(1 for msg in self.messages 
-                        if msg.get('author', {}).get('role') == 'user')
-        return user_count > 1
+        return len(self.get_user_messages) > 1
     
     def get_user_messages(self) -> List[Dict[str, Any]]:
         """Get just the user messages."""
-        return [msg for msg in self.messages 
-                if msg.get('author', {}).get('role') == 'user']
+        return [msg for msg in self.messages if msg.author_role == 'user']
     
     def get_assistant_messages(self) -> List[Dict[str, Any]]:
         """Get just the assistant messages."""
-        return [msg for msg in self.messages 
-                if msg.get('author', {}).get('role') == 'assistant']
+        return [msg for msg in self.messages if msg.author_role == 'assistant']
     
     def get_user_texts(self) -> List[str]:
         """Get text from all user messages."""
-        return [get_message_text(msg) for msg in self.get_user_messages()]
+        return [msg.content for msg in self.get_user_messages()]
     
     def get_assistant_texts(self) -> List[str]:
         """Get text from all assistant messages."""
-        return [get_message_text(msg) for msg in self.get_assistant_messages()]
+        return [msg.content for msg in self.get_assistant_messages()]
 
     def add_annotation(self, name: str, value: Any = True) -> None:
         """Add an annotation to this exchange."""
@@ -85,27 +74,27 @@ class Exchange:
         """Get annotation value."""
         return self.annotations.get(name, default)
 
-    # Legacy compatibility
-    @property 
-    def tags(self) -> List['Tag']:
-        """Convert annotations back to Tag objects for backward compatibility."""
-        from .tag import Tag
-        tags = []
-        for name, value in self.annotations.items():
-            if value is True:
-                tags.append(Tag(name))
-            elif isinstance(value, dict):
-                tags.append(Tag(name, **value))
-            else:
-                tags.append(Tag(name, value=value))
-        return tags
+    # # Legacy compatibility
+    # @property 
+    # def tags(self) -> List['Tag']:
+    #     """Convert annotations back to Tag objects for backward compatibility."""
+    #     from .tag import Tag
+    #     tags = []
+    #     for name, value in self.annotations.items():
+    #         if value is True:
+    #             tags.append(Tag(name))
+    #         elif isinstance(value, dict):
+    #             tags.append(Tag(name, **value))
+    #         else:
+    #             tags.append(Tag(name, value=value))
+    #     return tags
     
-    @tags.setter
-    def tags(self, tag_list: List['Tag']) -> None:
-        """Convert Tag objects to annotations for backward compatibility."""
-        self.annotations = {}
-        for tag in tag_list:
-            self.annotations.update(tag.to_dict())
+    # @tags.setter
+    # def tags(self, tag_list: List['Tag']) -> None:
+    #     """Convert Tag objects to annotations for backward compatibility."""
+    #     self.annotations = {}
+    #     for tag in tag_list:
+    #         self.annotations.update(tag.to_dict())
 
     def __add__(self, other: 'Exchange') -> 'Exchange':
         """Merge two exchanges by combining and time-ordering their messages."""
@@ -138,7 +127,7 @@ class Exchange:
         """Return number of messages in exchange."""
         return len(self.messages)
     
-    def __str__(self) -> str:
-        """String representation showing message sequence."""
-        roles = [msg.get('author', {}).get('role', 'unknown') for msg in self.messages]
-        return f"Exchange({self.exchange_id[:8]}...: {' → '.join(roles)})"
+    # def __str__(self) -> str:
+    #     """String representation showing message sequence."""
+    #     roles = [msg.get('author', {}).get('role', 'unknown') for msg in self.messages]
+    #     return f"Exchange({self.exchange_id[:8]}...: {' → '.join(roles)})"
