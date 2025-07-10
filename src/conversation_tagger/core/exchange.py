@@ -106,7 +106,7 @@ class Exchange:
         
         # Combine and sort messages by create_time to ensure proper chronological order
         combined_messages = self.messages + other.messages
-        combined_messages.sort(key=lambda msg: msg.get('create_time', 0.0))
+        combined_messages.sort(key=lambda msg: msg.created_date)
         
         # Merge annotations from both exchanges
         combined_annotations = {}
