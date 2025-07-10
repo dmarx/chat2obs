@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 from .exchange import Exchange
 from .conversation import Conversation
 from .tag import Tag, create_annotation
-
+from .message import Message, MessageOpenAI
 
 ######################
 #  Conversation Rules #
@@ -119,56 +119,79 @@ def conversation_gizmo_plugin_summary(conversation: Conversation) -> Dict[str, A
 
 # Feature detection (moved from conversation-level)
 def has_github_repos(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_github_repos_oai(exchange)
+
+def has_github_repos_oai(exchange: Exchange) -> bool:
     """Check if GitHub repositories were selected for context in this exchange."""
+    repos = None
     for message in exchange.messages:
-        metadata = message.get('metadata', {})
+        metadata = message.data.get('metadata', {})
         repos = metadata.get('selected_github_repos', [])
-        if repos:  # Non-empty list
+        if repos:
             return True
     return False
 
-
 def has_canvas_operations(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_canvas_operations_oai(exchange)
+    
+def has_canvas_operations_oai(exchange: Exchange) -> bool:
     """Check for canvas/document operations in this exchange."""
     for message in exchange.messages:
-        metadata = message.get('metadata', {})
-        if metadata.get('canvas'):
+        metadata = message.data.get('metadata', {})
+        if metadata.data.get('canvas'):
             return True
     return False
 
 
 def has_web_search(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_web_search_oai(exchange)
+    
+def has_web_search_oai(exchange: Exchange) -> bool:
     """Check for web search operations in this exchange."""
     for message in exchange.messages:
-        metadata = message.get('metadata', {})
-        if (metadata.get('search_queries') or 
-            metadata.get('search_result_groups') or
-            metadata.get('content_references')):
+        metadata = message.data.get('metadata', {})
+        if (metadata.data.get('search_queries') or 
+            metadata.data.get('search_result_groups') or
+            metadata.data.get('content_references')):
             return True
     return False
 
 
 def has_reasoning_thoughts(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_reasoning_thoughts_oai(exchange)
+    
+def has_reasoning_thoughts_oai(exchange: Exchange) -> bool:
     """Check for reasoning/thinking patterns in this exchange."""
     for message in exchange.messages:
-        content = message.get('content', {})
+        content = message.data.get('content', {})
         if content.get('thoughts'):  # Reasoning thoughts
             return True
     return False
 
-
 def has_code_execution(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_code_execution_oai(exchange)
+    
+def has_code_execution_oai(exchange: Exchange) -> bool:
     """Check for code execution artifacts in this exchange."""
     for message in exchange.messages:
-        metadata = message.get('metadata', {})
+        metadata = message.data.get('metadata', {})
         if (metadata.get('aggregate_result') or 
             metadata.get('jupyter_messages')):
             return True
     return False
 
 
-# Code detection
 def has_code_blocks(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_code_blocks_oai(exchange)
+
+# Code detection
+def has_code_blocks_oai(exchange: Exchange) -> bool:
     """Check for explicit code blocks (``` markdown syntax)."""
     all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
     return any('```' in text for text in all_texts)
@@ -212,9 +235,7 @@ def has_code_structure_patterns(exchange: Exchange) -> bool:
 def user_has_quote_elaborate(exchange: Exchange) -> bool:
     """Check if user messages contain quote+elaborate continuation pattern."""
     for message in exchange.get_user_messages():
-        content = message.get('content', {})
-        text = content.get('text', '').strip()
-        
+        text = message.content
         if not text.startswith('>'):
             continue
         
@@ -226,9 +247,13 @@ def user_has_quote_elaborate(exchange: Exchange) -> bool:
 
 
 def user_has_attachments(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return user_has_attachments_oai(exchange)
+    
+def user_has_attachments_oai(exchange: Exchange) -> bool:
     """Check if user messages have attachments."""
     for message in exchange.get_user_messages():
-        metadata = message.get('metadata', {})
+        metadata = message.data.get('metadata', {})
         if metadata.get('attachments'):
             return True
     return False
@@ -275,8 +300,6 @@ def has_latex_math(exchange: Exchange) -> bool:
     
     return False
 
-
-# First user message analysis
 def first_user_has_large_content(exchange: Exchange, min_length: int = 2000) -> bool:
     """Check if the first user message has large content."""
     user_messages = exchange.get_user_messages()
@@ -284,12 +307,7 @@ def first_user_has_large_content(exchange: Exchange, min_length: int = 2000) -> 
         return False
     
     first_message = user_messages[0]
-    content = first_message.get('content', {})
-    text = content.get('text', '')
-    parts = content.get('parts', [])
-    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
-    if joined:
-        text = f"{text} {joined}"
+    text = first_message.content
     
     return len(text.strip()) > min_length
 
@@ -359,14 +377,17 @@ def first_user_has_code_attachments(exchange: Exchange) -> bool:
     return False
 
 
-# Gizmo/plugin detection - now returns annotations directly
-def get_gizmo_annotations(exchange: Exchange) -> Dict[str, Any]:
+def get_gizmo_annotations(exchange: Exchange) -> dict[str, Any]:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return get_gizmo_annotations_oai(exchange)
+    
+def get_gizmo_annotations_oai(exchange: Exchange) -> dict[str, Any]:
     """Get annotations for specific gizmos used in this exchange."""
     annotations = {}
     gizmos = set()
     
     for message in exchange.messages:
-        metadata = message.get('metadata', {})
+        metadata = message.data.get('metadata', {})
         if metadata.get('gizmo_id'):
             gizmos.add(metadata['gizmo_id'])
     
@@ -376,13 +397,17 @@ def get_gizmo_annotations(exchange: Exchange) -> Dict[str, Any]:
     return annotations
 
 
-def get_plugin_annotations(exchange: Exchange) -> Dict[str, Any]:
+def get_plugin_annotations(exchange: Exchange) -> dict[str, Any]:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return get_plugin_annotations_oai(exchange)
+    
+def get_plugin_annotations_oai(exchange: Exchange) -> dict[str, Any]:
     """Get annotations for specific plugins used in this exchange."""
     annotations = {}
     plugins = set()
     
     for message in exchange.messages:
-        metadata = message.get('metadata', {})
+        metadata = message.data.get('metadata', {})
         invoked_plugin = metadata.get('invoked_plugin', {})
         if invoked_plugin:
             if invoked_plugin.get('plugin_id'):
