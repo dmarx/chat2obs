@@ -344,7 +344,7 @@ def first_user_has_attachments(exchange: Exchange) -> bool:
         return False
     
     first_message = user_messages[0]
-    metadata = first_message.get('metadata', {})
+    metadata = first_message.data.get('metadata', {})
     attachments = metadata.get('attachments', [])
     return len(attachments) > 0
 
@@ -356,7 +356,7 @@ def first_user_has_code_attachments(exchange: Exchange) -> bool:
         return False
     
     first_message = user_messages[0]
-    metadata = first_message.get('metadata', {})
+    metadata = first_message.data.get('metadata', {})
     attachments = metadata.get('attachments', [])
     
     for attachment in attachments:
