@@ -44,7 +44,7 @@ class Exchange:
     
     def has_continuations(self) -> bool:
         """Check if this exchange has continuation prompts (multiple user messages)."""
-        return len(self.get_user_messages) > 1
+        return len(self.get_user_messages()) > 1
     
     def get_user_messages(self) -> List[Dict[str, Any]]:
         """Get just the user messages."""
