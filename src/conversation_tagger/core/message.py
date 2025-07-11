@@ -47,7 +47,11 @@ class MessageOpenAI(Message):
         return self.data.get('author', {}).get('role')
 
 def is_oai_msg(msg):
-    return True
+    #return True
+    return isinstance(msg, dict) and 'content' in msg and 'create_time' in msg and 'author' in msg
+
+def is_anthropic_msg(msg):
+    return isinstance(msg, dict) and 'text' in msg and 'created_at' in msg and 'author' in msg
 
 def msg_factory(msg):
     if is_oai_msg(msg):
