@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Callable
 from .exchange import Exchange
 from .conversation import Conversation
 
-from .message import Message, MessageOpenAI
+from .message import Message, MessageOpenAI, MessageClaude
 from .exchange_tagger import ExchangeTagger
 
 
@@ -87,13 +87,19 @@ class ExchangeParser:
 
     def get_messages(self, conversation: dict):
         raise NotImplementedError
+    
+    def get_conversation_id(self, conversation: dict) -> str:
+        raise NotImplementedError
+    
+    def get_title(self, conversation: dict) -> str:
+        raise NotImplementedError
 
     def parse_conversation(self, conversation: Dict[str, Any]) -> Conversation:
         """Parse a conversation into a Conversation object with fully-tagged exchanges."""
         messages = self.get_messages(conversation)
         
-        conversation_id = conversation.get('conversation_id')
-        title = conversation.get('title', '')
+        conversation_id = self.get_conversation_id(conversation)
+        title = self.get_title(conversation)
         
         dyadic_exchanges = self._create_dyadic_exchanges(messages, conversation_id)
         merged_exchanges = self._merge_continuations(dyadic_exchanges)
@@ -195,4 +201,23 @@ class ExchangeParserOAI(ExchangeParser):
                 create_time = message.get('create_time') or 0
                 all_messages.append((create_time, message))
         all_messages.sort(key=lambda x: x[0])
-        return [MessageOpenAI(data=msg) for _, msg in all_messages] 
+        return [MessageOpenAI(data=msg) for _, msg in all_messages]
+    
+    def get_conversation_id(self, conversation: dict) -> str:
+        return  conversation.get('conversation_id')
+
+    def get_title(self, conversation: dict) -> str:
+        return conversation.get('title')
+
+class ExchangeParserClaude(ExchangeParser):
+    def get_messages(self, conversation: dict):
+        # Parse Claude conversation format
+        chat_messages = conversation.get('chat_messages', [])
+        all_messages = [MessageClaude(data=msg) for msg in chat_messages if msg]
+        all_messages.sort(key=lambda x: x.created_date)
+        return all_messages
+    
+    def get_conversation_id(self, conversation: dict) -> str:
+        return conversation.get('uuid')
+    def get_title(self, conversation: dict) -> str:
+        return conversation.get('name')

@@ -347,3 +347,36 @@ def test_empty_conversation_handling():
 #     # Should preserve the key data (exact format may differ)
 #     assert new_exchange.has_annotation('message_count')
 #     assert new_exchange.get_annotation('message_count') == 2
+
+
+def test_claude_conversation_parsing():
+    """Test parsing a Claude conversation."""
+    claude_conversation = {
+        'uuid': 'test-uuid',
+        'name': 'Test Claude Chat',
+        'chat_messages': [
+            {
+                'uuid': 'msg1-uuid',
+                'text': 'Hello Claude',
+                'sender': 'user',
+                'created_at': '2024-01-01T12:00:00Z',
+                'content': [{'type': 'text', 'text': 'Hello Claude'}],
+                'attachments': []
+            },
+            {
+                'uuid': 'msg2-uuid', 
+                'text': 'Hello! How can I help you today?',
+                'sender': 'assistant',
+                'created_at': '2024-01-01T12:00:01Z',
+                'content': [{'type': 'text', 'text': 'Hello! How can I help you today?'}],
+                'attachments': []
+            }
+        ]
+    }
+    
+    tagger = create_default_tagger(source="claude")
+    result = tagger.tag_conversation(claude_conversation)
+    
+    assert result.conversation_id == 'test-uuid'
+    assert result.exchange_count == 1
+    assert 'Hello Claude' in result.get_all_user_text()
