@@ -8,7 +8,7 @@ import pytest
 from conversation_tagger.core.tag import Tag, create_annotation, merge_annotations
 from conversation_tagger.core.exchange import Exchange
 from conversation_tagger.core.conversation import Conversation
-
+from conversation_tagger.core.message import MessageOpenAI
 
 def test_annotation_helpers():
     """Test annotation helper functions."""
@@ -56,6 +56,7 @@ def test_exchange_annotations():
         {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000},
         {'author': {'role': 'assistant'}, 'content': {'text': 'Hi!'}, 'create_time': 2000}
     ]
+    messages = [MessageOpenAI(data=msg) for msg in messages]
     
     exchange = Exchange.create('conv_1', messages)
     
@@ -100,17 +101,21 @@ def test_exchange_annotations():
 
 def test_exchange_merging_annotations():
     """Test merging exchanges preserves annotations."""
-    exchange_1 = Exchange.create('conv_1', [
+    messages1=[
         {'author': {'role': 'user'}, 'content': {'text': 'First'}, 'create_time': 1000},
         {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}, 'create_time': 2000}
-    ])
+    ]
+    messages1 = [MessageOpenAI(data=msg) for msg in messages1]
+    exchange_1 = Exchange.create('conv_1', messages1)
     exchange_1.add_annotation('has_code', True)
     exchange_1.add_annotation('part', 1)
-    
-    exchange_2 = Exchange.create('conv_1', [
+
+    messages2=[
         {'author': {'role': 'user'}, 'content': {'text': 'Continue'}, 'create_time': 3000},
         {'author': {'role': 'assistant'}, 'content': {'text': 'More'}, 'create_time': 4000}
-    ])
+    ]
+    messages2 = [MessageOpenAI(data=msg) for msg in messages2]
+    exchange_2 = Exchange.create('conv_1', messages2)
     exchange_2.add_annotation('has_continuation', True)
     exchange_2.add_annotation('part', 2)
     
@@ -130,13 +135,13 @@ def test_conversation_annotations():
     """Test conversation annotation functionality."""
     exchanges = [
         Exchange.create('conv_1', [
-            {'author': {'role': 'user'}, 'content': {'text': 'Q1'}, 'create_time': 1000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'A1'}, 'create_time': 2000}
+            MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'Q1'}, 'create_time': 1000}),
+            MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'A1'}, 'create_time': 2000})
         ]),
         Exchange.create('conv_1', [
-            {'author': {'role': 'user'}, 'content': {'text': 'Q2'}, 'create_time': 3000},
-            {'author': {'role': 'assistant'}, 'content': {'text': 'A2'}, 'create_time': 4000}
-        ])
+            MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'Q2'}, 'create_time': 3000}),
+            MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'A2'}, 'create_time': 4000})
+        ])  
     ]
     
     # Add annotations to exchanges
@@ -212,9 +217,9 @@ def sample_conversation_data():
 
 def test_simple_parsing(sample_conversation_data):
     """Test basic conversation parsing with annotations."""
-    from conversation_tagger.core.exchange_parser import ExchangeParser
-    
-    parser = ExchangeParser()
+    from conversation_tagger.core.exchange_parser import ExchangeParserOAI
+
+    parser = ExchangeParserOAI()
     conversation = parser.parse_conversation(sample_conversation_data)
     
     assert isinstance(conversation, Conversation)
