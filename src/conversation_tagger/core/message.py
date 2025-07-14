@@ -61,8 +61,10 @@ class MessageClaude(Message):
         return created_at
     
     def _get_author_role(self):
-        return self.data.get('sender', 'unknown')
-
+        sender = self.data.get('sender')
+        if sender == 'human':
+            sender = 'user'
+        return sender
 
 # def is_oai_msg(msg):
 #     #return True
