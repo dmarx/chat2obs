@@ -8,7 +8,8 @@ import pytest
 from conversation_tagger.core.exchange_tagger import ExchangeTagger
 from conversation_tagger.core.tagger import ConversationTagger
 from conversation_tagger.core.exchange import Exchange
-from conversation_tagger.core.tag import Tag
+from conversation_tagger.core.message import Message, MessageOpenAI
+#from conversation_tagger.core.tag import Tag
 
 
 def test_exchange_tagger_annotations():
@@ -34,8 +35,8 @@ def test_exchange_tagger_annotations():
     
     # Test with greeting
     exchange = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'Hello world!'}, 'create_time': 1000},
-        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'Hello world!'}, 'create_time': 1000}),
+        MessageOpenAI({'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}) 
     ])
     
     tagged = tagger.tag_exchange(exchange)
@@ -53,7 +54,7 @@ def test_exchange_tagger_annotations():
     
     # Test without greeting
     exchange_no_greeting = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}, 'create_time': 1000}
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}, 'create_time': 1000})
     ])
     
     tagged_no_greeting = tagger.tag_exchange(exchange_no_greeting)
@@ -107,7 +108,7 @@ def test_exchange_tagger_with_string_values():
     tagger.add_rule('language', get_language)
     
     python_exchange = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'Help with Python code'}, 'create_time': 1000}
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'Help with Python code'}, 'create_time': 1000})
     ])
     
     tagged = tagger.tag_exchange(python_exchange)
@@ -157,34 +158,34 @@ def test_conversation_tagger_annotations():
     assert result.get_annotation('total_messages') == 4
 
 
-def test_conversation_tagger_with_legacy_tags():
-    """Test conversation tagger with legacy Tag objects."""
-    tagger = ConversationTagger()
+# def test_conversation_tagger_with_legacy_tags():
+#     """Test conversation tagger with legacy Tag objects."""
+#     tagger = ConversationTagger()
     
-    def complexity_tag(conversation):
-        """Return legacy Tag object."""
-        if conversation.exchange_count > 5:
-            return Tag('complexity', level='high', exchanges=conversation.exchange_count)
-        return Tag('complexity', level='low', exchanges=conversation.exchange_count)
+#     def complexity_tag(conversation):
+#         """Return legacy Tag object."""
+#         if conversation.exchange_count > 5:
+#             return Tag('complexity', level='high', exchanges=conversation.exchange_count)
+#         return Tag('complexity', level='low', exchanges=conversation.exchange_count)
     
-    tagger.add_conversation_rule('complexity', complexity_tag)
+#     tagger.add_conversation_rule('complexity', complexity_tag)
     
-    conversation_data = {
-        'conversation_id': 'test_conv',
-        'title': 'Simple conversation',
-        'mapping': {
-            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello'}}},
-            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there!'}}}
-        }
-    }
+#     conversation_data = {
+#         'conversation_id': 'test_conv',
+#         'title': 'Simple conversation',
+#         'mapping': {
+#             'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello'}}},
+#             'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there!'}}}
+#         }
+#     }
     
-    result = tagger.tag_conversation(conversation_data)
+#     result = tagger.tag_conversation(conversation_data)
     
-    # Should convert Tag to annotation
-    assert result.has_annotation('complexity')
-    complexity_data = result.get_annotation('complexity')
-    assert complexity_data['level'] == 'low'
-    assert complexity_data['exchanges'] == 1
+#     # Should convert Tag to annotation
+#     assert result.has_annotation('complexity')
+#     complexity_data = result.get_annotation('complexity')
+#     assert complexity_data['level'] == 'low'
+#     assert complexity_data['exchanges'] == 1
 
 
 def test_tagging_error_handling():

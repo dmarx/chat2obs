@@ -12,7 +12,7 @@ import uuid
 if TYPE_CHECKING:
     from .tag import Tag
 
-from .message import Message, msg_factory
+from .message import Message
 
 
 
@@ -26,12 +26,12 @@ class Exchange:
     annotations: Dict[str, Any] = field(default_factory=dict)  # Dictionary-based annotations
     
     @classmethod
-    def create(cls, conversation_id: str, messages: List[Dict[str, Any]]) -> 'Exchange':
+    def create(cls, conversation_id: str, messages: List[Message]) -> 'Exchange':
         """Create a new exchange with a random UUID."""
         return cls(
             exchange_id=str(uuid.uuid4()),
             conversation_id=conversation_id,
-            messages=[msg_factory(m) for m in messages],
+            messages=messages,
             annotations={}
         )
     

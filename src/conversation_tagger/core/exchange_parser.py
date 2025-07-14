@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Callable
 from .exchange import Exchange
 from .conversation import Conversation
 
-
+from .message import Message, MessageOpenAI
 from .exchange_tagger import ExchangeTagger
 
 
@@ -85,20 +85,12 @@ class ExchangeParser:
         """Add a new continuation detection rule."""
         self.continuation_rules.append(rule_function)
 
+    def get_messages(self, conversation: dict):
+        raise NotImplementedError
+
     def parse_conversation(self, conversation: Dict[str, Any]) -> Conversation:
         """Parse a conversation into a Conversation object with fully-tagged exchanges."""
-        mapping = conversation.get('mapping', {})
-        
-        # Extract and sort messages (existing logic)
-        all_messages = []
-        for node_id, node in mapping.items():
-            message = node.get('message')
-            if message and message.get('author'):
-                create_time = message.get('create_time') or 0
-                all_messages.append((create_time, message))
-        
-        all_messages.sort(key=lambda x: x[0])
-        messages = [msg for _, msg in all_messages]
+        messages = self.get_messages(conversation)
         
         conversation_id = conversation.get('conversation_id')
         title = conversation.get('title', '')
@@ -125,22 +117,21 @@ class ExchangeParser:
         
         return conv
     
-    def _create_dyadic_exchanges(self, messages: List[Dict[str, Any]], 
+    def _create_dyadic_exchanges(self, messages: list[Message], 
                                 conversation_id: str) -> List[Exchange]:
         """Step 1: Create simple USER-ASSISTANT dyadic exchanges."""
         dyadic_exchanges = []
         current_pair = []
         
         for message in messages:
-            author_role = message.get('author', {}).get('role', '')
             
-            if author_role in ['user', 'assistant']:
+            if message.author_role in ['user', 'assistant']:
                 current_pair.append(message)
                 
                 # If we have a user->assistant pair, create exchange
                 if (len(current_pair) == 2 and 
-                    current_pair[0].get('author', {}).get('role') == 'user' and
-                    current_pair[1].get('author', {}).get('role') == 'assistant'):
+                    current_pair[0].author_role == 'user' and
+                    current_pair[1].author_role == 'assistant'):
                     
                     exchange = Exchange.create(conversation_id, current_pair.copy())
                     dyadic_exchanges.append(exchange)
@@ -187,3 +178,21 @@ class ExchangeParser:
         merged_exchanges.append(current_exchange)
         
         return merged_exchanges
+
+
+# TODO: 
+# * Attach appropriate Message type to parser
+#   - currently, determination of source delegated to
+#     `message.msg_factory`, which is invoked in Exchange.create
+# * Rename to ConversationParser?
+class ExchangeParserOAI(ExchangeParser):
+    def get_messages(self, conversation: dict):
+        mapping = conversation.get('mapping', {})
+        all_messages = []
+        for node_id, node in mapping.items():
+            message = node.get('message')
+            if message and message.get('author'):
+                create_time = message.get('create_time') or 0
+                all_messages.append((create_time, message))
+        all_messages.sort(key=lambda x: x[0])
+        return [MessageOpenAI(data=msg) for _, msg in all_messages] 

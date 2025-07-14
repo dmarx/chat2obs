@@ -5,7 +5,7 @@ Updated to use dictionary-based annotations.
 """
 
 from typing import Dict, Any, List, Callable
-from .exchange_parser import ExchangeParser
+from .exchange_parser import ExchangeParser, ExchangeParserOAI
 from .exchange_tagger import ExchangeTagger
 from .conversation import Conversation
 from .exchange import Exchange
@@ -17,7 +17,7 @@ class ConversationTagger:
     
     def __init__(self, exchange_parser: ExchangeParser | None = None):
         if not exchange_parser:
-            exchange_parser = ExchangeParser()
+            exchange_parser = ExchangeParserOAI()
         self.exchange_parser = exchange_parser
         self.conversation_rules: Dict[str, Callable] = {}
     

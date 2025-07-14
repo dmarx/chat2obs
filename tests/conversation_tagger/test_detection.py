@@ -10,6 +10,7 @@ from conversation_tagger.core.exchange import Exchange
 from conversation_tagger.core.conversation import Conversation
 from conversation_tagger.core.tag import Tag
 
+from conversation_tagger.core.message import MessageOpenAI
 
 ######################
 # Conversation Tests #
@@ -151,20 +152,22 @@ def test_conversation_gizmo_plugin_summary():
 def test_has_github_repos():
     """Test GitHub repository detection."""
     # Exchange with GitHub repos
-    msg_with_repos = {
+    msg_with_repos = MessageOpenAI(data={
         'author': {'role': 'user'},
         'metadata': {'selected_github_repos': ['owner/repo1', 'owner/repo2']},
-        'content': {'text': 'Help with code'}
-    }
+        'content': {'text': 'Help with code'},
+        'create_time': 1700000000.0
+    })
     exchange_with = Exchange.create('test', [msg_with_repos])
     assert has_github_repos(exchange_with) == True
     
     # Exchange without GitHub repos
-    msg_without_repos = {
+    msg_without_repos = MessageOpenAI(data={
         'author': {'role': 'user'},
         'metadata': {'selected_github_repos': []},
-        'content': {'text': 'General question'}
-    }
+        'content': {'text': 'General question'},
+        'create_time': 1700000000.0
+    })
     exchange_without = Exchange.create('test', [msg_without_repos])
     assert has_github_repos(exchange_without) == False
 
@@ -172,11 +175,12 @@ def test_has_github_repos():
 def test_get_gizmo_annotations():
     """Test gizmo annotation generation."""
     # Exchange with single gizmo
-    msg_with_gizmo = {
+    msg_with_gizmo = MessageOpenAI(data={
         'author': {'role': 'assistant'},
         'metadata': {'gizmo_id': 'gpt-4-turbo'},
-        'content': {'text': 'Response from specialized model'}
-    }
+        'content': {'text': 'Response from specialized model'},
+        'create_time': 1700000000.0
+    })
     exchange_single = Exchange.create('test', [msg_with_gizmo])
     annotations = get_gizmo_annotations(exchange_single)
     assert len(annotations) == 1
@@ -184,16 +188,18 @@ def test_get_gizmo_annotations():
     assert annotations['gizmo_1']['gizmo_id'] == 'gpt-4-turbo'
     
     # Exchange with multiple messages using different gizmos
-    msg_gizmo1 = {
+    msg_gizmo1 = MessageOpenAI(data={
         'author': {'role': 'assistant'},
         'metadata': {'gizmo_id': 'gpt-4'},
-        'content': {'text': 'First response'}
-    }
-    msg_gizmo2 = {
+        'content': {'text': 'First response'},
+        'create_time': 1700000000.0
+    })
+    msg_gizmo2 = MessageOpenAI(data={
         'author': {'role': 'assistant'},
         'metadata': {'gizmo_id': 'dalle'},
-        'content': {'text': 'Second response'}
-    }
+        'content': {'text': 'Second response'},
+        'create_time': 1700000000.0
+    })
     exchange_multiple = Exchange.create('test', [msg_gizmo1, msg_gizmo2])
     annotations = get_gizmo_annotations(exchange_multiple)
     assert len(annotations) == 2
@@ -201,11 +207,12 @@ def test_get_gizmo_annotations():
     assert gizmo_ids == {'gpt-4', 'dalle'}
     
     # Exchange without gizmo usage
-    msg_no_gizmo = {
+    msg_no_gizmo = MessageOpenAI(data={
         'author': {'role': 'assistant'},
         'metadata': {},
-        'content': {'text': 'Regular response'}
-    }
+        'content': {'text': 'Regular response'},
+        'create_time': 1700000000.0
+    })
     exchange_none = Exchange.create('test', [msg_no_gizmo])
     annotations = get_gizmo_annotations(exchange_none)
     assert annotations == {}
@@ -214,11 +221,12 @@ def test_get_gizmo_annotations():
 def test_get_plugin_annotations():
     """Test plugin annotation generation."""
     # Exchange with plugin_id only
-    msg_plugin_id = {
+    msg_plugin_id = MessageOpenAI(data={
         'author': {'role': 'assistant'},
         'metadata': {'invoked_plugin': {'plugin_id': 'web_browser'}},
-        'content': {'text': 'Searching web'}
-    }
+        'content': {'text': 'Searching web'},
+        'create_time': 1700000000.0
+    })
     exchange_plugin_id = Exchange.create('test', [msg_plugin_id])
     annotations = get_plugin_annotations(exchange_plugin_id)
     assert len(annotations) == 1
@@ -226,11 +234,12 @@ def test_get_plugin_annotations():
     assert annotations['plugin_1']['plugin_id'] == 'web_browser'
     
     # Exchange with both plugin_id and namespace
-    msg_both = {
+    msg_both = MessageOpenAI(data={
         'author': {'role': 'assistant'},
         'metadata': {'invoked_plugin': {'plugin_id': 'image_gen', 'namespace': 'dalle'}},
-        'content': {'text': 'Generating image'}
-    }
+        'content': {'text': 'Generating image'},
+        'create_time': 1700000000.0
+    })
     exchange_both = Exchange.create('test', [msg_both])
     annotations = get_plugin_annotations(exchange_both)
     assert len(annotations) == 2
@@ -238,11 +247,12 @@ def test_get_plugin_annotations():
     assert plugin_ids == {'image_gen', 'dalle'}
     
     # Exchange without plugin usage
-    msg_none = {
+    msg_none = MessageOpenAI(data={
         'author': {'role': 'assistant'},
         'metadata': {},
-        'content': {'text': 'Regular response'}
-    }
+        'content': {'text': 'Regular response'},
+        'create_time': 1700000000.0
+    })
     exchange_none = Exchange.create('test', [msg_none])
     annotations = get_plugin_annotations(exchange_none)
     assert annotations == {}
@@ -251,14 +261,14 @@ def test_get_plugin_annotations():
 def test_has_code_blocks():
     """Test code block detection."""
     # Exchange with code blocks
-    user_msg = {'author': {'role': 'user'}, 'content': {'text': 'Fix this: ```python\nprint("hello")\n```'}}
-    assistant_msg = {'author': {'role': 'assistant'}, 'content': {'text': 'Here is the fix: ```python\nprint("Hello!")\n```'}}
+    user_msg = MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'Fix this: ```python\nprint("hello")\n```'}, 'create_time': 1700000000.0})
+    assistant_msg = MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'Here is the fix: ```python\nprint("Hello!")\n```'}, 'create_time': 1700000000.0})
     exchange_with = Exchange.create('test', [user_msg, assistant_msg])
     assert has_code_blocks(exchange_with) == True
     
     # Exchange without code blocks
-    user_msg_no_code = {'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}}
-    assistant_msg_no_code = {'author': {'role': 'assistant'}, 'content': {'text': 'Python is a programming language'}}
+    user_msg_no_code = MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}, 'create_time': 1700000000.0})
+    assistant_msg_no_code = MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'Python is a programming language'}, 'create_time': 1700000000.0}) 
     exchange_without = Exchange.create('test', [user_msg_no_code, assistant_msg_no_code])
     assert has_code_blocks(exchange_without) == False
 
@@ -266,26 +276,29 @@ def test_has_code_blocks():
 def test_has_latex_math():
     """Test LaTeX math detection."""
     # Block math
-    msg_block_math = {
+    msg_block_math = MessageOpenAI(data={
         'author': {'role': 'assistant'},
-        'content': {'text': 'The quadratic formula is: $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$'}
-    }
+        'content': {'text': 'The quadratic formula is: $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$'},
+        'create_time': 1700000000.0
+    })
     exchange_block = Exchange.create('test', [msg_block_math])
     assert has_latex_math(exchange_block) == True
     
     # LaTeX commands
-    msg_latex_commands = {
+    msg_latex_commands = MessageOpenAI(data={
         'author': {'role': 'assistant'},
-        'content': {'text': 'The integral \\int_{0}^{\\infty} e^{-x} dx = 1'}
-    }
+        'content': {'text': 'The integral \\int_{0}^{\\infty} e^{-x} dx = 1'},
+        'create_time': 1700000000.0
+    })
     exchange_commands = Exchange.create('test', [msg_latex_commands])
     assert has_latex_math(exchange_commands) == True
     
     # No math
-    msg_no_math = {
+    msg_no_math = MessageOpenAI(data={
         'author': {'role': 'assistant'},
-        'content': {'text': 'This is regular text without any mathematical notation'}
-    }
+        'content': {'text': 'This is regular text without any mathematical notation'},
+        'create_time': 1700000000.0
+    })
     exchange_no_math = Exchange.create('test', [msg_no_math])
     assert has_latex_math(exchange_no_math) == False
 
@@ -294,27 +307,30 @@ def test_first_user_has_large_content():
     """Test large content detection in first user message."""
     # Large content (over 2000 chars)
     large_text = 'x' * 2500
-    msg_large = {
+    msg_large = MessageOpenAI(data={
         'author': {'role': 'user'},
-        'content': {'text': large_text}
-    }
+        'content': {'text': large_text},
+        'create_time': 1700000000.0
+    })
     exchange_large = Exchange.create('test', [msg_large])
     assert first_user_has_large_content(exchange_large) == True
     
     # Small content
-    msg_small = {
+    msg_small = MessageOpenAI(data={
         'author': {'role': 'user'},
-        'content': {'text': 'Short question'}
-    }
+        'content': {'text': 'Short question'},
+        'create_time': 1700000000.0
+    })
     exchange_small = Exchange.create('test', [msg_small])
     assert first_user_has_large_content(exchange_small) == False
     
     # Custom threshold
     medium_text = 'x' * 1500
-    msg_medium = {
+    msg_medium = MessageOpenAI(data={
         'author': {'role': 'user'},
-        'content': {'text': medium_text}
-    }
+        'content': {'text': medium_text},
+        'create_time': 1700000000.0
+    })
     exchange_medium = Exchange.create('test', [msg_medium])
     assert first_user_has_large_content(exchange_medium, min_length=1000) == True
     assert first_user_has_large_content(exchange_medium, min_length=2000) == False
@@ -322,21 +338,23 @@ def test_first_user_has_large_content():
 
 def test_user_has_attachments():
     """Test user attachment detection."""
-    # User with attachments
-    msg_with_attachments = {
+    # User with attachments 
+    msg_with_attachments = MessageOpenAI(data={
         'author': {'role': 'user'},
         'metadata': {'attachments': [{'id': 'file1', 'name': 'document.pdf'}]},
-        'content': {'text': 'Please analyze this file'}
-    }
+        'content': {'text': 'Please analyze this file'},
+        'create_time': 1700000000.0
+    })
     exchange_with = Exchange.create('test', [msg_with_attachments])
     assert user_has_attachments(exchange_with) == True
     
     # User without attachments
-    msg_without_attachments = {
+    msg_without_attachments = MessageOpenAI(data={
         'author': {'role': 'user'},
         'metadata': {'attachments': []},
-        'content': {'text': 'General question'}
-    }
+        'content': {'text': 'General question'},
+        'create_time': 1700000000.0
+    })  
     exchange_without = Exchange.create('test', [msg_without_attachments])
     assert user_has_attachments(exchange_without) == False
 
@@ -344,28 +362,31 @@ def test_user_has_attachments():
 def test_extract_proposed_title():
     """Test proposed title extraction from assistant messages."""
     # Test markdown header title (single #)
-    msg_markdown_h1 = {
+    msg_markdown_h1 = MessageOpenAI(data={
         'author': {'role': 'assistant'},
-        'content': {'text': '# Introduction to Python\n\nPython is a programming language...'}
-    }
+        'content': {'text': '# Introduction to Python\n\nPython is a programming language...'},
+        'create_time': 1700000000.0
+    })
     exchange_h1 = Exchange.create('test', [msg_markdown_h1])
     title_h1 = extract_proposed_title(exchange_h1)
     assert title_h1 == 'Introduction to Python'
     
     # Test bold title
-    msg_bold_title = {
+    msg_bold_title = MessageOpenAI(data={
         'author': {'role': 'assistant'},
-        'content': {'text': '**Machine Learning Basics**\n\nMachine learning is...'}
-    }
+        'content': {'text': '**Machine Learning Basics**\n\nMachine learning is...'},
+        'create_time': 1700000000.0
+    })
     exchange_bold = Exchange.create('test', [msg_bold_title])
     title_bold = extract_proposed_title(exchange_bold)
     assert title_bold == 'Machine Learning Basics'
     
     # Test no title format (regular text)
-    msg_no_title = {
+    msg_no_title = MessageOpenAI(data={
         'author': {'role': 'assistant'},
-        'content': {'text': 'This is just regular text without any title formatting.'}
-    }
+        'content': {'text': 'This is just regular text without any title formatting.'},
+        'create_time': 1700000000.0
+    })
     exchange_no_title = Exchange.create('test', [msg_no_title])
     title_none = extract_proposed_title(exchange_no_title)
     assert title_none is None

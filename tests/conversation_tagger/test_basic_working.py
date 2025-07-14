@@ -11,6 +11,8 @@ from conversation_tagger.core.exchange_tagger import ExchangeTagger
 from conversation_tagger.core.tag import Tag, create_annotation, merge_annotations
 
 
+from conversation_tagger.core.message import MessageOpenAI
+
 def test_annotation_functionality():
     """Test that annotation helpers work correctly."""
     # Simple annotation
@@ -56,7 +58,7 @@ def test_exchange_creation_and_annotations():
         {'author': {'role': 'user'}, 'content': {'text': 'Test'}, 'create_time': 1000},
         {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}, 'create_time': 2000}
     ]
-    
+    messages = [MessageOpenAI(data=msg) for msg in messages]
     exchange = Exchange.create('test_conv', messages)
     
     assert exchange.conversation_id == 'test_conv'
@@ -81,6 +83,7 @@ def test_exchange_text_api_with_annotations():
         {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
         {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there'}, 'create_time': 2000}
     ]
+    messages = [MessageOpenAI(data=msg) for msg in messages]
     
     exchange = Exchange.create('test_conv', messages)
     
@@ -138,11 +141,13 @@ def test_exchange_tagger_with_annotations():
     tagger.add_rule('greeting_analysis', greeting_detector)
     tagger.add_rule('message_count', message_counter)
     
-    # Test with exchange that should match
-    exchange = Exchange.create('test', [
+    messages = [
         {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
         {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}
-    ])
+    ]
+    messages = [MessageOpenAI(data=msg) for msg in messages]
+    # Test with exchange that should match
+    exchange = Exchange.create('test', messages)
     
     tagged = tagger.tag_exchange(exchange)
     
