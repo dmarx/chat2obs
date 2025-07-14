@@ -8,7 +8,7 @@ import pytest
 from conversation_tagger.core.exchange_tagger import ExchangeTagger
 from conversation_tagger.core.tagger import ConversationTagger
 from conversation_tagger.core.exchange import Exchange
-from conversation_tagger.core.tag import Tag
+#from conversation_tagger.core.tag import Tag
 
 
 def test_exchange_tagger_annotations():
