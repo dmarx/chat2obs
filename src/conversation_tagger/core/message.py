@@ -30,7 +30,7 @@ class Message:
         #return f"Message(author_role={self.author_role}, content={self.content}, created_date={self.created_date})"
         return self.__str__()
     def __str__(self):
-        return f"\n{self.created_date} - {self.author_role.upper()}: {self.content[:200]+'...' if len(self.content) > 200 else self.content}"
+        return f"\n{self.created_date} - {self.author_role.upper()}: {self.content[:200].strip()+'...' if len(self.content) > 200 else self.content.strip()}"
 
 
 def get_message_text_chatgpt(message: dict[str, Any]) -> str:
