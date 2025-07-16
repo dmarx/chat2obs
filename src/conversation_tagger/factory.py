@@ -13,6 +13,9 @@ def create_default_tagger(source="oai") -> ConversationTagger:
     if source == "oai":
         from .core.exchange_parser import ExchangeParserOAI
         exchange_parser = ExchangeParserOAI()
+    elif source == "claude":
+        from .core.exchange_parser import ExchangeParserClaude
+        exchange_parser = ExchangeParserClaude()
     else:
         raise ValueError(f"Unsupported source: {source}")
     

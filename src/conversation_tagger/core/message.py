@@ -1,4 +1,5 @@
 from typing import Any
+# from datetime import datetime
 
 
 class Message:
@@ -25,7 +26,12 @@ class Message:
     
     def _get_created_date(self):
         raise NotImplementedError
-    
+    def __repr__(self):
+        #return f"Message(author_role={self.author_role}, content={self.content}, created_date={self.created_date})"
+        return self.__str__()
+    def __str__(self):
+        return f"\n{self.created_date} - {self.author_role.upper()}: {self.content[:200].strip()+'...' if len(self.content) > 200 else self.content.strip()}"
+
 
 def get_message_text_chatgpt(message: dict[str, Any]) -> str:
     """Extract text content from a message."""
@@ -46,15 +52,34 @@ class MessageOpenAI(Message):
     def _get_author_role(self):
         return self.data.get('author', {}).get('role')
 
-def is_oai_msg(msg):
-    #return True
-    return isinstance(msg, dict) and 'content' in msg and 'create_time' in msg and 'author' in msg
 
-def is_anthropic_msg(msg):
-    return isinstance(msg, dict) and 'text' in msg and 'created_at' in msg and 'author' in msg
+class MessageClaude(Message):
+    def _get_content(self):
+        return self.data.get('text', '')
+    
+    def _get_created_date(self):
+        # Claude uses ISO format: "2024-01-01T12:00:00Z"
+        created_at = self.data.get('created_at')
+        # if created_at:
+        #     return datetime.fromisoformat(created_at.replace('Z', '+00:00')).timestamp()
+        # return 0.0
+        return created_at
+    
+    def _get_author_role(self):
+        sender = self.data.get('sender')
+        if sender == 'human':
+            sender = 'user'
+        return sender
 
-def msg_factory(msg):
-    if is_oai_msg(msg):
-        return MessageOpenAI(data=msg)
-    else:
-        raise NotImplementedError
+# def is_oai_msg(msg):
+#     #return True
+#     return isinstance(msg, dict) and 'content' in msg and 'create_time' in msg and 'author' in msg
+
+# def is_anthropic_msg(msg):
+#     return isinstance(msg, dict) and 'text' in msg and 'created_at' in msg and 'author' in msg
+
+# def msg_factory(msg):
+#     if is_oai_msg(msg):
+#         return MessageOpenAI(data=msg)
+#     else:
+#         raise NotImplementedError
