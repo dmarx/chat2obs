@@ -14,6 +14,25 @@ from jinja2 import Template
 
 from loguru import logger
 
+def sanitize_filename(title: str, max_length: int = 200) -> str:
+    """
+    Sanitize a title to be safe for use as a filename.
+    
+    Args:
+        title: The title to sanitize
+        max_length: Maximum length of the resulting filename
+        
+    Returns:
+        A sanitized filename string
+    """
+    # Replace problematic characters with underscores
+    sanitized = re.sub(r'[<>:"/\\|?*\s]', '_', title)
+    # Remove multiple consecutive underscores
+    sanitized = re.sub(r'_{2,}', '_', sanitized)
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+    # Truncate to max length
+    return sanitized[:max_length]
 
 def load_template(template_name: str) -> Template:
     """Load a Jinja template from the templates directory."""
@@ -56,7 +75,8 @@ def generate_notes(conversation: Conversation, template_name: str = 'article.md.
                 
         #output_filename = f"{title.replace(' ', '_')}.md"
         # need to actually sanitize the title to make it a valid filename
-        output_filename = f"{title.replace(' ', '_').replace('/', '_').replace('\\', '_').replace(':', '_')[:200]}.md"
+        #output_filename = f"{title.replace(' ', '_').replace('/', '_').replace('\\', '_').replace(':', '_')[:200]}.md"
+        output_filename = sanitize_filename(title) + '.md'
         logger.info(f"output_filename: {output_filename}")
         exchange.annotations['output_filename'] = output_filename
         exchange.annotations['date'] = date
