@@ -70,7 +70,7 @@ def short_continuation_rule(previous_exchange: Exchange, current_exchange: Excha
 
 class ExchangeParser:
     """Parses conversations into tagged exchanges."""
-    
+    SOURCE="LLM"
     def __init__(self, exchange_tagger: ExchangeTagger | None = None):
         self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
             quote_elaborate_rule,
@@ -79,6 +79,7 @@ class ExchangeParser:
         ]
         if exchange_tagger is None:
             exchange_tagger = ExchangeTagger()
+        exchange_tagger.add_rule('source', lambda x: self.SOURCE)
         self.exchange_tagger = exchange_tagger
 
     def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
@@ -192,6 +193,7 @@ class ExchangeParser:
 #     `message.msg_factory`, which is invoked in Exchange.create
 # * Rename to ConversationParser?
 class ExchangeParserOAI(ExchangeParser):
+    SOURCE = "oai"
     def get_messages(self, conversation: dict):
         mapping = conversation.get('mapping', {})
         all_messages = []
@@ -210,6 +212,7 @@ class ExchangeParserOAI(ExchangeParser):
         return conversation.get('title')
 
 class ExchangeParserClaude(ExchangeParser):
+    SOURCE = "claude"
     def get_messages(self, conversation: dict):
         # Parse Claude conversation format
         chat_messages = conversation.get('chat_messages', [])
