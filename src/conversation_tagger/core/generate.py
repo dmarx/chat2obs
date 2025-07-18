@@ -7,6 +7,7 @@ from .exchange import Exchange
 from .message import Message
 
 # Generate Obsidian notes from a conversation using jinja template from templates/article.md.jinja
+import re
 import os
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
