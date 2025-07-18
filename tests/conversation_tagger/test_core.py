@@ -227,9 +227,10 @@ def test_simple_parsing(sample_conversation_data):
     assert conversation.exchange_count == 1
     assert 'Hello' in conversation.get_all_user_text()
     
-    # Should have empty annotations initially
-    assert len(conversation.annotations) == 0
-    
+    # Should initially only have source annotation.
+    assert len(conversation.annotations) == 1
+    assert conversation.get_annotation('source') == 'oai'
+
     # Test adding annotations
     conversation.add_annotation('parsed', True)
     assert conversation.has_annotation('parsed')
