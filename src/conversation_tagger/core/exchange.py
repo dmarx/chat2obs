@@ -36,6 +36,13 @@ class Exchange:
         )
     
     @property
+    def last_message_time(self) -> float:
+        """Get the create_time of the last message for ordering."""
+        if not self.messages:
+            return 0.0
+        return self.messages[-1].created_date
+    
+    @property
     def first_message_time(self) -> float:
         """Get the create_time of the first message for ordering."""
         if not self.messages:
@@ -126,6 +133,11 @@ class Exchange:
     def __len__(self) -> int:
         """Return number of messages in exchange."""
         return len(self.messages)
+    
+    @property
+    def content(self) -> str:
+        """Get concatenated content of all messages in this exchange."""
+        return '\n'.join(str(msg) for msg in self.messages if msg.content).strip()
     
     # def __str__(self) -> str:
     #     """String representation showing message sequence."""

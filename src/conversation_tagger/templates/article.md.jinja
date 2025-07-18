@@ -1,0 +1,18 @@
+---
+title: "{{ page.annotations.get('title') }}"
+date: "{{ page.last_message_time }}"
+tags: [{{ page.annotations | join(", ") }}]
+---
+{% for message in page.messages %}
+**{{ message.author_role.upper() }}**
+
+{{ message.content.strip() }}
+
+{% endfor %}
+---
+{% if page.preceding %}
+preceding: [[{{ page.previous_title }}]]
+{% endif %}
+{% if page.following %}
+following: [[{{ page.next_title }}]]
+{% endif %}
