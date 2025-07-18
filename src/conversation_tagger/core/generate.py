@@ -26,14 +26,14 @@ def sanitize_filename(title: str, max_length: int = 200) -> str:
     Returns:
         A sanitized filename string
     """
+    if not title:
+        return
     # Replace problematic characters with underscores
-    sanitized = re.sub(r'[<>:"/\\|?*\s]', '_', title)
-    # Remove multiple consecutive underscores
-    sanitized = re.sub(r'_{2,}', '_', sanitized)
-    # Remove leading/trailing underscores
-    sanitized = sanitized.strip('_')
+    sanitized = re.sub(r'[<>:"/\\|?*\[\]]', '', title)
+    if sanitized.lower().startswith('the '):
+        sanitized = sanitized[4:]  # Remove 'the ' prefix if present
     # Truncate to max length
-    return sanitized[:max_length]
+    return sanitized[:max_length].lower()
 
 def load_template(template_name: str) -> Template:
     """Load a Jinja template from the templates directory."""
@@ -71,12 +71,15 @@ def generate_notes(
         #title = exchange.annotations.get('title', f'Exchange {exchange.exchange_id}')
         title = exchange.annotations.get('title')
         if not title:
+            title = exchange.annotations.get('proposed_title')
+        if not title:
             # If no title is set, use the first user message as the title
             user_messages = exchange.get_user_messages()
             if user_messages:
                 title = user_messages[0].content.split('\n')[0]
-                if title.startswith('>'):  # Remove blockquote if present
-                    title = title[1:].strip()
+        if not title:
+            # If still no title, use a default
+            title = f"_untitled_{exchange.exchange_id}"
                 
         #output_filename = f"{title.replace(' ', '_')}.md"
         # need to actually sanitize the title to make it a valid filename
@@ -115,5 +118,5 @@ def generate_notes(
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         output_filepath = output_path / output_filename
-        with open(output_filepath, 'w') as f:
+        with open(output_filepath, 'a') as f:
             f.write(content)
