@@ -52,7 +52,11 @@ def load_template(template_name: str) -> Template:
 # thte title will be associated as an annotation on the exchange
 # teh date is an attribute on the exchange object, or the first message in the exchange
 # output filename will be the title of the exchange, with spaces replaced by underscores and .md extension
-def generate_notes(conversation: Conversation, template_name: str = 'article.md.jinja') -> List[str]:
+def generate_notes(
+        conversation: Conversation,
+        template_name: str = 'article.md.jinja',
+        output_dir: str = 'data/staging'
+) -> List[str]:
     """Generate Obsidian notes from a conversation."""
     template = load_template(template_name)
     notes = []
@@ -107,5 +111,9 @@ def generate_notes(conversation: Conversation, template_name: str = 'article.md.
     # NOW GENERATE THE NOTES
     for exchange, output_filename in notes: 
         content = template.render(page=exchange)
-        with open(output_filename, 'w') as f:
+        # Ensure output directory exists
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        output_filepath = output_path / output_filename
+        with open(output_filepath, 'w') as f:
             f.write(content)
