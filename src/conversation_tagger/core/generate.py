@@ -13,6 +13,7 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from jinja2 import Template
 
+import frontmatter
 from loguru import logger
 
 def sanitize_filename(title: str, max_length: int = 200) -> str:
@@ -112,11 +113,39 @@ def generate_notes(
             exchange.annotations['next_filename'] = None
 
     # NOW GENERATE THE NOTES
+    # in retrospect, we should infer initial title, frontmatter, and content,
+    # then we can update wikilinks in notes as needed before writing to file
+    articles = {}
     for exchange, output_filename in notes: 
         content = template.render(page=exchange)
-        # Ensure output directory exists
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        metadata, content = frontmatter.parse(content)
+        title = exchange.annotations.get('title')
+        articles[title] = {"content": content, "metadata": metadata, "output_filename": output_filename}
+
+    # upgrade titles that appear in content to wikilinks
+    for title, article in list(articles.items()):
+        content = article['content']
+        # replace other titles with wikilinks (if not already a wikilink) 
+        for other_title in articles.keys():
+            if other_title != title:
+                if not re.search(r'\[\[' + re.escape(other_title) + r'\]\]', content):
+                    # Replace only if not already a wikilink
+                    # Use word boundary to avoid partial matches
+                    content = re.sub(rf'\b{re.escape(other_title)}\b', f'[[{other_title}]]', content)
+                    articles[title]['content'] = content
+
+    # Ensure output directory exists
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # ok, now we can write the articles to files
+    for title, article in articles.items():
+        content = article['content']
+        metadata = article['metadata']
+        output_filename = article['output_filename']
+
+        post = frontmatter.Post(content, **metadata)        
         output_filepath = output_path / output_filename
         with open(output_filepath, 'a') as f:
-            f.write(content)
+            #frontmatter.dump(post, f)
+            f.write(frontmatter.dumps(post))
