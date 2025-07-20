@@ -53,6 +53,10 @@ class Exchange:
         """Check if this exchange has continuation prompts (multiple user messages)."""
         return len(self.get_user_messages()) > 1
     
+    def get_message_ids(self) -> List[str]:
+        """Get the IDs of all messages in this exchange."""
+        return [msg.id for msg in self.messages if msg.id]
+
     def get_user_messages(self) -> List[Dict[str, Any]]:
         """Get just the user messages."""
         return [msg for msg in self.messages if msg.author_role == 'user']
