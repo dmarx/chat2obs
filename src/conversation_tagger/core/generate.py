@@ -138,7 +138,7 @@ def generate_notes(
             exchange.annotations['next_title'] = None
             exchange.annotations['next_filename'] = None
 
-    # NOW GENERATE THE NOTES
+    # NOW GENERATE THE (first draft) NOTES
     # in retrospect, we should infer initial title, frontmatter, and content,
     # then we can update wikilinks in notes as needed before writing to file
     articles = {}
@@ -153,19 +153,50 @@ def generate_notes(
         #     raise
         #title = exchange.annotations.get('title')
         title = metadata['title']
-        articles[title] = {"content": content, "metadata": metadata, "output_filename": output_filename}
+        articles[title] = {
+            "content": content,
+            "metadata": metadata,
+            "output_filename": output_filename,
+            "exchange":exchange,
+        }
 
-    # upgrade titles that appear in content to wikilinks
+    # find titles that appear in content, convert to wikilinks
+    # TODO: match unsanitized titles
     for title, article in list(articles.items()):
         content = article['content']
         # replace other titles with wikilinks (if not already a wikilink) 
-        for other_title in articles.keys():
+        for other_title, other_article in articles.items():
             if other_title != title:
+                #TODO: wrap in a "wikilinkify" function
                 if not re.search(r'\[\[' + re.escape(other_title) + r'\]\]', content):
                     # Replace only if not already a wikilink
                     # Use word boundary to avoid partial matches
-                    content = re.sub(rf'\b{re.escape(other_title)}\b', f'[[{other_title}]]', content)
+                    didchange = False
+                    content_after = re.sub(rf'\b{re.escape(other_title)}\b', f'[[{other_title}]]', content)
+                    if content_after != content:
+                        content = content_after
+                        didchange = True
                     articles[title]['content'] = content
+                    # can I just do `article['content'] = content`?
+                
+                    # while we're here, let's check if we're directly quoting separately from the inferred title
+                    if not didchange:
+                        # check if prompt starts with a blockquote
+                        exchange: Exchange = article['exchange']
+                        prompt = exchange.get_user_texts()[0] # should probably just make this a propoerty, Exchange.prompt
+                        if prompt.startswith('>'):
+                            quote, _ = prompt.split('\n')
+                            while quote.startswith('>'):
+                                quote = quote[1:]
+                            #if quote in articles[other_title]['content']:
+                            if quote in other_article['content']:
+                                #articles[other_title]['content'] += f"\nsee also: [[{title}]]  "
+                                other_article['content'] += f"\nsee also: [[{title}]]  "
+
+
+                            
+                        
+
 
     # Ensure output directory exists
     output_path = Path(output_dir)

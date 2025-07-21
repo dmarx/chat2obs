@@ -19,17 +19,27 @@ from .message import Message
 @dataclass
 class Exchange:
     """A sequential conversation exchange with merge capabilities."""
-    
-    exchange_id: str
     conversation_id: str
     messages: list[Message]
     annotations: Dict[str, Any] = field(default_factory=dict)  # Dictionary-based annotations
+    exchange_id: str|None = '' # this should just be the message id of the last assistant response, otherwise won't properly handle forks/leaves
     
+    def __post_init__(self):
+        _id = None
+        if self.exchange_id:
+            return
+        print(self.messages)
+        if self.messages:
+            _id = self.messages[-1].id
+        if _id is None:
+            _id = str(uuid.uuid4())
+        self.exchange_id = _id
+
     @classmethod
     def create(cls, conversation_id: str, messages: List[Message]) -> 'Exchange':
         """Create a new exchange with a random UUID."""
         return cls(
-            exchange_id=str(uuid.uuid4()),
+            #exchange_id=str(uuid.uuid4()),
             conversation_id=conversation_id,
             messages=messages,
             annotations={}

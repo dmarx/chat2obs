@@ -124,14 +124,15 @@ class ExchangeParser:
         
         return conv
     
-    def _create_dyadic_exchanges(self, messages: list[Message], 
+    def _create_dyadic_exchanges(self, messages: list[Message|dict], 
                                 conversation_id: str) -> List[Exchange]:
         """Step 1: Create simple USER-ASSISTANT dyadic exchanges."""
         dyadic_exchanges = []
         current_pair = []
         
         for message in messages:
-            
+            # if not isinstance(message, Message):
+            #     message=Message(**message)
             if message.author_role in ['user', 'assistant']:
                 current_pair.append(message)
                 
