@@ -174,7 +174,7 @@ def generate_notes(
                     article['metadata'][k] = v
 
     # find titles that appear in content, convert to wikilinks
-    # TODO: match unsanitized titles
+    # TODO: match unsanitized (or maybe extra sanitized?) titles
     for title, article in list(articles.items()):
         content = article['content']
         # replace other titles with wikilinks (if not already a wikilink) 
@@ -207,7 +207,13 @@ def generate_notes(
                             while quote.startswith('>'):
                                 quote = quote[1:]
                             #if quote in articles[other_title]['content']:
-                            if quote in other_article['content']:
+                            # standardize before matching
+                            sanitized_other_content = other_article['content'][:]
+                            sanitized_other_content = sanitize_filename(sanitized_other_content)
+                            sanitized_other_content = sanitized_other_content.replace('#','')
+                            sanitized_quote = sanitize_filename(quote)
+                            sanitized_quote = sanitized_quote.replace('#','')
+                            if sanitized_quote.lower() in sanitized_other_content.lower():
                                 #articles[other_title]['content'] += f"\nsee also: [[{title}]]  "
                                 other_article['content'] += f"\nsee also: [[{title}]]  "
 
