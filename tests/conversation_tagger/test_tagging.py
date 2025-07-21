@@ -202,7 +202,7 @@ def test_tagging_error_handling():
     tagger.add_rule('working', working_rule)
     
     exchange = Exchange.create('test', [
-        {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000}
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000})
     ])
     
     # Should not raise exception

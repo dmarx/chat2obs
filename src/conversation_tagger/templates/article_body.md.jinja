@@ -1,0 +1,15 @@
+{% for message in page.messages %}
+**{{ message.author_role.upper() }}**
+
+{{ message.content.strip() }}
+
+{% endfor -%}
+{% if page.annotations.get('previous_title') or page.annotations.get('next_title') %}
+---
+{%   if page.annotations.get('previous_title') %}
+preceding: [[{{ page.annotations.previous_title }}]]  
+{%   endif %}
+{%   if page.annotations.get('next_title') %}
+following: [[{{ page.annotations.next_title }}]]
+{%   endif %}
+{% endif %}

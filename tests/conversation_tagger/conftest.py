@@ -12,16 +12,17 @@ if PATH not in sys.path:
 
 import pytest
 from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.message import Message
 
 
 @pytest.fixture
 def simple_user_message():
     """A basic user message."""
-    return {
+    return Message(**{
         'author': {'role': 'user'},
         'create_time': 1000,
         'content': {'text': 'Hello, how are you?'}
-    }
+    })
 
 
 @pytest.fixture

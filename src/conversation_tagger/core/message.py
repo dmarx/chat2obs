@@ -18,6 +18,13 @@ class Message:
     def author_role(self):
         return self._get_author_role()
 
+    @property
+    def id(self):
+        return self._get_id()
+
+    def _get_id(self):
+        raise NotImplementedError
+
     def _get_author_role(self):
         raise NotImplementedError
 
@@ -45,6 +52,8 @@ def get_message_text_chatgpt(message: dict[str, Any]) -> str:
 
 
 class MessageOpenAI(Message):
+    def _get_id(self):
+        return self.data.get('id')
     def _get_content(self):
         return get_message_text_chatgpt(self.data)
     def _get_created_date(self):
@@ -54,6 +63,8 @@ class MessageOpenAI(Message):
 
 
 class MessageClaude(Message):
+    def _get_id(self):
+        return self.data.get('uuid')
     def _get_content(self):
         return self.data.get('text', '')
     
