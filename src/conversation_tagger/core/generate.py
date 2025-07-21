@@ -38,7 +38,7 @@ def sanitize_filename(title: str, max_length: int = 200) -> str:
     if sanitized.lower().startswith('the '):
         sanitized = sanitized[4:]  # Remove 'the ' prefix if present
     # Truncate to max length
-    return sanitized[:max_length].lower()
+    return sanitized[:max_length].lower().strip()
 
 
 def extract_title(exchange: Exchange) -> str:
@@ -153,12 +153,25 @@ def generate_notes(
         #     raise
         #title = exchange.annotations.get('title')
         title = metadata['title']
-        articles[title] = {
-            "content": content,
-            "metadata": metadata,
-            "output_filename": output_filename,
-            "exchange":exchange,
-        }
+
+        # merge matching titles
+        if title not in articles:
+            articles[title] = {
+                "content": content,
+                "metadata": metadata,
+                "output_filename": output_filename,
+                "exchange":exchange,
+            }
+        else:
+            article = articles[title]
+            article['content'] += f"\n---\n{content}"
+            for k,v in metadata.items():
+                if k in article['metadata']:
+                    # ... do stuff
+                    if isinstance(metadata[k], list):
+                        article['metadata'][k] += metadata[k]
+                else:
+                    article['metadata'][k] = v
 
     # find titles that appear in content, convert to wikilinks
     # TODO: match unsanitized titles
@@ -183,9 +196,14 @@ def generate_notes(
                     if not didchange:
                         # check if prompt starts with a blockquote
                         exchange: Exchange = article['exchange']
-                        prompt = exchange.get_user_texts()[0] # should probably just make this a propoerty, Exchange.prompt
+                        #prompt = exchange.get_user_texts()[0] # should probably just make this a propoerty, Exchange.prompt
+                        prompt = exchange.messages[0].content
+                        # remove USER commentary on quoted text
+                        quote = prompt
+                        if '\n' in prompt:
+                            quote, *_ = prompt.split('\n')
+                        # remove blockquote markdown
                         if prompt.startswith('>'):
-                            quote, _ = prompt.split('\n')
                             while quote.startswith('>'):
                                 quote = quote[1:]
                             #if quote in articles[other_title]['content']:

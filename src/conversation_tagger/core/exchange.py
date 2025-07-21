@@ -28,7 +28,7 @@ class Exchange:
         _id = None
         if self.exchange_id:
             return
-        print(self.messages)
+        #print(self.messages)
         if self.messages:
             _id = self.messages[-1].id
         if _id is None:
