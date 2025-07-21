@@ -90,7 +90,7 @@ def make_metadata(page) -> Dict[str, object]:
 # output filename will be the title of the exchange, with spaces replaced by underscores and .md extension
 def generate_notes(
         conversation: Conversation,
-        template_name: str = 'article.md.jinja',
+        template_name: str = 'article_body.md.jinja',
         output_dir: str = 'data/staging'
 ) -> List[str]:
     """Generate Obsidian notes from a conversation."""
