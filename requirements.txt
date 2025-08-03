@@ -5,3 +5,4 @@ pandas
 pytest
 python-frontmatter
 jinja2
+seaborn
