@@ -1,0 +1,10 @@
+loguru
+jinja2
+python-frontmatter
+genson
+
+[dev]
+pytest>=6.0
+numpy
+pandas
+networkx

@@ -5,7 +5,7 @@ Updated to test both annotation system and backward compatibility.
 """
 
 import pytest
-from conversation_tagger.core.tag import Tag, create_annotation, merge_annotations
+from conversation_tagger.core.tag import create_annotation, merge_annotations
 from conversation_tagger.core.exchange import Exchange
 from conversation_tagger.core.conversation import Conversation
 from conversation_tagger.core.message import MessageOpenAI
@@ -29,25 +29,7 @@ def test_annotation_helpers():
     assert merged == {'has_code': True, 'length': 150, 'stats': {'count': 5, 'avg': 2.5}}
 
 
-def test_tag_backward_compatibility():
-    """Test that Tag objects still work and convert properly."""
-    # Simple tag
-    simple_tag = Tag('simple')
-    assert simple_tag.name == 'simple'
-    assert simple_tag.attributes == {}
-    assert simple_tag.to_dict() == {'simple': True}
-    
-    # Tag with single value attribute
-    value_tag = Tag('length', value=100)
-    assert value_tag.to_dict() == {'length': 100}
-    
-    # Tag with multiple attributes
-    complex_tag = Tag('stats', count=5, avg=2.5)
-    assert complex_tag.to_dict() == {'stats': {'count': 5, 'avg': 2.5}}
-    
-    # Test equality
-    assert simple_tag == 'simple'
-    assert simple_tag != complex_tag
+# test_tag_backward_compatibility removed - Tag class deprecated and removed
 
 
 def test_exchange_annotations():

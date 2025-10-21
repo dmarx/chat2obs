@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: conversation_tagger
+Version: 0.1.0
+Summary: Exchange-based conversation analysis system
+Requires-Python: >=3.8
+Requires-Dist: loguru
+Requires-Dist: jinja2
+Requires-Dist: python-frontmatter
+Requires-Dist: genson
+Provides-Extra: dev
+Requires-Dist: pytest>=6.0; extra == "dev"
+Requires-Dist: numpy; extra == "dev"
+Requires-Dist: pandas; extra == "dev"
+Requires-Dist: networkx; extra == "dev"
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

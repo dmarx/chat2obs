@@ -4,7 +4,7 @@ Tag individual exchanges using the improved exchange structure.
 Updated to use dictionary-based annotations.
 """
 from typing import Dict, Callable, Any
-from .tag import Tag
+# Tag import removed - using dictionary-based annotations
 from .exchange import Exchange
 
 
@@ -31,9 +31,7 @@ class ExchangeTagger:
                         # Multiple annotations returned
                         for name, value in result.items():
                             exchange.add_annotation(name, value)
-                    elif isinstance(result, Tag):
-                        # Legacy Tag object - convert to annotation
-                        exchange.annotations.update(result.to_dict())
+                    # Tag class removed - only dict/bool/value results supported
                     else:
                         # Other truthy value - store as annotation value
                         exchange.add_annotation(annotation_name, result)

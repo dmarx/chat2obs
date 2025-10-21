@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from .exchange import Exchange
     from .exchange_parser import ExchangeParser
 
-from .tag import Tag
+# Tag import removed - using dictionary-based annotations
 
 @dataclass 
 class Conversation:
@@ -48,26 +48,7 @@ class Conversation:
         """Get annotation value."""
         return self.annotations.get(name, default)
     
-    # Legacy compatibility
-    @property
-    def tags(self) -> List[Tag]:
-        """Convert annotations back to Tag objects for backward compatibility."""
-        tags = []
-        for name, value in self.annotations.items():
-            if value is True:
-                tags.append(Tag(name))
-            elif isinstance(value, dict):
-                tags.append(Tag(name, **value))
-            else:
-                tags.append(Tag(name, value=value))
-        return tags
-    
-    @tags.setter
-    def tags(self, tag_list: List[Tag]) -> None:
-        """Convert Tag objects to annotations for backward compatibility."""
-        self.annotations = {}
-        for tag in tag_list:
-            self.annotations.update(tag.to_dict())
+    # Legacy tags property removed - use annotations dict directly
     
     @property
     def exchange_count(self) -> int:
