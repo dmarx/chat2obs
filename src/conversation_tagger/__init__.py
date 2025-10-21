@@ -3,7 +3,7 @@
 Minimal conversation tagging system with exchange-based analysis.
 """
 
-from .core.tag import Tag
+# Tag import removed - using dictionary-based annotations
 from .core.tagger import ConversationTagger
 from .factory import create_default_tagger
 from .core.conversation import Conversation
@@ -20,7 +20,7 @@ from .processing import ProcessingPipeline, BatchProcessor, ConversationFilter, 
 from .processing.pipeline import ProcessingConfig
 
 __all__ = [
-    'Tag', 'ConversationTagger', 'create_default_tagger', 'Conversation', 'Exchange', 'Message', 
+    'ConversationTagger', 'create_default_tagger', 'Conversation', 'Exchange', 'Message', 
     'ExchangeParser', 'ExchangeParserOAI', 'ExchangeParserClaude', 'ExchangeTagger', 
     'EXCHANGE_RULES', 'CONVERSATION_RULES', 'generate_notes',
     'ConversationLoader', 'load_conversations', 'DataSourceConfig', 'get_default_config',

@@ -8,7 +8,7 @@ import re
 from typing import Dict, Any, List
 from .exchange import Exchange
 from .conversation import Conversation
-from .tag import Tag, create_annotation
+from .tag import create_annotation
 from .message import Message, MessageOpenAI
 
 ######################

@@ -8,7 +8,7 @@ import pytest
 from conversation_tagger.core.detection import *
 from conversation_tagger.core.exchange import Exchange
 from conversation_tagger.core.conversation import Conversation
-from conversation_tagger.core.tag import Tag
+# Tag import removed - using dictionary-based annotations
 
 from conversation_tagger.core.message import MessageOpenAI
 

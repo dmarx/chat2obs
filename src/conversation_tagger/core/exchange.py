@@ -9,8 +9,7 @@ from dataclasses import dataclass, field
 import uuid
 
 
-if TYPE_CHECKING:
-    from .tag import Tag
+# Tag import removed - using dictionary-based annotations
 
 from .message import Message
 

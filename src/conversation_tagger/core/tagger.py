@@ -9,7 +9,7 @@ from .exchange_parser import ExchangeParser, ExchangeParserOAI
 from .exchange_tagger import ExchangeTagger
 from .conversation import Conversation
 from .exchange import Exchange
-from .tag import Tag
+# Tag import removed - using dictionary-based annotations
 
 
 class ConversationTagger:
@@ -45,15 +45,10 @@ class ConversationTagger:
                         # Multiple annotations returned
                         for name, value in result.items():
                             conv.add_annotation(name, value)
-                    elif isinstance(result, Tag):
-                        # Legacy Tag object - convert to annotation
-                        conv.annotations.update(result.to_dict())
                     elif isinstance(result, list):
-                        # Handle multiple tags returned from one rule
+                        # Handle multiple items returned from one rule
                         for item in result:
-                            if isinstance(item, Tag):
-                                conv.annotations.update(item.to_dict())
-                            elif isinstance(item, dict):
+                            if isinstance(item, dict):
                                 conv.annotations.update(item)
                             else:
                                 # Treat other items as simple annotations

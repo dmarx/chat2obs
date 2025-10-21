@@ -7,7 +7,7 @@ Updated to use dictionary-based annotations.
 from typing import Dict, Any, List, Optional
 from collections import defaultdict
 
-from ..core.tag import Tag
+# Tag import removed - using dictionary-based annotations
 
 
 def get_facet_value(annotations: Dict[str, Any], facet_annotation_name: str, 
@@ -40,17 +40,8 @@ def do_facet_conversations(tagged_conversations: List[Dict[str, Any]],
     facets = defaultdict(list)
     
     for tagged_conv in tagged_conversations:
-        # Handle both old Tag-based format and new annotation format
-        if 'annotations' in tagged_conv:
-            annotations = tagged_conv['annotations']
-        else:
-            # Legacy: convert tags to annotations for compatibility
-            annotations = {}
-            for tag in tagged_conv.get('tags', []):
-                if isinstance(tag, Tag):
-                    annotations.update(tag.to_dict())
-                else:
-                    annotations[str(tag)] = True
+        # Use annotations directly (legacy Tag format support removed)
+        annotations = tagged_conv.get('annotations', {})
         
         facet_value = get_facet_value(annotations, facet_annotation_name, facet_attribute)
         facets[facet_value].append(tagged_conv)
@@ -107,17 +98,8 @@ def print_faceted_summary(tagged_conversations: List[Dict[str, Any]],
         unique_structured_annotations = defaultdict(set)
         
         for tagged_conv in facet_conversations:
-            # Handle both new annotation format and legacy tag format
-            if 'annotations' in tagged_conv:
-                annotations = tagged_conv['annotations']
-            else:
-                # Legacy: convert tags to annotations
-                annotations = {}
-                for tag in tagged_conv.get('tags', []):
-                    if isinstance(tag, Tag):
-                        annotations.update(tag.to_dict())
-                    else:
-                        annotations[str(tag)] = True
+            # Use annotations directly (legacy Tag format support removed) 
+            annotations = tagged_conv.get('annotations', {})
             
             for annotation_name, annotation_value in annotations.items():
                 annotation_counts[annotation_name] += 1

@@ -7,7 +7,7 @@ import pytest
 from conversation_tagger import create_default_tagger
 from conversation_tagger.core.exchange import Exchange
 from conversation_tagger.core.exchange_tagger import ExchangeTagger
-from conversation_tagger.core.tag import Tag, create_annotation, merge_annotations
+from conversation_tagger.core.tag import create_annotation, merge_annotations
 from conversation_tagger.core.message import MessageOpenAI, MessageClaude
 
 
