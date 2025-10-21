@@ -1,0 +1,38 @@
+[
+  {
+    "conversation_id": "test-conv-1",
+    "title": "Test ChatGPT Conversation", 
+    "mapping": {
+      "node-1": {
+        "id": "node-1",
+        "message": {
+          "id": "msg-1",
+          "author": {
+            "role": "user"
+          },
+          "content": {
+            "text": "Hello! Can you help me write a Python function?"
+          },
+          "create_time": 1703025600.0
+        },
+        "parent": null,
+        "children": ["node-2"]
+      },
+      "node-2": {
+        "id": "node-2", 
+        "message": {
+          "id": "msg-2",
+          "author": {
+            "role": "assistant"
+          },
+          "content": {
+            "text": "Of course! I'd be happy to help you write a Python function. Here's a simple example:\n\n```python\ndef greet(name):\n    return f\"Hello, {name}!\"\n```\n\nWhat kind of function did you have in mind?"
+          },
+          "create_time": 1703025615.0
+        },
+        "parent": "node-1",
+        "children": []
+      }
+    }
+  }
+]
