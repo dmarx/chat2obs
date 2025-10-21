@@ -1,183 +1,195 @@
 # chat2obs
 
-Convert ChatGPT and Claude conversation exports into Obsidian notes with automatic processing and tagging.
-
-## Quick Start
-
-1. **Install the package:**
-   ```bash
-   pip install -e .
-   ```
-
-2. **Set up directories:**
-   ```bash
-   chat2obs setup
-   ```
-
-3. **Drop your conversation exports** in `./data/exports/`:
-   - **ChatGPT**: Save the `.zip` export file directly
-   - **Claude**: Extract and save the directory with `conversations.json`
-
-4. **Process conversations:**
-   ```bash
-   chat2obs process
-   ```
-
-5. **Find your notes** in `./data/notes/`
+Process ChatGPT and Claude conversation exports into Obsidian-compatible markdown notes with intelligent tagging and analysis.
 
 ## Features
 
-### 🤖 **Auto-Discovery**
-- Automatically finds ChatGPT `.zip` exports and Claude directories
-- Detects conversation format and configures processing accordingly
-- No manual configuration required
+### 🚀 Incremental Processing (Recommended)
+- **Database-backed storage** with automatic diff detection
+- **Only processes new/changed conversations** (massive performance improvement)
+- **Rich querying** without reprocessing data
+- **Perfect for large conversation archives**
 
-### ⚙️ **Processing Pipeline**
-- **Exchange-based analysis** with 50+ detection rules
-- **Flexible filtering** by conversation type, features, or custom criteria  
-- **Batch processing** across multiple sources
-- **Template-based** note generation with Obsidian wiki-links
+### 📝 Obsidian Integration  
+- Generates clean markdown files compatible with Obsidian
+- Intelligent conversation tagging and categorization
+- Customizable templates for note generation
 
-### 🏷️ **Smart Tagging**
-Conversations are automatically tagged with:
-- **Content features**: code blocks, GitHub repos, attachments, reasoning
-- **Interaction patterns**: continuations, large context, Q&A sessions
-- **Tool usage**: gizmos, plugins, canvas operations, web search
-- **Conversation metrics**: length, prompt statistics, consistency
+### 🔍 Advanced Analysis
+- Automatic detection of coding assistance, research sessions, multi-turn conversations
+- Support for gizmos, plugins, and enhanced conversation features
+- Flexible filtering and faceting capabilities
 
-## CLI Usage
+## Quick Start
 
-### Basic Commands
-
+### Installation
 ```bash
-# Process all conversation exports
-chat2obs process
-
-# Discover what exports are available
-chat2obs discover
-
-# Process only ChatGPT conversations
-chat2obs process --source-type oai
-
-# Use custom directories
-chat2obs process --exports-dir ~/Downloads --output-dir ~/notes
-
-# Skip note generation, just tag conversations
-chat2obs process --no-notes
+git clone https://github.com/dmarx/chat2obs.git
+cd chat2obs
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -e .
 ```
 
-### Directory Structure
+### Basic Usage
 
+#### Incremental Processing (Recommended)
+```bash
+# Drop your ChatGPT/Claude exports in ./data/exports/
+mkdir -p data/exports
+# Copy your conversation exports here
+
+# Process incrementally (only new/changed conversations)
+chat2obs db-process --exports-dir ./data/exports --output-dir ./notes
+
+# Query conversations
+chat2obs query --has-annotation coding_assistance --limit 10
+chat2obs stats
 ```
-./data/
-├── exports/                 # Drop export files here
-│   ├── chatgpt-export.zip  # ChatGPT export
-│   ├── claude-data/        # Claude export directory  
+
+#### Traditional Processing (Legacy)
+```bash
+# One-time processing (processes everything each time)
+chat2obs process --exports-dir ./data/exports --output-dir ./notes
+```
+
+## Commands
+
+### Incremental Processing Commands
+- `chat2obs db-process` - Process exports incrementally using database
+- `chat2obs query` - Query conversations by annotations, source, etc.
+- `chat2obs stats` - Show database and processing statistics
+- `chat2obs notes` - Generate Obsidian notes for filtered conversations
+
+### Traditional Commands
+- `chat2obs process` - Process all exports (legacy, slower)
+- `chat2obs discover` - Show what exports were found
+- `chat2obs setup` - Create directory structure and show usage
+
+## Performance Comparison
+
+| Approach | First Run | Second Run (No Changes) | Querying |
+|----------|-----------|-------------------------|----------|
+| **Incremental** | Normal | ~0 conversations processed | Instant |
+| **Traditional** | Normal | Full reprocessing | Requires reprocessing |
+
+## Supported Export Formats
+
+### ChatGPT/OpenAI
+- ZIP archives from ChatGPT export
+- Direct `conversations.json` files
+- Supports gizmos, plugins, code execution, attachments
+
+### Claude/Anthropic  
+- Export directories with `conversations.json`
+- Direct conversation JSON files
+- Supports Claude-specific features and metadata
+
+## Directory Structure
+```
+./
+├── data/
+│   ├── exports/          # Drop your export files here
+│   │   ├── chatgpt-export.zip
+│   │   ├── claude-data/conversations.json
 │   │   └── conversations.json
-│   └── conversations.json   # Direct conversation file
-└── notes/                  # Generated Obsidian notes
-    ├── conversation-1.md
-    └── conversation-2.md
+│   └── notes/           # Generated Obsidian notes
+├── conversations.db     # SQLite database (auto-created)
+└── examples/           # Usage examples
 ```
 
-## Python API
+## Database Architecture
 
-For programmatic use or integration with notebooks:
+The incremental processing system uses SQLite with this schema:
 
+```
+conversations → exchanges → messages
+               ↓
+            annotations (searchable)
+```
+
+- **conversations**: High-level metadata, processing status
+- **exchanges**: User-assistant interaction pairs  
+- **messages**: Individual messages with content
+- **annotations**: Denormalized tags for fast querying
+
+## Examples
+
+### Python API
 ```python
-from conversation_tagger import BatchProcessor, ProcessingConfig
+# Incremental processing
+from conversation_tagger import DatabaseManager, DatabaseBatchProcessor
 
-# Simple processing
-config = ProcessingConfig(
-    sources=['oai', 'claude'],
-    output_dir='./notes'
-)
-processor = BatchProcessor(config)
-results = processor.process_all()
+with DatabaseManager('conversations.db') as db:
+    processor = DatabaseBatchProcessor(db)
+    results = processor.process_export_incrementally(
+        conversations, 'oai', auto_tag=True, generate_notes=True
+    )
 
-# With filtering
-from conversation_tagger import FilterCriteria
-criteria = FilterCriteria(
-    required_annotations={'has_code_blocks'},
-    forbidden_annotations={'user_has_attachments'}
-)
-config = ProcessingConfig(
-    sources=['oai'],
-    filter_criteria=criteria,
-    output_dir='./coding-notes'
+# Query conversations
+from conversation_tagger.db.queries import ConversationQuery, QueryFilter
+
+query = ConversationQuery(db)
+coding_convs = query.find_conversations(
+    QueryFilter(has_annotation='coding_assistance')
 )
 ```
 
-## Configuration
-
-### Environment Variables
+### CLI Examples
 ```bash
-export CHAT2OBS_CHATGPT_ROOT="/path/to/chatgpt/data"
-export CHAT2OBS_CLAUDE_ROOT="/path/to/claude/data"
+# Process new exports incrementally
+chat2obs db-process --exports-dir ~/Downloads/conversations
+
+# Find conversations with specific features
+chat2obs query --has-annotation gizmo --source oai --limit 20
+
+# Generate notes for coding conversations only
+chat2obs notes --has-annotation coding_assistance --output-dir ./coding-notes
+
+# Show processing statistics
+chat2obs stats
 ```
 
-### Data Sources
-The system supports multiple conversation formats:
-- **OpenAI/ChatGPT**: Export format with `mapping` structure
-- **Claude**: Anthropic export format with `uuid` and `chat_messages`
+## Migration from Notebooks
+
+If you were previously using the Jupyter notebooks directly:
+
+**Old approach (notebooks):**
+```python
+# Manual processing in notebooks
+convs = load_convs('oai')  
+tagger = create_default_tagger('oai')
+tagged = [tagger.tag_conversation(c) for c in convs]
+generate_notes(tagged_results, output_dir="data/staging")
+```
+
+**New approach (incremental):**
+```bash
+# Just use the CLI
+chat2obs db-process --exports-dir ./data/exports --output-dir ./notes
+```
 
 ## Development
 
 ### Running Tests
 ```bash
-# Install development dependencies
-pip install -e .[dev]
-
-# Run the test suite
 python -m pytest tests/ -v
 ```
 
-### Project Structure
-```
-src/conversation_tagger/
-├── core/           # Core conversation analysis
-├── data/           # Data loading and configuration  
-├── processing/     # Batch processing pipelines
-├── cli/            # Command-line interface
-└── templates/      # Jinja templates for note generation
-```
+### Examples
+- `examples/incremental_processing_example.py` - Database-backed processing
+- `examples/legacy_processing_example.py` - Traditional file-based processing
 
-## Examples
+## Requirements
 
-### Batch Processing Multiple Sources
-```python
-from conversation_tagger.cli.discovery import discover_and_configure
-from conversation_tagger import BatchProcessor, ProcessingConfig
-
-# Auto-discover exports
-configs, discoveries = discover_and_configure("./my-exports")
-
-# Process all discovered sources
-config = ProcessingConfig(
-    sources=[c.name for c in configs],
-    output_dir="./all-notes"
-)
-processor = BatchProcessor(config)
-results = processor.process_all()
-```
-
-### Custom Filtering
-```python
-from conversation_tagger import FilterCriteria, create_gizmo_filter
-
-# Filter for specific gizmo usage
-gizmo_filter = create_gizmo_filter('g-dall-e-3')
-
-# Custom filter for long coding sessions
-coding_filter = FilterCriteria(
-    required_annotations={'has_code_blocks', 'has_github_repos'},
-    custom_filters=[
-        lambda conv: conv.exchange_count > 10,
-        lambda conv: 'python' in conv.get_all_user_text().lower()
-    ]
-)
-```
+- Python 3.8+
+- SQLite (included with Python)
+- Dependencies: `loguru`, `jinja2`, `python-frontmatter`, `genson`
 
 ## License
 
-MIT License - see LICENSE file for details.
+[Add your license here]
+
+## Contributing
+
+[Add contributing guidelines here]
