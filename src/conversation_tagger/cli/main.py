@@ -12,6 +12,7 @@ from loguru import logger
 from .discovery import discover_and_configure
 from ..processing.pipeline import ProcessingConfig, BatchProcessor
 from ..processing.filters import FilterCriteria
+from .db_commands import add_db_commands, DB_COMMANDS
 
 
 def create_cli_parser() -> argparse.ArgumentParser:
@@ -91,6 +92,9 @@ Directory Structure:
     
     # Setup command
     setup_parser = subparsers.add_parser('setup', help='Setup directories and show usage')
+    
+    # Add database commands
+    add_db_commands(subparsers)
     
     return parser
 
@@ -313,6 +317,10 @@ def main():
             no_notes=args.no_notes,
             cleanup=args.cleanup
         )
+    
+    elif args.command in DB_COMMANDS:
+        # Handle database commands
+        return DB_COMMANDS[args.command](args)
     
     else:
         parser.print_help()
