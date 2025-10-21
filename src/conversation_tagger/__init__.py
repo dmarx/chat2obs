@@ -14,4 +14,15 @@ from .core.exchange_tagger import ExchangeTagger
 from .core.detection import EXCHANGE_RULES, CONVERSATION_RULES
 from .core.generate import generate_notes   
 
-__all__ = ['Tag', 'ConversationTagger', 'create_default_tagger', 'Conversation', 'Exchange', 'Message', 'ExchangeParser', 'ExchangeParserOAI', 'ExchangeParserClaude', 'ExchangeTagger', 'EXCHANGE_RULES', 'CONVERSATION_RULES' ]
+# Data loading and processing
+from .data import ConversationLoader, load_conversations, DataSourceConfig, get_default_config
+from .processing import ProcessingPipeline, BatchProcessor, ConversationFilter, FilterCriteria
+from .processing.pipeline import ProcessingConfig
+
+__all__ = [
+    'Tag', 'ConversationTagger', 'create_default_tagger', 'Conversation', 'Exchange', 'Message', 
+    'ExchangeParser', 'ExchangeParserOAI', 'ExchangeParserClaude', 'ExchangeTagger', 
+    'EXCHANGE_RULES', 'CONVERSATION_RULES', 'generate_notes',
+    'ConversationLoader', 'load_conversations', 'DataSourceConfig', 'get_default_config',
+    'ProcessingPipeline', 'BatchProcessor', 'ConversationFilter', 'FilterCriteria', 'ProcessingConfig'
+]

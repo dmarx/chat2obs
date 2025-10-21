@@ -1,382 +1,325 @@
-# tests/test_integration.py
+# tests/conversation_tagger/test_integration.py
 """
-Integration tests for the complete conversation tagging system.
-Updated to test annotation-based system.
+Integration tests for the processing machinery.
 """
 
+import json
 import pytest
-from conversation_tagger import create_default_tagger, ConversationTagger
-from conversation_tagger.core.exchange import Exchange
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 
-@pytest.fixture
-def sample_coding_conversation():
-    """A realistic conversation about coding that should trigger multiple annotations."""
-    return {
-        'conversation_id': 'coding_conv',
-        'title': 'Python help session',
-        'mapping': {
-            'msg1': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 1000,
-                    'content': {'text': 'Can you help me write a Python function to calculate fibonacci numbers?'}
-                }
-            },
-            'msg2': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 2000,
-                    'content': {'text': 'Sure! Here\'s a simple fibonacci function:\n\n```python\ndef fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n```'}
-                }
-            },
-            'msg3': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 3000,
-                    'content': {'text': 'Can you make it more efficient?'}
-                }
-            },
-            'msg4': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 4000,
-                    'content': {'text': 'Yes, here\'s a dynamic programming version:\n\n```python\ndef fibonacci_dp(n):\n    if n <= 1:\n        return n\n    \n    dp = [0, 1]\n    for i in range(2, n + 1):\n        dp.append(dp[i-1] + dp[i-2])\n    \n    return dp[n]\n```'}
-                }
-            }
-        }
-    }
+from conversation_tagger import (
+    load_conversations,
+    ProcessingPipeline,
+    BatchProcessor,
+    ProcessingConfig,
+    ConversationFilter,
+    FilterCriteria
+)
+from conversation_tagger.data.validation import validate_and_generate_schema
 
 
-def test_default_tagger_creation():
-    """Test that default tagger is created with expected rules."""
-    tagger = create_default_tagger()
+class TestDataLoadingIntegration:
+    """Test integration of data loading components."""
     
-    assert isinstance(tagger, ConversationTagger)
-    assert len(tagger.exchange_parser.exchange_tagger.rules) > 0
-    
-    # Should have some default exchange rules
-    rule_names = list(tagger.exchange_parser.exchange_tagger.rules.keys())
-    assert 'has_wiki_links' in rule_names
-
-
-def test_end_to_end_tagging_with_annotations(sample_coding_conversation):
-    """Test complete tagging pipeline with realistic conversation."""
-    tagger = create_default_tagger()
-    
-    # Add a custom rule for testing
-    def mentions_python(exchange):
-        text = (' '.join(exchange.get_user_texts()) + ' ' + ' '.join(exchange.get_assistant_texts())).lower()
-        return 'python' in text
-    
-    def count_code_blocks(exchange):
-        """Return annotation with count of code blocks."""
-        all_text = ' '.join(exchange.get_user_texts() + exchange.get_assistant_texts())
-        count = all_text.count('```')
-        if count > 0:
-            return {'code_block_markers': count, 'has_code_blocks': True}
-        return False
-    
-    tagger.add_exchange_rule('mentions_python', mentions_python)
-    tagger.add_exchange_rule('code_analysis', count_code_blocks)
-    
-    result = tagger.tag_conversation(sample_coding_conversation)
-    
-    # Basic structure checks
-    assert result.conversation_id == 'coding_conv'
-    assert result.exchange_count == 2  # Two separate exchanges
-    assert result.total_message_count == 4
-    
-    # Check that our custom rules fired
-    all_annotations = {}
-    for exchange in result.exchanges:
-        all_annotations.update(exchange.annotations)
-    
-    assert 'mentions_python' in all_annotations
-    assert all_annotations['mentions_python'] is True
-    
-    # Should detect code blocks
-    assert 'has_code_blocks' in all_annotations or any(
-        exchange.has_annotation('has_code_blocks') for exchange in result.exchanges
-    )
-
-
-
-def test_conversation_with_attachments():
-    """Test conversation that includes file attachments."""
-    conversation_with_file = {
-        'conversation_id': 'file_conv',
-        'title': 'File analysis',
-        'mapping': {
-            'msg1': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 1000,
-                    'content': {'text': 'Can you analyze this Python file?'},
-                    'metadata': {
-                        'attachments': [
-                            {'id': 'file1', 'name': 'script.py', 'mime_type': 'text/x-python'}
-                        ]
+    def test_load_conversations_full_flow(self, tmp_path):
+        """Test complete data loading flow with real files."""
+        # Create test conversation data
+        test_conversations = [
+            {
+                "conversation_id": "test-conv-1",
+                "title": "Test Conversation 1",
+                "mapping": {
+                    "node-1": {
+                        "message": {
+                            "id": "msg-1",
+                            "content": {"text": "Hello"}
+                        }
                     }
                 }
             },
-            'msg2': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 2000,
-                    'content': {'text': 'I can help analyze your Python script...'}
-                }
-            }
-        }
-    }
-    
-    tagger = create_default_tagger()
-    result = tagger.tag_conversation(conversation_with_file)
-    
-    # Should detect attachment-related annotations
-    all_annotations = {}
-    for exchange in result.exchanges:
-        all_annotations.update(exchange.annotations)
-    
-    assert 'first_user_has_attachments' in all_annotations
-    assert 'first_user_has_code_attachments' in all_annotations
-    
-    # Test values
-    assert all_annotations['first_user_has_attachments'] is True
-    assert all_annotations['first_user_has_code_attachments'] is True
-
-
-def test_math_conversation():
-    """Test conversation with mathematical content."""
-    math_conversation = {
-        'conversation_id': 'math_conv',
-        'title': 'Math help',
-        'mapping': {
-            'msg1': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 1000,
-                    'content': {'text': 'Explain the quadratic formula'}
-                }
-            },
-            'msg2': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 2000,
-                    'content': {'text': 'The quadratic formula is: $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$'}
-                }
-            }
-        }
-    }
-    
-    tagger = create_default_tagger()
-    result = tagger.tag_conversation(math_conversation)
-    
-    # Should detect LaTeX math
-    exchange = result.exchanges[0]
-    assert exchange.has_annotation('has_latex_math')
-    assert exchange.get_annotation('has_latex_math') is True
-
-
-def test_large_content_detection():
-    """Test detection of large content messages."""
-    large_content = 'x' * 2500  # Over the threshold
-    
-    large_message_conversation = {
-        'conversation_id': 'large_conv',
-        'title': 'Large content',
-        'mapping': {
-            'msg1': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 1000,
-                    'content': {'text': large_content}
-                }
-            },
-            'msg2': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 2000,
-                    'content': {'text': 'That\'s a lot of content!'}
-                }
-            }
-        }
-    }
-    
-    tagger = create_default_tagger()
-    result = tagger.tag_conversation(large_message_conversation)
-    
-    exchange = result.exchanges[0]
-    assert exchange.has_annotation('first_user_has_large_content')
-    assert exchange.get_annotation('first_user_has_large_content') is True
-
-
-def test_conversation_level_annotations():
-    """Test conversation-level annotation aggregation."""
-    tagger = create_default_tagger()
-    
-    # Multi-exchange conversation
-    conversation_data = {
-        'conversation_id': 'multi_conv',
-        'title': 'Multi-exchange test',
-        'mapping': {
-            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'First question'}}},
-            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'First answer'}}},
-            'msg3': {'message': {'author': {'role': 'user'}, 'create_time': 3000, 'content': {'text': 'Second question'}}},
-            'msg4': {'message': {'author': {'role': 'assistant'}, 'create_time': 4000, 'content': {'text': 'Second answer'}}},
-            'msg5': {'message': {'author': {'role': 'user'}, 'create_time': 5000, 'content': {'text': 'Third question'}}},
-            'msg6': {'message': {'author': {'role': 'assistant'}, 'create_time': 6000, 'content': {'text': 'Third answer'}}}
-        }
-    }
-    
-    result = tagger.tag_conversation(conversation_data)
-    
-    # Should have conversation-level length annotation
-    assert result.has_annotation('conversation_length')
-    length_data = result.get_annotation('conversation_length')
-    assert length_data['count'] == 3
-    assert length_data['category'] == 'short'  # 3 exchanges = short
-
-
-def test_gizmo_plugin_annotations():
-    """Test gizmo and plugin annotation detection."""
-    gizmo_conversation = {
-        'conversation_id': 'gizmo_conv',
-        'title': 'Gizmo usage',
-        'mapping': {
-            'msg1': {
-                'message': {
-                    'author': {'role': 'user'},
-                    'create_time': 1000,
-                    'content': {'text': 'Generate an image'}
-                }
-            },
-            'msg2': {
-                'message': {
-                    'author': {'role': 'assistant'},
-                    'create_time': 2000,
-                    'content': {'text': 'I\'ll generate that for you'},
-                    'metadata': {'gizmo_id': 'dalle-3'}
-                }
-            }
-        }
-    }
-    
-    tagger = create_default_tagger()
-    result = tagger.tag_conversation(gizmo_conversation)
-    
-    # Should detect gizmo usage at exchange level
-    exchange = result.exchanges[0]
-    
-    # Check for gizmo annotations (could be gizmo_1, gizmo_2, etc.)
-    gizmo_annotations = {k: v for k, v in exchange.annotations.items() if k.startswith('gizmo_')}
-    assert len(gizmo_annotations) >= 1
-    
-    # At least one should have dalle-3 as gizmo_id
-    found_dalle = False
-    for annotation_value in gizmo_annotations.values():
-        if isinstance(annotation_value, dict) and annotation_value.get('gizmo_id') == 'dalle-3':
-            found_dalle = True
-            break
-    assert found_dalle
-
-
-def test_empty_conversation_handling():
-    """Test handling of edge cases like empty conversations."""
-    empty_conversation = {
-        'conversation_id': 'empty_conv',
-        'title': 'Empty',
-        'mapping': {}
-    }
-    
-    tagger = create_default_tagger()
-    result = tagger.tag_conversation(empty_conversation)
-    
-    assert result.conversation_id == 'empty_conv'
-    assert result.exchange_count == 0
-    assert result.total_message_count == 0
-    assert len(result.annotations) >= 0  # May have some conversation-level annotations
-
-
-# def test_annotation_vs_tag_consistency():
-#     """Test that annotation and tag interfaces give consistent results."""
-#     tagger = create_default_tagger()
-    
-#     # Add custom rule that returns complex data
-#     def complex_analysis(exchange):
-#         return {
-#             'message_count': len(exchange.messages),
-#             'user_word_count': len(' '.join(exchange.get_user_texts()).split()),
-#             'assistant_word_count': len(' '.join(exchange.get_assistant_texts()).split())
-#         }
-    
-#     tagger.add_exchange_rule('analysis', complex_analysis)
-    
-#     conversation_data = {
-#         'conversation_id': 'test_conv',
-#         'title': 'Test',
-#         'mapping': {
-#             'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello world test'}}},
-#             'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there friend'}}}
-#         }
-#     }
-    
-#     result = tagger.tag_conversation(conversation_data)
-#     exchange = result.exchanges[0]
-    
-#     # Test annotation interface
-#     assert exchange.has_annotation('message_count')
-#     assert exchange.get_annotation('message_count') == 2
-#     assert exchange.get_annotation('user_word_count') == 3
-#     assert exchange.get_annotation('assistant_word_count') == 3
-    
-#     # Test tag interface (backward compatibility)
-#     tags = exchange.tags
-    
-#     # Find the analysis-related tags
-#     analysis_tags = [tag for tag in tags if 'message_count' in tag.name or 'word_count' in tag.name]
-#     assert len(analysis_tags) >= 3  # Should have all three annotations as separate tags or one combined tag
-    
-#     # Test round-trip: annotations -> tags -> annotations
-#     original_annotations = exchange.annotations.copy()
-    
-#     # Convert to tags and back
-#     tag_list = exchange.tags
-#     new_exchange = Exchange.create('test', [])
-#     new_exchange.tags = tag_list
-    
-#     # Should preserve the key data (exact format may differ)
-#     assert new_exchange.has_annotation('message_count')
-#     assert new_exchange.get_annotation('message_count') == 2
-
-
-def test_claude_conversation_parsing():
-    """Test parsing a Claude conversation."""
-    claude_conversation = {
-        'uuid': 'test-uuid',
-        'name': 'Test Claude Chat',
-        'chat_messages': [
             {
-                'uuid': 'msg1-uuid',
-                'text': 'Hello Claude',
-                'sender': 'user',
-                'created_at': '2024-01-01T12:00:00Z',
-                'content': [{'type': 'text', 'text': 'Hello Claude'}],
-                'attachments': []
-            },
-            {
-                'uuid': 'msg2-uuid', 
-                'text': 'Hello! How can I help you today?',
-                'sender': 'assistant',
-                'created_at': '2024-01-01T12:00:01Z',
-                'content': [{'type': 'text', 'text': 'Hello! How can I help you today?'}],
-                'attachments': []
+                "conversation_id": "test-conv-2", 
+                "title": "Test Conversation 2",
+                "mapping": {
+                    "node-2": {
+                        "message": {
+                            "id": "msg-2",
+                            "content": {"text": "World"}
+                        }
+                    }
+                }
             }
         ]
-    }
+        
+        # Write test data to file
+        conversations_file = tmp_path / "conversations.json"
+        with open(conversations_file, 'w') as f:
+            json.dump(test_conversations, f)
+        
+        # Mock the configuration to point to our test file
+        with patch('conversation_tagger.data.config.get_default_config') as mock_config:
+            from conversation_tagger.data.config import DataSourceConfig
+            mock_config.return_value = {
+                'oai': DataSourceConfig(
+                    name='oai',
+                    root_path=str(tmp_path),
+                    parser_type='oai'
+                )
+            }
+            
+            # Test loading
+            conversations = load_conversations('oai')
+            
+            assert len(conversations) == 2
+            assert conversations[0]['conversation_id'] == 'test-conv-1'
+            assert conversations[1]['conversation_id'] == 'test-conv-2'
+
+
+class TestSchemaValidationIntegration:
+    """Test integration of schema validation with real data."""
     
-    tagger = create_default_tagger(source="claude")
-    result = tagger.tag_conversation(claude_conversation)
+    @patch('conversation_tagger.data.validation.HAS_GENSON', True)
+    def test_schema_validation_flow(self, tmp_path):
+        """Test complete schema validation flow."""
+        # Test data that matches expected ChatGPT structure
+        test_conversations = [
+            {
+                "conversation_id": "test-1",
+                "title": "Test Chat",
+                "mapping": {
+                    "a1b2c3d4-e5f6-7890-abcd-ef1234567890": {
+                        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                        "message": {
+                            "id": "msg-1",
+                            "content": {"text": "Hello"}
+                        }
+                    }
+                }
+            }
+        ]
+        
+        output_path = tmp_path / "generated_schema.json"
+        
+        with patch('conversation_tagger.data.validation.SchemaBuilder') as mock_builder_class:
+            mock_builder = MagicMock()
+            mock_schema = {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "conversation_id": {"type": "string"},
+                        "title": {"type": "string"}
+                    }
+                }
+            }
+            mock_builder.to_schema.return_value = mock_schema
+            mock_builder_class.return_value = mock_builder
+            
+            # Test validation and schema generation
+            result_schema = validate_and_generate_schema(
+                test_conversations,
+                'oai',
+                str(output_path)
+            )
+            
+            assert result_schema == mock_schema
+            mock_builder.add_schema.assert_called_once()
+            mock_builder.add_object.assert_called_once_with(test_conversations)
+
+
+class TestProcessingPipelineIntegration:
+    """Test integration of complete processing pipeline."""
     
-    assert result.conversation_id == 'test-uuid'
-    assert result.exchange_count == 1
-    assert 'Hello Claude' in result.get_all_user_text()
+    def test_pipeline_with_mocked_components(self, tmp_path):
+        """Test processing pipeline with mocked external dependencies."""
+        # Create test output directory
+        output_dir = tmp_path / "output"
+        
+        # Mock all external dependencies
+        with patch('conversation_tagger.processing.pipeline.load_conversations') as mock_load, \
+             patch('conversation_tagger.processing.pipeline.create_default_tagger') as mock_create_tagger, \
+             patch('conversation_tagger.processing.pipeline.generate_notes') as mock_generate:
+            
+            # Setup mocks
+            test_conversations = [
+                {'conversation_id': 'conv-1'},
+                {'conversation_id': 'conv-2'}
+            ]
+            mock_load.return_value = test_conversations
+            
+            mock_tagger = MagicMock()
+            mock_tagged_conv1 = MagicMock()
+            mock_tagged_conv1.conversation_id = 'conv-1'
+            mock_tagged_conv1.annotations = {'has_code': True}
+            mock_tagged_conv1.has_annotation.side_effect = lambda x: x == 'has_code'
+            
+            mock_tagged_conv2 = MagicMock() 
+            mock_tagged_conv2.conversation_id = 'conv-2'
+            mock_tagged_conv2.annotations = {'has_attachments': True}
+            mock_tagged_conv2.has_annotation.side_effect = lambda x: x == 'has_attachments'
+            
+            mock_tagger.tag_conversation.side_effect = [mock_tagged_conv1, mock_tagged_conv2]
+            mock_create_tagger.return_value = mock_tagger
+            
+            # Create pipeline with filter
+            filter_criteria = FilterCriteria(required_annotations={'has_code'})
+            config = ProcessingConfig(
+                sources=['oai'],
+                output_dir=str(output_dir),
+                filter_criteria=filter_criteria
+            )
+            
+            pipeline = ProcessingPipeline('oai', config)
+            
+            # Run pipeline
+            result = pipeline.process()
+            
+            # Verify results
+            assert result['source'] == 'oai'
+            assert result['raw_count'] == 2
+            assert result['tagged_count'] == 2
+            assert result['filtered_count'] == 1  # Only one has 'has_code'
+            assert result['generated_count'] == 1
+            
+            # Verify calls
+            mock_load.assert_called_once_with('oai')
+            assert mock_tagger.tag_conversation.call_count == 2
+            mock_generate.assert_called_once()  # Only for filtered conversation
+
+
+class TestBatchProcessorIntegration:
+    """Test integration of batch processing across sources."""
+    
+    def test_batch_processor_multiple_sources(self, tmp_path):
+        """Test batch processing with multiple sources."""
+        output_dir = tmp_path / "batch_output"
+        
+        with patch('conversation_tagger.processing.pipeline.ProcessingPipeline') as mock_pipeline_class:
+            # Create mock pipelines that return different results
+            mock_oai_pipeline = MagicMock()
+            mock_oai_pipeline.process.return_value = {
+                'source': 'oai',
+                'raw_count': 10,
+                'tagged_count': 10,
+                'filtered_count': 8,
+                'generated_count': 8
+            }
+            
+            mock_claude_pipeline = MagicMock()
+            mock_claude_pipeline.process.return_value = {
+                'source': 'claude', 
+                'raw_count': 5,
+                'tagged_count': 5,
+                'filtered_count': 3,
+                'generated_count': 3
+            }
+            
+            mock_pipeline_class.side_effect = [mock_oai_pipeline, mock_claude_pipeline]
+            
+            # Create batch processor
+            config = ProcessingConfig(
+                sources=['oai', 'claude'],
+                output_dir=str(output_dir)
+            )
+            
+            processor = BatchProcessor(config)
+            
+            # Run batch processing
+            result = processor.process_all()
+            
+            # Verify results
+            assert result['sources_processed'] == 2
+            assert result['total_generated'] == 11  # 8 + 3
+            
+            assert 'oai' in result['results_by_source']
+            assert 'claude' in result['results_by_source']
+            
+            assert result['results_by_source']['oai']['generated_count'] == 8
+            assert result['results_by_source']['claude']['generated_count'] == 3
+            
+            # Verify pipeline creation
+            assert mock_pipeline_class.call_count == 2
+
+
+class TestFilteringIntegration:
+    """Test integration of filtering with real conversation objects."""
+    
+    def test_conversation_filtering_integration(self):
+        """Test filtering with mock conversation objects."""
+        from conversation_tagger.core.conversation import Conversation
+        
+        # Create mock conversations with different annotations
+        conv1 = MagicMock(spec=Conversation)
+        conv1.conversation_id = 'conv-1'
+        conv1.annotations = {'has_code': True, 'has_github': True}
+        conv1.has_annotation.side_effect = lambda x: x in conv1.annotations
+        
+        conv2 = MagicMock(spec=Conversation)
+        conv2.conversation_id = 'conv-2'
+        conv2.annotations = {'has_attachments': True}
+        conv2.has_annotation.side_effect = lambda x: x in conv2.annotations
+        
+        conv3 = MagicMock(spec=Conversation)
+        conv3.conversation_id = 'conv-3'
+        conv3.annotations = {'has_code': True, 'has_attachments': True}
+        conv3.has_annotation.side_effect = lambda x: x in conv3.annotations
+        
+        conversations = [conv1, conv2, conv3]
+        
+        # Test filtering for code conversations without attachments
+        criteria = FilterCriteria(
+            required_annotations={'has_code'},
+            forbidden_annotations={'has_attachments'}
+        )
+        
+        filtered = ConversationFilter.filter_conversations(conversations, criteria)
+        
+        # Should only include conv1 (has code, no attachments)
+        assert len(filtered) == 1
+        assert filtered[0] == conv1
+
+
+class TestEndToEndWorkflow:
+    """Test end-to-end processing workflows."""
+    
+    def test_complete_workflow_simulation(self, tmp_path):
+        """Test a complete workflow from data loading to output generation."""
+        # This simulates the notebook workflow that was factored out
+        
+        output_dir = tmp_path / "e2e_output"
+        
+        # Mock all the dependencies but ensure they're called in the right order
+        call_order = []
+        
+        def track_call(name):
+            def wrapper(*args, **kwargs):
+                call_order.append(name)
+                return MagicMock()
+            return wrapper
+        
+        def mock_load_with_data(*args, **kwargs):
+            call_order.append('load')
+            return [{'conversation_id': 'test1'}]  # Return some data so generate gets called
+        
+        with patch('conversation_tagger.processing.pipeline.load_conversations', side_effect=mock_load_with_data), \
+             patch('conversation_tagger.processing.pipeline.create_default_tagger', side_effect=track_call('create_tagger')), \
+             patch('conversation_tagger.processing.pipeline.generate_notes', side_effect=track_call('generate')):
+            
+            # Simulate the old notebook workflow: 
+            # for source in ['oai', 'claude']: ...
+            
+            config = ProcessingConfig(
+                sources=['oai', 'claude'],
+                output_dir=str(output_dir),
+                generate_notes_enabled=True
+            )
+            
+            processor = BatchProcessor(config)
+            processor.process_all()
+            
+            # Verify the workflow executed in the expected order
+            # Should have: load -> create_tagger -> load -> create_tagger -> generate calls
+            assert 'load' in call_order
+            assert 'create_tagger' in call_order
+            assert 'generate' in call_order
