@@ -10,21 +10,11 @@ from typing import List, Dict, Any
 from ..db.manager import DatabaseManager
 from ..db.tagging import DatabaseTagger, DatabaseBatchProcessor
 from ..db.queries import ConversationQuery, QueryFilter
-from ..data.loaders import ConversationLoader
 from .discovery import discover_and_configure
 
 
 def add_db_commands(subparsers):
     """Add database commands to CLI."""
-    
-    # DB process command (replaces regular process when --incremental is used)
-    db_process = subparsers.add_parser('db-process', help='Database-backed incremental processing')
-    db_process.add_argument('--db-path', default='conversations.db', help='Database path')
-    db_process.add_argument('--exports-dir', default='./data/exports', help='Exports directory')
-    db_process.add_argument('--output-dir', default='./data/notes', help='Output directory')
-    db_process.add_argument('--source-type', choices=['oai', 'claude'], help='Filter by source')
-    db_process.add_argument('--no-notes', action='store_true', help='Skip note generation')
-    db_process.add_argument('--force-retag', action='store_true', help='Force re-tagging')
     
     # Query command
     db_query = subparsers.add_parser('query', help='Query conversation database')
@@ -63,27 +53,34 @@ def handle_db_process_command(args) -> int:
         print(f"🔍 Discovering exports in {args.exports_dir}")
         discovery_results = discover_and_configure(args.exports_dir)
         
-        if not discovery_results['configs']:
+        if not discovery_results:
             print("❌ No conversation exports found")
             return 1
         
         # Filter by source type if specified
-        configs = discovery_results['configs']
+        filtered_discoveries = discovery_results
         if args.source_type:
-            configs = [c for c in configs if c.parser_type == args.source_type]
+            filtered_discoveries = [d for d in discovery_results if d['config'].parser_type == args.source_type]
         
-        if not configs:
+        if not filtered_discoveries:
             print(f"❌ No exports found for source type: {args.source_type}")
             return 1
         
         all_results = {}
+        import json
         
-        for config in configs:
+        for discovery in filtered_discoveries:
+            config = discovery['config']
             print(f"\n📁 Processing {config.name} from {config.root_path}")
             
-            # Load conversations
-            loader = ConversationLoader(config)
-            conversations = loader.load_conversations()
+            # Load conversations directly from JSON
+            conversations_file = Path(config.root_path) / "conversations.json"
+            try:
+                with open(conversations_file, 'r', encoding='utf-8') as f:
+                    conversations = json.load(f)
+            except Exception as e:
+                print(f"  ❌ Error loading conversations: {e}")
+                continue
             
             if not conversations:
                 print(f"  No conversations found")
@@ -97,7 +94,8 @@ def handle_db_process_command(args) -> int:
                 config.parser_type,
                 auto_tag=True,
                 generate_notes=not args.no_notes,
-                output_dir=args.output_dir
+                output_dir=args.output_dir,
+                force_retag=args.force_retag
             )
             
             all_results[config.name] = results
@@ -108,11 +106,11 @@ def handle_db_process_command(args) -> int:
             
             if 'tagging' in results:
                 tag = results['tagging']
-                print(f"  🏷️  {tag['conversations_tagged']} tagged, {tag['total_annotations']} annotations")
+                print(f"  🏷️  {tag.get('conversations_tagged', 0)} tagged, {tag.get('annotations_added', 0)} annotations")
             
             if 'note_generation' in results:
                 notes = results['note_generation']
-                print(f"  📝 {notes['notes_generated']} notes generated")
+                print(f"  📝 {notes.get('notes_generated', 0)} notes generated")
         
         # Overall summary
         total_new = sum(r['ingestion']['new_conversations'] for r in all_results.values())
@@ -239,7 +237,6 @@ def handle_notes_command(args) -> int:
 
 # Command dispatch table
 DB_COMMANDS = {
-    'db-process': handle_db_process_command,
     'query': handle_query_command,
     'stats': handle_stats_command,
     'notes': handle_notes_command,

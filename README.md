@@ -1,11 +1,11 @@
 # chat2obs
 
-Process ChatGPT and Claude conversation exports into Obsidian-compatible markdown notes with intelligent tagging and analysis.
+Process ChatGPT and Claude conversation exports into Obsidian-compatible markdown notes with intelligent tagging and incremental database storage.
 
 ## Features
 
-### 🚀 Incremental Processing (Recommended)
-- **Database-backed storage** with automatic diff detection
+### 🚀 Database-Backed Incremental Processing
+- **SQLite storage** with automatic diff detection
 - **Only processes new/changed conversations** (massive performance improvement)
 - **Rich querying** without reprocessing data
 - **Perfect for large conversation archives**
@@ -18,7 +18,7 @@ Process ChatGPT and Claude conversation exports into Obsidian-compatible markdow
 ### 🔍 Advanced Analysis
 - Automatic detection of coding assistance, research sessions, multi-turn conversations
 - Support for gizmos, plugins, and enhanced conversation features
-- Flexible filtering and faceting capabilities
+- Powerful filtering and faceting capabilities
 
 ## Quick Start
 
@@ -33,45 +33,37 @@ pip install -e .
 
 ### Basic Usage
 
-#### Incremental Processing (Recommended)
 ```bash
 # Drop your ChatGPT/Claude exports in ./data/exports/
 mkdir -p data/exports
 # Copy your conversation exports here
 
 # Process incrementally (only new/changed conversations)
-chat2obs db-process --exports-dir ./data/exports --output-dir ./notes
+chat2obs process --exports-dir ./data/exports --output-dir ./notes
 
 # Query conversations
 chat2obs query --has-annotation coding_assistance --limit 10
-chat2obs stats
-```
 
-#### Traditional Processing (Legacy)
-```bash
-# One-time processing (processes everything each time)
-chat2obs process --exports-dir ./data/exports --output-dir ./notes
+# Show database statistics
+chat2obs stats
+
+# Generate notes for specific conversations
+chat2obs notes --has-annotation gizmo --output-dir ./gizmo-notes
 ```
 
 ## Commands
 
-### Incremental Processing Commands
-- `chat2obs db-process` - Process exports incrementally using database
+- `chat2obs process` - Process exports incrementally using database
 - `chat2obs query` - Query conversations by annotations, source, etc.
 - `chat2obs stats` - Show database and processing statistics
 - `chat2obs notes` - Generate Obsidian notes for filtered conversations
 
-### Traditional Commands
-- `chat2obs process` - Process all exports (legacy, slower)
-- `chat2obs discover` - Show what exports were found
-- `chat2obs setup` - Create directory structure and show usage
+## Performance Benefits
 
-## Performance Comparison
-
-| Approach | First Run | Second Run (No Changes) | Querying |
-|----------|-----------|-------------------------|----------|
-| **Incremental** | Normal | ~0 conversations processed | Instant |
-| **Traditional** | Normal | Full reprocessing | Requires reprocessing |
+- **First Run**: Processes all conversations and stores in database
+- **Subsequent Runs**: Only processes new/changed conversations (~100x faster)
+- **Querying**: Instant queries without reprocessing data
+- **Scalability**: Handles thousands of conversations efficiently
 
 ## Supported Export Formats
 
@@ -100,7 +92,7 @@ chat2obs process --exports-dir ./data/exports --output-dir ./notes
 
 ## Database Architecture
 
-The incremental processing system uses SQLite with this schema:
+Uses SQLite with this schema for fast incremental processing:
 
 ```
 conversations → exchanges → messages
@@ -108,16 +100,16 @@ conversations → exchanges → messages
             annotations (searchable)
 ```
 
-- **conversations**: High-level metadata, processing status
-- **exchanges**: User-assistant interaction pairs  
-- **messages**: Individual messages with content
-- **annotations**: Denormalized tags for fast querying
+- **conversations**: High-level metadata, processing status, change detection
+- **exchanges**: User-assistant interaction pairs with timestamps
+- **messages**: Individual messages with content and metadata
+- **annotations**: Denormalized tags for instant querying and filtering
 
 ## Examples
 
 ### Python API
 ```python
-# Incremental processing
+# Database-backed processing
 from conversation_tagger import DatabaseManager, DatabaseBatchProcessor
 
 with DatabaseManager('conversations.db') as db:
@@ -130,7 +122,7 @@ with DatabaseManager('conversations.db') as db:
 from conversation_tagger.db.queries import ConversationQuery, QueryFilter
 
 query = ConversationQuery(db)
-coding_convs = query.find_conversations(
+coding_convs = query.query_conversations(
     QueryFilter(has_annotation='coding_assistance')
 )
 ```
@@ -138,7 +130,7 @@ coding_convs = query.find_conversations(
 ### CLI Examples
 ```bash
 # Process new exports incrementally
-chat2obs db-process --exports-dir ~/Downloads/conversations
+chat2obs process --exports-dir ~/Downloads/conversations
 
 # Find conversations with specific features
 chat2obs query --has-annotation gizmo --source oai --limit 20
@@ -156,17 +148,17 @@ If you were previously using the Jupyter notebooks directly:
 
 **Old approach (notebooks):**
 ```python
-# Manual processing in notebooks
+# Manual processing in notebooks - now replaced
 convs = load_convs('oai')  
 tagger = create_default_tagger('oai')
 tagged = [tagger.tag_conversation(c) for c in convs]
 generate_notes(tagged_results, output_dir="data/staging")
 ```
 
-**New approach (incremental):**
+**New approach (database-backed):**
 ```bash
-# Just use the CLI
-chat2obs db-process --exports-dir ./data/exports --output-dir ./notes
+# Simple CLI with incremental processing
+chat2obs process --exports-dir ./data/exports --output-dir ./notes
 ```
 
 ## Development
@@ -177,8 +169,7 @@ python -m pytest tests/ -v
 ```
 
 ### Examples
-- `examples/incremental_processing_example.py` - Database-backed processing
-- `examples/legacy_processing_example.py` - Traditional file-based processing
+- `examples/incremental_processing_example.py` - Database-backed processing workflow
 
 ## Requirements
 

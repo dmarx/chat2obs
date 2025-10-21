@@ -6,10 +6,10 @@ Auto-discovery and extraction of conversation exports.
 import json
 import zipfile
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from ..data.config import DataSourceConfig
+from .config import CLIConfig, create_cli_config
 
 
 class ExportDiscovery:
@@ -155,12 +155,12 @@ class ExportDiscovery:
             logger.error(f"Error reading {conv_file}: {e}")
             return None
     
-    def create_configs(self, discoveries: List[Dict[str, Any]]) -> List[DataSourceConfig]:
+    def create_configs(self, discoveries: List[Dict[str, Any]]) -> List[CLIConfig]:
         """
-        Create DataSourceConfig objects from discovered exports.
+        Create CLIConfig objects from discovered exports.
         
         Returns:
-            List of configured data source configs
+            List of configured CLI configs
         """
         configs = []
         
@@ -172,10 +172,9 @@ class ExportDiscovery:
             else:
                 config_name = source_type
             
-            config = DataSourceConfig(
+            config = create_cli_config(
                 name=config_name,
                 root_path=str(discovery['extracted_path']),
-                conversations_file="conversations.json",
                 parser_type=source_type
             )
             
@@ -195,15 +194,30 @@ class ExportDiscovery:
             logger.warning(f"Could not clean up extracted files: {e}")
 
 
-def discover_and_configure(exports_dir: str = "./data/exports") -> Tuple[List[DataSourceConfig], List[Dict[str, Any]]]:
+def discover_and_configure(exports_dir: str = "./data/exports") -> List[Dict[str, Any]]:
     """
     Convenience function to discover exports and create configs.
     
     Returns:
-        Tuple of (configs, discovery_info)
+        List of discovery info with embedded config objects.
     """
     discovery = ExportDiscovery(exports_dir)
     discoveries = discovery.discover_exports()
-    configs = discovery.create_configs(discoveries)
     
-    return configs, discoveries
+    # Add config objects to each discovery
+    for i, d in enumerate(discoveries):
+        source_type = d['source_type']
+        # Create unique names for multiple sources of the same type
+        if len([disc for disc in discoveries if disc['source_type'] == source_type]) > 1:
+            config_name = f"{source_type}_{i+1}"
+        else:
+            config_name = source_type
+            
+        config = create_cli_config(
+            name=config_name,
+            root_path=str(d['extracted_path']),
+            parser_type=source_type
+        )
+        d['config'] = config
+    
+    return discoveries

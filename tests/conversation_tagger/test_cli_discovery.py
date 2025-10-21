@@ -222,9 +222,11 @@ class TestDiscoverAndConfigure:
         with open(conv_file, 'w') as f:
             json.dump(conversations, f)
         
-        configs, discoveries = discover_and_configure(str(exports_dir))
+        discoveries = discover_and_configure(str(exports_dir))
         
-        assert len(configs) == 1
         assert len(discoveries) == 1
-        assert configs[0].name == 'oai'
-        assert discoveries[0]['source_type'] == 'oai'
+        discovery = discoveries[0]
+        config = discovery['config']
+        
+        assert config.name == 'oai'
+        assert discovery['source_type'] == 'oai'

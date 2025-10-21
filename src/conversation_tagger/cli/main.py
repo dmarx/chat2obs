@@ -1,42 +1,39 @@
 # conversation_tagger/cli/main.py
 """
-Main CLI interface for conversation processing.
+Main CLI interface for database-backed conversation processing.
 """
 
 import argparse
 import sys
-from pathlib import Path
 from typing import Optional
 from loguru import logger
 
 from .discovery import discover_and_configure
-from ..processing.pipeline import ProcessingConfig, BatchProcessor
-from ..processing.filters import FilterCriteria
 from .db_commands import add_db_commands, DB_COMMANDS
 
 
 def create_cli_parser() -> argparse.ArgumentParser:
-    """Create the CLI argument parser."""
+    """Create the main CLI argument parser."""
     parser = argparse.ArgumentParser(
         prog='chat2obs',
-        description='Process conversation exports from ChatGPT and Claude',
+        description='Process conversation exports from ChatGPT and Claude using database-backed incremental processing',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process all exports in default directory (./data/exports/)
-  chat2obs process
-  
-  # Process exports from custom directory
-  chat2obs process --exports-dir ~/Downloads/conversations
-  
-  # Process with custom output directory
-  chat2obs process --output-dir ./notes
+  # Process exports incrementally (only new/changed conversations)
+  chat2obs process --exports-dir ./data/exports --output-dir ./notes
   
   # Process only ChatGPT conversations
   chat2obs process --source-type oai
   
-  # Discovery mode - just show what would be processed
-  chat2obs discover --exports-dir ./my-exports
+  # Query conversations by annotations
+  chat2obs query --has-annotation coding_assistance --limit 10
+  
+  # Generate notes for filtered conversations
+  chat2obs notes --has-annotation gizmo --output-dir ./gizmo-notes
+  
+  # Show database statistics
+  chat2obs stats
   
 Directory Structure:
   ./data/exports/          # Drop your export files here
@@ -44,243 +41,103 @@ Directory Structure:
   ├── claude-data/         # Claude export directory
   │   └── conversations.json
   └── conversations.json   # Direct conversation file
-        """
-    )
+  
+  ./conversations.db       # SQLite database (auto-created)
+        """)
     
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
     
-    # Process command
-    process_parser = subparsers.add_parser('process', help='Process conversation exports')
-    process_parser.add_argument(
-        '--exports-dir', 
-        default='./data/exports',
-        help='Directory containing conversation exports (default: ./data/exports)'
-    )
-    process_parser.add_argument(
-        '--output-dir',
-        default='./data/notes', 
-        help='Output directory for generated notes (default: ./data/notes)'
-    )
-    process_parser.add_argument(
-        '--source-type',
-        choices=['oai', 'claude', 'chatgpt'],
-        help='Only process specific source type (default: process all)'
-    )
-    process_parser.add_argument(
-        '--template',
-        default='article_body.md.jinja',
-        help='Template file to use for note generation (default: article_body.md.jinja)'
-    )
-    process_parser.add_argument(
-        '--no-notes',
-        action='store_true',
-        help='Skip note generation, only tag conversations'
-    )
-    process_parser.add_argument(
-        '--cleanup',
-        action='store_true',
-        help='Clean up extracted archive files after processing'
-    )
+    # Process command (database-backed incremental processing)
+    process_parser = subparsers.add_parser('process', help='Process conversation exports incrementally')
+    process_parser.add_argument('--db-path', default='conversations.db', help='Database path')
+    process_parser.add_argument('--exports-dir', default='./data/exports', help='Exports directory')
+    process_parser.add_argument('--output-dir', default='./data/notes', help='Output directory')
+    process_parser.add_argument('--source-type', choices=['oai', 'claude'], help='Filter by source')
+    process_parser.add_argument('--no-notes', action='store_true', help='Skip note generation')
+    process_parser.add_argument('--force-retag', action='store_true', help='Force re-tagging')
     
-    # Discover command
-    discover_parser = subparsers.add_parser('discover', help='Discover conversation exports')
-    discover_parser.add_argument(
-        '--exports-dir',
-        default='./data/exports',
-        help='Directory containing conversation exports (default: ./data/exports)'
-    )
-    
-    # Setup command
-    setup_parser = subparsers.add_parser('setup', help='Setup directories and show usage')
-    
-    # Add database commands
+    # Add database commands (query, stats, notes)
     add_db_commands(subparsers)
     
     return parser
 
 
-def setup_command():
-    """Setup directories and show usage information."""
-    exports_dir = Path('./data/exports')
-    output_dir = Path('./data/notes')
-    
-    exports_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    print("🚀 chat2obs setup complete!")
-    print()
-    print("📁 Directories created:")
-    print(f"   Exports: {exports_dir.absolute()}")
-    print(f"   Output:  {output_dir.absolute()}")
-    print()
-    print("💡 Usage:")
-    print("1. Drop your ChatGPT or Claude export files in the exports directory:")
-    print(f"   - ChatGPT: Save .zip export to {exports_dir}/")
-    print(f"   - Claude: Extract and save to {exports_dir}/claude-data/")
-    print()
-    print("2. Run processing:")
-    print("   chat2obs process")
-    print()
-    print("3. Check generated notes:")
-    print(f"   ls {output_dir}/")
+def handle_process_command(args) -> int:
+    """Handle the main process command using database-backed incremental processing."""
+    print("🗄️ Starting incremental database processing...")
 
+    from ..db.manager import DatabaseManager
+    from ..db.tagging import DatabaseBatchProcessor
+    import json
+    from pathlib import Path
 
-def discover_command(exports_dir: str):
-    """Discover and show conversation exports."""
-    print(f"🔍 Discovering conversation exports in: {exports_dir}")
-    print()
-    
-    try:
-        configs, discoveries = discover_and_configure(exports_dir)
-        
-        if not discoveries:
+    # Create database manager
+    with DatabaseManager(args.db_path) as db:
+        batch_processor = DatabaseBatchProcessor(db)
+
+        # Discover conversation exports
+        print(f"🔍 Discovering exports in {args.exports_dir}")
+        discovery_results = discover_and_configure(args.exports_dir)
+
+        if not discovery_results:
             print("❌ No conversation exports found!")
-            print()
-            print("💡 Supported formats:")
-            print("   - ChatGPT .zip export files")
-            print("   - Claude directories with conversations.json")
-            print("   - Direct conversations.json files")
-            print()
-            print("   Run 'chat2obs setup' to create the directory structure.")
+            print("   Ensure your exports are in the specified directory and correctly formatted.")
             return 1
-        
-        print(f"✅ Found {len(discoveries)} conversation export(s):")
-        print()
-        
-        for discovery in discoveries:
-            source_type = discovery['source_type'].upper()
-            count = discovery['conversations_count']
-            path = discovery['source_file']
-            
-            print(f"📊 {source_type}: {count} conversations")
-            print(f"   Source: {path}")
-            print(f"   Type: {discovery['type']}")
-            print()
-        
-        print("🚀 Ready to process! Run:")
-        print(f"   chat2obs process --exports-dir {exports_dir}")
-        
-        return 0
-        
-    except Exception as e:
-        logger.error(f"Discovery failed: {e}")
-        print(f"❌ Discovery failed: {e}")
-        return 1
 
+        all_results = {}
 
-def process_command(exports_dir: str, output_dir: str, source_type: Optional[str], 
-                   template: str, no_notes: bool, cleanup: bool):
-    """Process conversation exports."""
-    print(f"🚀 Processing conversation exports...")
-    print(f"   Exports: {exports_dir}")
-    print(f"   Output:  {output_dir}")
-    print()
-    
-    try:
-        # Discover exports
-        configs, discoveries = discover_and_configure(exports_dir)
-        
-        if not discoveries:
-            print("❌ No conversation exports found!")
-            print("   Run 'chat2obs discover' to see supported formats.")
-            return 1
-        
-        # Filter by source type if specified
-        if source_type:
-            # Handle aliases
-            if source_type == 'chatgpt':
-                source_type = 'oai'
+        for discovery in discovery_results:
+            config = discovery['config']
             
-            configs = [c for c in configs if c.parser_type == source_type]
-            discoveries = [d for d in discoveries if d['source_type'] == source_type]
-            
-            if not configs:
-                print(f"❌ No {source_type.upper()} exports found!")
-                return 1
-        
-        # Show what will be processed
-        print("📊 Processing:")
-        for discovery in discoveries:
-            source_type_display = discovery['source_type'].upper()
-            count = discovery['conversations_count']
-            print(f"   {source_type_display}: {count} conversations")
-        print()
-        
-        # Create processing configuration with discovered configs
-        from ..data.loaders import ConversationLoader
-        from ..processing.pipeline import ProcessingPipeline
-        
-        # Override the default configs by patching the config system
-        import os
-        config_overrides = {}
-        for config in configs:
-            env_var = f"CHAT2OBS_{config.parser_type.upper()}_ROOT"
-            os.environ[env_var] = config.root_path
-            config_overrides[config.name] = config
-        
-        # Monkey patch the config system temporarily
-        original_get_config = None
-        try:
-            from .. import data
-            original_get_config = data.config.get_config_for_source
-            
-            def patched_get_config(source_name):
-                if source_name in config_overrides:
-                    return config_overrides[source_name]
-                return original_get_config(source_name)
-            
-            data.config.get_config_for_source = patched_get_config
-            
-            # Also patch in the loaders module
-            from ..data import loaders
-            loaders.get_config_for_source = patched_get_config
-            
-            source_names = [config.name for config in configs]
-            processing_config = ProcessingConfig(
-                sources=source_names,
-                output_dir=output_dir,
-                generate_notes_enabled=not no_notes,
-                template_name=template
+            if not Path(config.root_path).exists():
+                print(f"⚠️  Skipping {config.name}: path not found - {config.root_path}")
+                continue
+
+            # Filter by source type if specified
+            if args.source_type and config.parser_type != args.source_type:
+                print(f"  Skipping {config.name} (source type filter: {args.source_type})")
+                continue
+
+            print(f"\n📁 Processing {config.name} from {config.root_path}")
+
+            # Load conversations directly from JSON
+            conversations_file = Path(config.root_path) / "conversations.json"
+            try:
+                with open(conversations_file, 'r', encoding='utf-8') as f:
+                    conversations = json.load(f)
+            except Exception as e:
+                print(f"  ❌ Error loading conversations: {e}")
+                continue
+
+            if not conversations:
+                print(f"  No conversations found in {conversations_file}")
+                continue
+
+            print(f"  Found {len(conversations)} conversations")
+
+            # Process with incremental pipeline
+            results = batch_processor.process_export_incrementally(
+                conversations,
+                config.parser_type,
+                auto_tag=True,
+                generate_notes=not args.no_notes,
+                output_dir=args.output_dir,
+                force_retag=args.force_retag
             )
-        
-            # Process conversations
-            processor = BatchProcessor(processing_config)
-            results = processor.process_all()
-            
-        finally:
-            # Restore original config function
-            if original_get_config:
-                data.config.get_config_for_source = original_get_config
-                loaders.get_config_for_source = original_get_config
-        
-        # Show results
-        print("✅ Processing complete!")
-        print()
-        print("📈 Results:")
-        for source, result in results['results_by_source'].items():
-            if 'error' in result:
-                print(f"   {source.upper()}: ❌ Error - {result['error']}")
-            else:
-                filtered = result['filtered_count']
-                generated = result['generated_count']
-                print(f"   {source.upper()}: {filtered} conversations → {generated} notes")
-        
-        total_generated = results['total_generated']
-        print()
-        print(f"🎉 Generated {total_generated} total notes in {output_dir}")
-        
-        # Cleanup if requested
-        if cleanup:
-            from .discovery import ExportDiscovery
-            discovery_obj = ExportDiscovery(exports_dir)
-            discovery_obj.cleanup_extracted()
-        
+
+            all_results[config.name] = results
+
+            # Print results
+            ing_stats = results['ingestion']
+            tag_stats = results['tagging']
+            note_stats = results['note_generation']
+
+            print(f"  📥 Ingestion: {ing_stats['new_conversations']} new, {ing_stats['updated_conversations']} updated, {ing_stats['unchanged_conversations']} unchanged")
+            print(f"  🏷️  Tagging: {tag_stats.get('conversations_tagged', 0)} tagged, {tag_stats.get('annotations_added', 0)} annotations")
+            print(f"  📝 Notes: {note_stats.get('notes_generated', 0)} generated")
+
+        print("\n✅ Incremental processing complete!")
         return 0
-        
-    except Exception as e:
-        logger.error(f"Processing failed: {e}")
-        print(f"❌ Processing failed: {e}")
-        return 1
 
 
 def main():
@@ -301,22 +158,8 @@ def main():
         parser.print_help()
         return 1
     
-    if args.command == 'setup':
-        setup_command()
-        return 0
-    
-    elif args.command == 'discover':
-        return discover_command(args.exports_dir)
-    
-    elif args.command == 'process':
-        return process_command(
-            exports_dir=args.exports_dir,
-            output_dir=args.output_dir,
-            source_type=args.source_type,
-            template=args.template,
-            no_notes=args.no_notes,
-            cleanup=args.cleanup
-        )
+    if args.command == 'process':
+        return handle_process_command(args)
     
     elif args.command in DB_COMMANDS:
         # Handle database commands
