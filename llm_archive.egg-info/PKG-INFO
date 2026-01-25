@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: llm_archive
+Version: 0.1.0
+Summary: LLM conversation archive ingestion and analysis
+Requires-Python: >=3.11
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: psycopg2-binary>=2.9
+Requires-Dist: loguru>=0.7
+Requires-Dist: fire>=0.7.1
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"

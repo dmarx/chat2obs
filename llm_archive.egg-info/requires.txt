@@ -1,0 +1,7 @@
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+loguru>=0.7
+fire>=0.7.1
+
+[dev]
+pytest>=7.0
