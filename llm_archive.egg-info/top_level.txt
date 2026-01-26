@@ -1,4 +1,0 @@
-attic
-docs
-llm_archive
-schema
