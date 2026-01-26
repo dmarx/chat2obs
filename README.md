@@ -10,22 +10,67 @@ Ingest, normalize, and analyze LLM conversation exports for downstream processin
 - **Content hashing**: Deduplication preparation
 - **Polymorphic labeling**: Flexible annotation system
 
+## Requirements
+
+- Python 3.11+
+- Docker (for PostgreSQL)
+
 ## Installation
 
 ```bash
-pip install -e .
-```
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-Requires PostgreSQL 14+.
+# Create virtual environment and install dependencies
+uv venv
+source .venv/bin/activate  # or `.venv\Scripts\activate` on Windows
+uv pip install -e .
+
+# Or install directly without explicit venv creation
+uv pip install -e . --system
+
+# Install with dev dependencies
+uv pip install -e ".[dev]"
+```
 
 ## Database Setup
 
-```bash
-# Create database
-createdb llm_archive
+### Start PostgreSQL (pgvector)
 
-# Initialize schema
-llm-archive init --schema_dir=schema
+```bash
+# Start the database (data persists in ./data/postgres/)
+docker compose up -d
+
+# Check it's running
+docker compose ps
+
+# View logs if needed
+docker compose logs -f db
+```
+
+The database will be available at:
+- **Host**: `localhost`
+- **Port**: `5432`
+- **Database**: `llm_archive`
+- **User**: `postgres`
+- **Password**: `postgres`
+- **URL**: `postgresql://postgres:postgres@localhost:5432/llm_archive`
+
+### Initialize Schema
+
+```bash
+uv run llm-archive init --schema_dir=schema
+```
+
+### Stop Database
+
+```bash
+# Stop but keep data
+docker compose down
+
+# Stop and DELETE all data
+docker compose down -v
+rm -rf data/postgres
 ```
 
 ## Usage
@@ -34,13 +79,13 @@ llm-archive init --schema_dir=schema
 
 ```bash
 # Import ChatGPT export
-llm-archive import_chatgpt /path/to/conversations.json
+uv run llm-archive import_chatgpt /path/to/conversations.json
 
 # Import Claude export
-llm-archive import_claude /path/to/claude.json
+uv run llm-archive import_claude /path/to/claude.json
 
 # Import both
-llm-archive import_all \
+uv run llm-archive import_all \
     --chatgpt_path=/path/to/chatgpt.json \
     --claude_path=/path/to/claude.json
 ```
@@ -49,40 +94,40 @@ llm-archive import_all \
 
 ```bash
 # Build tree analysis
-llm-archive build_trees
+uv run llm-archive build_trees
 
 # Build exchanges
-llm-archive build_exchanges
+uv run llm-archive build_exchanges
 
 # Build content hashes
-llm-archive build_hashes
+uv run llm-archive build_hashes
 
 # Build all
-llm-archive build_all
+uv run llm-archive build_all
 ```
 
 ### Labeling
 
 ```bash
 # Run all labelers
-llm-archive label
+uv run llm-archive label
 ```
 
 ### Analysis
 
 ```bash
 # Show statistics
-llm-archive stats
+uv run llm-archive stats
 
 # Find duplicates
-llm-archive find_duplicates --entity_type=exchange --scope=assistant
+uv run llm-archive find_duplicates --entity_type=exchange --scope=assistant
 ```
 
 ### Full Pipeline
 
 ```bash
 # Run everything
-llm-archive run \
+uv run llm-archive run \
     --chatgpt_path=/path/to/chatgpt.json \
     --claude_path=/path/to/claude.json \
     --init_db

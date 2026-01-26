@@ -1,4 +1,7 @@
 -- schema/001_raw.sql
+
+create extension if not exists vector;
+
 -- Raw data layer: source of truth from imports
 
 create schema if not exists raw;
