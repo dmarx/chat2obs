@@ -3,16 +3,14 @@ services:
   db:
     image: pgvector/pgvector:pg16
     container_name: llm_archive_db
-    environment:
-      POSTGRES_DB: llm_archive
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+    env_file:
+      - .env
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d llm_archive"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-llm_archive}"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -7,6 +7,7 @@ from pathlib import Path
 import fire
 from loguru import logger
 
+from llm_archive.config import DATABASE_URL
 from llm_archive.db import get_session, init_schema, reset_schema
 from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
 from llm_archive.builders import TreeBuilder, ExchangeBuilder, HashBuilder
@@ -22,8 +23,8 @@ from llm_archive.labelers import (
 class CLI:
     """LLM Archive - Conversation ingestion and analysis."""
     
-    def __init__(self, db_url: str = "postgresql://localhost/llm_archive"):
-        self.db_url = db_url
+    def __init__(self, db_url: str | None = None):
+        self.db_url = db_url or DATABASE_URL
     
     # ================================================================
     # Schema Management
@@ -34,12 +35,12 @@ class CLI:
         init_schema(self.db_url, Path(schema_dir))
         logger.info("Schema initialized")
     
-    def reset(self, confirm: bool = False):
-        """Reset database (drops all data!)."""
+    def reset(self, confirm: bool = False, schema_dir: str = "schema"):
+        """Reset database (drops and recreates schema)."""
         if not confirm:
             logger.warning("Pass --confirm to reset database")
             return
-        reset_schema(self.db_url)
+        reset_schema(self.db_url, Path(schema_dir))
         logger.info("Database reset")
     
     # ================================================================
