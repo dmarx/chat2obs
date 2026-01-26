@@ -44,3 +44,4 @@ data/postgres/
 .env.local
 
 *.session.sql
+staging/
