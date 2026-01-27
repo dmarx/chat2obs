@@ -13,7 +13,9 @@ from llm_archive.models import (
     ChatGPTCodeExecution, ChatGPTCodeOutput, ChatGPTDalleGeneration,
     ChatGPTCanvasDoc,
 )
-from llm_archive.extractors.base import BaseExtractor, parse_timestamp, normalize_role
+from llm_archive.extractors.base import (
+    BaseExtractor, parse_timestamp, normalize_role, safe_get
+)
 
 
 class ChatGPTExtractor(BaseExtractor):
@@ -21,34 +23,75 @@ class ChatGPTExtractor(BaseExtractor):
     
     SOURCE_ID = 'chatgpt'
     
-    def extract_dialogue(self, raw: dict[str, Any]) -> UUID | None:
-        """Extract a complete ChatGPT conversation."""
+    def __init__(self, session: Session):
+        super().__init__(session)
+        self.counts = {}
+    
+    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+        """
+        Extract a complete ChatGPT conversation.
+        
+        Returns:
+            'new' - new dialogue created
+            'updated' - existing dialogue updated
+            'skipped' - existing dialogue unchanged
+            None - extraction failed
+        """
         source_id = raw.get('conversation_id') or raw.get('id')
         if not source_id:
-            logger.warning("Conversation missing ID")
+            logger.warning("Conversation missing ID, skipping")
             return None
         
-        dialogue = Dialogue(
-            source=self.SOURCE_ID,
-            source_id=source_id,
-            title=raw.get('title'),
-            created_at=parse_timestamp(raw.get('create_time')),
-            updated_at=parse_timestamp(raw.get('update_time')),
-            source_json=raw,
-        )
-        self.session.add(dialogue)
-        self.session.flush()
+        updated_at = parse_timestamp(raw.get('update_time'))
         
+        # Check for existing dialogue
+        existing = self.get_existing_dialogue(source_id)
+        
+        if existing:
+            if self.should_update(existing, updated_at):
+                # Update existing - delete old messages and re-extract
+                logger.debug(f"Updating dialogue {source_id}")
+                self._delete_dialogue_messages(existing.id)
+                existing.title = raw.get('title')
+                existing.updated_at = updated_at
+                existing.source_json = raw
+                dialogue_id = existing.id
+                result = 'updated'
+            else:
+                # Skip - no changes
+                logger.debug(f"Skipping unchanged dialogue {source_id}")
+                return 'skipped'
+        else:
+            # Create new dialogue
+            dialogue = Dialogue(
+                source=self.SOURCE_ID,
+                source_id=source_id,
+                title=raw.get('title'),
+                created_at=parse_timestamp(raw.get('create_time')),
+                updated_at=updated_at,
+                source_json=raw,
+            )
+            self.session.add(dialogue)
+            self.session.flush()
+            dialogue_id = dialogue.id
+            result = 'new'
+        
+        # Clear message ID map for this dialogue
         self._message_id_map = {}
         
+        # Extract messages from mapping
         mapping = raw.get('mapping', {})
-        self._extract_messages(dialogue.id, mapping)
+        self._extract_messages(dialogue_id, mapping)
         
-        return dialogue.id
+        return result
+    
+    def _delete_dialogue_messages(self, dialogue_id: UUID):
+        """Delete all messages for a dialogue (cascade deletes content)."""
+        self.session.query(Message).filter(Message.dialogue_id == dialogue_id).delete()
     
     def _extract_messages(self, dialogue_id: UUID, mapping: dict[str, Any]):
         """Extract all messages from the mapping tree."""
-        # First pass: create messages without parent links
+        # First pass: create all messages without parent links
         for node_id, node in mapping.items():
             msg_data = node.get('message')
             if not msg_data:
@@ -64,7 +107,7 @@ class ChatGPTExtractor(BaseExtractor):
             message = Message(
                 dialogue_id=dialogue_id,
                 source_id=source_id,
-                parent_id=None,
+                parent_id=None,  # Set in second pass
                 role=normalize_role(role, self.SOURCE_ID),
                 author_id=author.get('name'),
                 author_name=author.get('name'),
@@ -75,12 +118,18 @@ class ChatGPTExtractor(BaseExtractor):
             self.session.add(message)
             self.session.flush()
             
+            # Register for parent resolution
             self.register_message_id(node_id, message.id)
             if source_id != node_id:
                 self.register_message_id(source_id, message.id)
             
+            # Extract content parts
             self._extract_content_parts(message.id, msg_data)
+            
+            # Extract ChatGPT-specific metadata
             self._extract_chatgpt_meta(message.id, msg_data)
+            
+            # Extract attachments
             self._extract_attachments(message.id, msg_data)
         
         # Second pass: set parent links
@@ -117,6 +166,7 @@ class ChatGPTExtractor(BaseExtractor):
             self.session.add(content_part)
             self.session.flush()
             
+            # Extract DALL-E generations if present
             if isinstance(part, dict):
                 self._extract_dalle_generation(content_part.id, part)
         
@@ -124,6 +174,7 @@ class ChatGPTExtractor(BaseExtractor):
         metadata = msg_data.get('metadata', {})
         citations = metadata.get('citations', [])
         
+        # Link citations to first text content part (if any)
         if citations and parts:
             first_part = self.session.query(ContentPart).filter(
                 ContentPart.message_id == message_id,
@@ -150,6 +201,7 @@ class ChatGPTExtractor(BaseExtractor):
         if 'video' in content_type:
             return 'video', None, part
         
+        # Text might be in various places
         text = part.get('text') or part.get('result') or part.get('content')
         if text and isinstance(text, str):
             return 'text', text, part
@@ -163,6 +215,7 @@ class ChatGPTExtractor(BaseExtractor):
             
             citation = Citation(
                 content_part_id=content_part_id,
+                source_id=None,
                 url=meta.get('url'),
                 title=meta.get('title'),
                 snippet=meta.get('text'),
@@ -185,6 +238,7 @@ class ChatGPTExtractor(BaseExtractor):
                 file_name=att.get('name'),
                 file_type=att.get('mime_type') or att.get('mimeType'),
                 file_size=att.get('size'),
+                extracted_text=None,  # ChatGPT doesn't provide this
                 source_json=att,
             )
             self.session.add(attachment)
@@ -193,6 +247,7 @@ class ChatGPTExtractor(BaseExtractor):
         """Extract ChatGPT-specific metadata."""
         metadata = msg_data.get('metadata', {})
         
+        # Message metadata
         meta = ChatGPTMessageMeta(
             message_id=message_id,
             model_slug=metadata.get('model_slug'),
@@ -203,19 +258,23 @@ class ChatGPTExtractor(BaseExtractor):
         )
         self.session.add(meta)
         
-        for group_data in metadata.get('search_result_groups', []):
+        # Search result groups
+        search_groups = metadata.get('search_result_groups', [])
+        for group_data in search_groups:
             self._extract_search_group(message_id, group_data)
         
+        # Code executions
         agg_result = metadata.get('aggregate_result')
         if agg_result:
             self._extract_code_execution(message_id, agg_result)
         
+        # Canvas documents
         canvas = metadata.get('canvas')
         if canvas:
             self._extract_canvas_doc(message_id, canvas)
     
     def _extract_search_group(self, message_id: UUID, group_data: dict[str, Any]):
-        """Extract search result group and entries."""
+        """Extract a search result group and its entries."""
         group = ChatGPTSearchGroup(
             message_id=message_id,
             group_type=group_data.get('type'),
@@ -225,7 +284,8 @@ class ChatGPTExtractor(BaseExtractor):
         self.session.add(group)
         self.session.flush()
         
-        for seq, entry_data in enumerate(group_data.get('entries', [])):
+        entries = group_data.get('entries', [])
+        for seq, entry_data in enumerate(entries):
             entry = ChatGPTSearchEntry(
                 group_id=group.id,
                 sequence=seq,
@@ -257,7 +317,9 @@ class ChatGPTExtractor(BaseExtractor):
         self.session.add(execution)
         self.session.flush()
         
-        for seq, msg in enumerate(agg_result.get('messages', [])):
+        # Extract outputs
+        messages = agg_result.get('messages', [])
+        for seq, msg in enumerate(messages):
             output = ChatGPTCodeOutput(
                 execution_id=execution.id,
                 sequence=seq,
@@ -270,7 +332,7 @@ class ChatGPTExtractor(BaseExtractor):
             self.session.add(output)
     
     def _extract_dalle_generation(self, content_part_id: UUID, part: dict[str, Any]):
-        """Extract DALL-E generation data."""
+        """Extract DALL-E generation data from a content part."""
         metadata = part.get('metadata') or {}
         dalle = metadata.get('dalle') or metadata.get('generation')
         
