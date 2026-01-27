@@ -11,6 +11,10 @@ from sqlalchemy.orm import relationship
 from llm_archive.models.raw import Base
 
 
+# ============================================================
+# Tree Analysis
+# ============================================================
+
 class DialogueTree(Base):
     """Tree analysis results for a dialogue."""
     __tablename__ = "dialogue_trees"
@@ -26,6 +30,7 @@ class DialogueTree(Base):
     primary_leaf_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
     primary_path_length = Column(Integer)
     
+    # is_linear is GENERATED ALWAYS in SQL
     has_regenerations = Column(Boolean, nullable=False, default=False)
     has_edits = Column(Boolean, nullable=False, default=False)
     
@@ -53,6 +58,10 @@ class MessagePath(Base):
     computed_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+# ============================================================
+# Linear Sequences
+# ============================================================
+
 class LinearSequence(Base):
     """A root-to-leaf path as a linear sequence."""
     __tablename__ = "linear_sequences"
@@ -65,14 +74,14 @@ class LinearSequence(Base):
     sequence_length = Column(Integer, nullable=False)
     is_primary = Column(Boolean, nullable=False)
     
-    branch_reason = Column(String)
+    branch_reason = Column(String)  # 'regeneration' | 'edit' | 'fork'
     branched_at_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
     branched_at_depth = Column(Integer)
     
     computed_at = Column(DateTime(timezone=True), server_default=func.now())
     
     sequence_messages = relationship("SequenceMessage", back_populates="sequence", cascade="all, delete-orphan")
-    exchanges = relationship("Exchange", back_populates="sequence", cascade="all, delete-orphan")
+    sequence_exchanges = relationship("SequenceExchange", back_populates="sequence", cascade="all, delete-orphan")
 
 
 class SequenceMessage(Base):
@@ -87,14 +96,17 @@ class SequenceMessage(Base):
     sequence = relationship("LinearSequence", back_populates="sequence_messages")
 
 
+# ============================================================
+# Exchanges
+# ============================================================
+
 class Exchange(Base):
-    """Logical interaction unit within a sequence."""
+    """Logical interaction unit (user prompt + assistant response)."""
     __tablename__ = "exchanges"
     __table_args__ = {"schema": "derived"}
     
     id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
-    sequence_id = Column(PG_UUID(as_uuid=True), ForeignKey("derived.linear_sequences.id", ondelete="CASCADE"), nullable=False)
-    position = Column(Integer, nullable=False)
+    dialogue_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.dialogues.id", ondelete="CASCADE"), nullable=False)
     
     first_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
     last_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
@@ -112,9 +124,9 @@ class Exchange(Base):
     
     computed_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    sequence = relationship("LinearSequence", back_populates="exchanges")
     exchange_messages = relationship("ExchangeMessage", back_populates="exchange", cascade="all, delete-orphan")
     content = relationship("ExchangeContent", back_populates="exchange", uselist=False, cascade="all, delete-orphan")
+    sequence_exchanges = relationship("SequenceExchange", back_populates="exchange")
 
 
 class ExchangeMessage(Base):
@@ -127,6 +139,19 @@ class ExchangeMessage(Base):
     position = Column(Integer, nullable=False)
     
     exchange = relationship("Exchange", back_populates="exchange_messages")
+
+
+class SequenceExchange(Base):
+    """Links sequences to exchanges (many-to-many)."""
+    __tablename__ = "sequence_exchanges"
+    __table_args__ = {"schema": "derived"}
+    
+    sequence_id = Column(PG_UUID(as_uuid=True), ForeignKey("derived.linear_sequences.id", ondelete="CASCADE"), primary_key=True)
+    exchange_id = Column(PG_UUID(as_uuid=True), ForeignKey("derived.exchanges.id", ondelete="CASCADE"), primary_key=True)
+    position = Column(Integer, nullable=False)
+    
+    sequence = relationship("LinearSequence", back_populates="sequence_exchanges")
+    exchange = relationship("Exchange", back_populates="sequence_exchanges")
 
 
 class ExchangeContent(Base):
@@ -153,9 +178,13 @@ class ExchangeContent(Base):
     exchange = relationship("Exchange", back_populates="content")
 
 
-class Label(Base):
-    """Polymorphic label for any entity."""
-    __tablename__ = "labels"
+# ============================================================
+# Annotations
+# ============================================================
+
+class Annotation(Base):
+    """Polymorphic annotation for any entity."""
+    __tablename__ = "annotations"
     __table_args__ = {"schema": "derived"}
     
     id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
@@ -163,9 +192,10 @@ class Label(Base):
     entity_type = Column(String, nullable=False)
     entity_id = Column(PG_UUID(as_uuid=True), nullable=False)
     
-    label_type = Column(String, nullable=False)
-    label_value = Column(String, nullable=False)
-    label_data = Column(JSONB)
+    annotation_type = Column(String, nullable=False)  # 'tag', 'title', 'summary', etc.
+    annotation_key = Column(String)  # optional sub-key
+    annotation_value = Column(String, nullable=False)
+    annotation_data = Column(JSONB)
     
     confidence = Column(Float)
     source = Column(String, nullable=False)
@@ -173,8 +203,12 @@ class Label(Base):
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     superseded_at = Column(DateTime(timezone=True))
-    superseded_by = Column(PG_UUID(as_uuid=True), ForeignKey("derived.labels.id"))
+    superseded_by = Column(PG_UUID(as_uuid=True), ForeignKey("derived.annotations.id"))
 
+
+# ============================================================
+# Content Hashes
+# ============================================================
 
 class ContentHash(Base):
     """Content hash for deduplication."""
@@ -185,7 +219,7 @@ class ContentHash(Base):
     
     entity_type = Column(String, nullable=False)
     entity_id = Column(PG_UUID(as_uuid=True), nullable=False)
-    hash_scope = Column(String, nullable=False)
+    hash_scope = Column(String, nullable=False)  # 'full' | 'user' | 'assistant'
     
     hash_sha256 = Column(String, nullable=False)
     hash_simhash = Column(String)
