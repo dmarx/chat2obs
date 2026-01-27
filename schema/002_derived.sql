@@ -81,26 +81,30 @@ create table if not exists derived.sequence_messages (
 
 create table if not exists derived.exchanges (
     id                      uuid primary key default gen_random_uuid(),
-    sequence_id             uuid not null references derived.linear_sequences on delete cascade,
-    position                int not null,
+    dialogue_id             uuid not null references raw.dialogues on delete cascade,
     
+    -- Message range (on a tree path)
     first_message_id        uuid not null references raw.messages,
     last_message_id         uuid not null references raw.messages,
     
+    -- Stats
     message_count           int not null,
     user_message_count      int not null,
     assistant_message_count int not null,
     
+    -- Continuation tracking
     is_continuation         boolean default false,
     continuation_of_id      uuid references derived.exchanges,
     merged_count            int default 1,
     
+    -- Timestamps from messages
     started_at              timestamptz,
     ended_at                timestamptz,
     
     computed_at             timestamptz default now(),
     
-    unique (sequence_id, position)
+    -- An exchange is uniquely identified by its message range
+    unique (dialogue_id, first_message_id, last_message_id)
 );
 
 create table if not exists derived.exchange_messages (
@@ -109,6 +113,20 @@ create table if not exists derived.exchange_messages (
     position                int not null,
     
     primary key (exchange_id, message_id)
+);
+
+-- ============================================================
+-- derived.sequence_exchanges
+-- Links sequences to exchanges (many-to-many).
+-- A sequence is an ordered list of exchanges.
+-- ============================================================
+
+create table if not exists derived.sequence_exchanges (
+    sequence_id             uuid not null references derived.linear_sequences on delete cascade,
+    exchange_id             uuid not null references derived.exchanges on delete cascade,
+    position                int not null,
+    
+    primary key (sequence_id, exchange_id)
 );
 
 -- ============================================================
@@ -134,28 +152,36 @@ create table if not exists derived.exchange_content (
 );
 
 -- ============================================================
--- derived.labels
+-- derived.annotations
+-- Polymorphic annotation system for any entity.
+-- Supports: tags (filtering), metadata (titles), multi-value (export).
 -- ============================================================
 
-create table if not exists derived.labels (
+create table if not exists derived.annotations (
     id                      uuid primary key default gen_random_uuid(),
     
-    entity_type             text not null,
+    -- Polymorphic target
+    entity_type             text not null,  -- 'message', 'exchange', 'dialogue', 'content_part'
     entity_id               uuid not null,
     
-    label_type              text not null,
-    label_value             text not null,
-    label_data              jsonb,
+    -- Annotation content
+    annotation_type         text not null,  -- 'tag', 'title', 'summary', 'topic', 'quality', etc.
+    annotation_key          text,           -- optional sub-key (e.g., 'language' for code blocks)
+    annotation_value        text not null,  -- the actual value
+    annotation_data         jsonb,          -- additional structured data
     
+    -- Provenance
     confidence              float,
-    source                  text not null,
+    source                  text not null,  -- 'manual', 'heuristic', 'model'
     source_version          text,
     
+    -- Lifecycle
     created_at              timestamptz default now(),
     superseded_at           timestamptz,
-    superseded_by           uuid references derived.labels,
+    superseded_by           uuid references derived.annotations,
     
-    unique nulls not distinct (entity_type, entity_id, label_type, label_value, superseded_at)
+    -- Unique active annotation per (entity, type, key, value)
+    unique nulls not distinct (entity_type, entity_id, annotation_type, annotation_key, annotation_value, superseded_at)
 );
 
 -- ============================================================
@@ -167,7 +193,7 @@ create table if not exists derived.content_hashes (
     
     entity_type             text not null,
     entity_id               uuid not null,
-    hash_scope              text not null,
+    hash_scope              text not null,  -- 'full' | 'user' | 'assistant'
     
     hash_sha256             text not null,
     hash_simhash            text,
@@ -180,19 +206,36 @@ create table if not exists derived.content_hashes (
 );
 
 -- ============================================================
--- Indexes
+-- DERIVED INDEXES
 -- ============================================================
 
 create index if not exists idx_derived_trees_linear on derived.dialogue_trees(is_linear);
+create index if not exists idx_derived_trees_branched on derived.dialogue_trees(branch_count) where branch_count > 0;
+
 create index if not exists idx_derived_paths_dialogue on derived.message_paths(dialogue_id);
+create index if not exists idx_derived_paths_depth on derived.message_paths(depth);
 create index if not exists idx_derived_paths_leaf on derived.message_paths(dialogue_id) where is_leaf;
 create index if not exists idx_derived_paths_primary on derived.message_paths(dialogue_id) where is_on_primary_path;
+
 create index if not exists idx_derived_sequences_dialogue on derived.linear_sequences(dialogue_id);
 create index if not exists idx_derived_sequences_primary on derived.linear_sequences(dialogue_id) where is_primary;
 create index if not exists idx_derived_sequence_msgs_seq on derived.sequence_messages(sequence_id, position);
-create index if not exists idx_derived_exchanges_sequence on derived.exchanges(sequence_id, position);
-create index if not exists idx_derived_exchange_content_hash on derived.exchange_content(assistant_text_hash);
-create index if not exists idx_derived_labels_entity on derived.labels(entity_type, entity_id) where superseded_at is null;
-create index if not exists idx_derived_labels_type on derived.labels(label_type, label_value) where superseded_at is null;
+create index if not exists idx_derived_sequence_msgs_msg on derived.sequence_messages(message_id);
+
+create index if not exists idx_derived_exchanges_dialogue on derived.exchanges(dialogue_id);
+create index if not exists idx_derived_exchanges_first_msg on derived.exchanges(first_message_id);
+create index if not exists idx_derived_exchanges_last_msg on derived.exchanges(last_message_id);
+create index if not exists idx_derived_exchange_msgs_exch on derived.exchange_messages(exchange_id, position);
+
+create index if not exists idx_derived_seq_exchanges_seq on derived.sequence_exchanges(sequence_id, position);
+create index if not exists idx_derived_seq_exchanges_exch on derived.sequence_exchanges(exchange_id);
+
+create index if not exists idx_derived_exchange_content_asst_hash on derived.exchange_content(assistant_text_hash);
+create index if not exists idx_derived_exchange_content_full_hash on derived.exchange_content(full_text_hash);
+
+create index if not exists idx_derived_annotations_entity on derived.annotations(entity_type, entity_id) where superseded_at is null;
+create index if not exists idx_derived_annotations_type on derived.annotations(annotation_type, annotation_value) where superseded_at is null;
+create index if not exists idx_derived_annotations_source on derived.annotations(source) where superseded_at is null;
+
 create index if not exists idx_derived_hashes_hash on derived.content_hashes(hash_sha256);
 create index if not exists idx_derived_hashes_entity on derived.content_hashes(entity_type, entity_id);
