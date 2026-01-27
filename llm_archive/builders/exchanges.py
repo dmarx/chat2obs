@@ -1,5 +1,5 @@
 # llm_archive/builders/exchanges.py
-"""Exchange building from linear sequences."""
+"""Exchange building from dialogue trees."""
 
 import hashlib
 from dataclasses import dataclass, field
@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from llm_archive.models import (
-    Message, ContentPart,
+    Dialogue, Message, ContentPart,
     LinearSequence, SequenceMessage,
-    Exchange, ExchangeMessage, ExchangeContent,
+    Exchange, ExchangeMessage, SequenceExchange, ExchangeContent,
 )
 
 
@@ -33,31 +33,6 @@ class MessageInfo:
     role: str
     created_at: datetime | None
     text_content: str | None
-
-
-@dataclass
-class DyadicExchange:
-    """Pre-merge exchange unit."""
-    messages: list[MessageInfo] = field(default_factory=list)
-    
-    @property
-    def first_user_text(self) -> str | None:
-        for msg in self.messages:
-            if msg.role == 'user':
-                return msg.text_content
-        return None
-    
-    @property
-    def started_at(self) -> datetime | None:
-        if self.messages:
-            return self.messages[0].created_at
-        return None
-    
-    @property
-    def ended_at(self) -> datetime | None:
-        if self.messages:
-            return self.messages[-1].created_at
-        return None
 
 
 def is_continuation_prompt(text: str | None) -> bool:
@@ -94,81 +69,136 @@ def compute_hash(text: str | None) -> str | None:
 
 class ExchangeBuilder:
     """
-    Builds exchanges from linear sequences.
+    Builds exchanges from dialogue trees.
     
-    An exchange is a logical unit consisting of:
-    - One or more user messages (prompts)
-    - One or more assistant messages (responses)
+    An exchange is a dyadic unit:
+    - USER message(s) followed by ASSISTANT response(s)
+    - Ends when next USER message starts a new topic (not a continuation)
     
-    Continuation prompts are detected and merged into single exchanges.
+    Exchanges are built from the TREE and identified by 
+    (dialogue_id, first_message_id, last_message_id).
+    
+    Sequences then REFERENCE exchanges via sequence_exchanges join table.
+    This avoids duplicate exchange creation for shared prefixes.
     """
     
     def __init__(self, session: Session):
         self.session = session
+        self._exchange_cache: dict[tuple[UUID, UUID, UUID], UUID] = {}  # (dialogue, first, last) -> exchange_id
     
     def build_all(self) -> dict[str, int]:
-        """Build exchanges for all linear sequences."""
-        sequences = self.session.query(LinearSequence).all()
+        """Build exchanges for all dialogues."""
+        dialogues = self.session.query(Dialogue).all()
         
         counts = {
-            'sequences': 0,
+            'dialogues': 0,
             'exchanges': 0,
             'exchange_messages': 0,
+            'sequence_links': 0,
             'continuations': 0,
         }
         
-        for sequence in sequences:
+        for dialogue in dialogues:
             try:
-                result = self.build_for_sequence(sequence.id)
-                counts['sequences'] += 1
+                result = self.build_for_dialogue(dialogue.id)
+                counts['dialogues'] += 1
                 counts['exchanges'] += result['exchanges']
                 counts['exchange_messages'] += result['exchange_messages']
+                counts['sequence_links'] += result['sequence_links']
                 counts['continuations'] += result['continuations']
             except Exception as e:
-                logger.error(f"Failed to build exchanges for sequence {sequence.id}: {e}")
+                logger.error(f"Failed to build exchanges for {dialogue.id}: {e}")
                 self.session.rollback()
         
         self.session.commit()
         logger.info(f"Exchange building complete: {counts}")
         return counts
     
-    def build_for_sequence(self, sequence_id: UUID) -> dict[str, int]:
-        """Build exchanges for a single linear sequence."""
-        # Clear existing
-        self._clear_derived(sequence_id)
+    def build_for_dialogue(self, dialogue_id: UUID) -> dict[str, int]:
+        """Build exchanges for a single dialogue."""
+        # Clear cache for this dialogue
+        self._exchange_cache = {k: v for k, v in self._exchange_cache.items() if k[0] != dialogue_id}
         
-        # Load message info in sequence order
-        messages = self._load_sequence_messages(sequence_id)
+        # Clear existing sequence_exchanges links for this dialogue
+        self._clear_sequence_links(dialogue_id)
         
-        if not messages:
-            return {'exchanges': 0, 'exchange_messages': 0, 'continuations': 0}
+        # Get all sequences for this dialogue
+        sequences = (
+            self.session.query(LinearSequence)
+            .filter(LinearSequence.dialogue_id == dialogue_id)
+            .all()
+        )
         
-        # Create dyadic exchanges
-        dyadic = self._create_dyadic_exchanges(messages)
+        total_exchanges = 0
+        total_messages = 0
+        total_links = 0
+        total_continuations = 0
         
-        # Merge continuations
-        merged = self._merge_continuations(dyadic)
-        
-        # Persist exchanges
-        exchange_count = 0
-        message_count = 0
-        continuation_count = 0
-        
-        for position, group in enumerate(merged):
-            exchange, msg_count = self._persist_exchange(
-                sequence_id, position, group, len(group) > 1
-            )
-            exchange_count += 1
-            message_count += msg_count
-            if len(group) > 1:
-                continuation_count += 1
+        for sequence in sequences:
+            result = self._build_for_sequence(sequence)
+            total_exchanges += result['exchanges']
+            total_messages += result['exchange_messages']
+            total_links += result['sequence_links']
+            total_continuations += result['continuations']
         
         self.session.flush()
         
         return {
-            'exchanges': exchange_count,
-            'exchange_messages': message_count,
-            'continuations': continuation_count,
+            'exchanges': total_exchanges,
+            'exchange_messages': total_messages,
+            'sequence_links': total_links,
+            'continuations': total_continuations,
+        }
+    
+    def _build_for_sequence(self, sequence: LinearSequence) -> dict[str, int]:
+        """Build/link exchanges for a single sequence."""
+        # Load messages in order
+        messages = self._load_sequence_messages(sequence.id)
+        
+        if not messages:
+            return {'exchanges': 0, 'exchange_messages': 0, 'sequence_links': 0, 'continuations': 0}
+        
+        # Group into dyadic exchanges
+        dyadic_groups = self._create_dyadic_groups(messages)
+        
+        # Merge continuations
+        merged_groups = self._merge_continuations(dyadic_groups)
+        
+        # Create/find exchanges and link to sequence
+        exchanges_created = 0
+        messages_created = 0
+        links_created = 0
+        continuations = 0
+        
+        for position, (group_messages, is_continuation) in enumerate(merged_groups):
+            if not group_messages:
+                continue
+            
+            exchange_id, was_new, msg_count = self._get_or_create_exchange(
+                sequence.dialogue_id, group_messages, is_continuation
+            )
+            
+            if was_new:
+                exchanges_created += 1
+                messages_created += msg_count
+            
+            if is_continuation:
+                continuations += 1
+            
+            # Link sequence to exchange
+            seq_ex = SequenceExchange(
+                sequence_id=sequence.id,
+                exchange_id=exchange_id,
+                position=position,
+            )
+            self.session.add(seq_ex)
+            links_created += 1
+        
+        return {
+            'exchanges': exchanges_created,
+            'exchange_messages': messages_created,
+            'sequence_links': links_created,
+            'continuations': continuations,
         }
     
     def _load_sequence_messages(self, sequence_id: UUID) -> list[MessageInfo]:
@@ -187,7 +217,6 @@ class ExchangeBuilder:
         
         messages = []
         for msg_id, role, created_at in results:
-            # Get text content
             text_content = self._get_message_text(msg_id)
             messages.append(MessageInfo(
                 message_id=msg_id,
@@ -211,92 +240,135 @@ class ExchangeBuilder:
         texts = [p[0] for p in parts if p[0]]
         return '\n'.join(texts) if texts else None
     
-    def _create_dyadic_exchanges(self, messages: list[MessageInfo]) -> list[DyadicExchange]:
-        """Create simple user-assistant dyadic exchanges."""
-        dyadic = []
-        current = DyadicExchange()
+    def _create_dyadic_groups(self, messages: list[MessageInfo]) -> list[list[MessageInfo]]:
+        """
+        Group messages into dyadic exchanges.
+        
+        A dyadic exchange starts with USER message(s) and includes
+        all following ASSISTANT message(s) until the next USER message.
+        """
+        groups = []
+        current_group = []
         
         for msg in messages:
             if msg.role not in ('user', 'assistant'):
                 continue
             
-            current.messages.append(msg)
+            # Start new group on USER after ASSISTANT
+            if msg.role == 'user' and current_group:
+                last_role = current_group[-1].role if current_group else None
+                if last_role == 'assistant':
+                    groups.append(current_group)
+                    current_group = []
             
-            # Complete pair: user followed by assistant
-            if (len(current.messages) >= 2 and
-                current.messages[-2].role == 'user' and
-                current.messages[-1].role == 'assistant'):
-                
-                dyadic.append(current)
-                current = DyadicExchange()
+            current_group.append(msg)
         
-        # Handle trailing messages
-        if current.messages:
-            dyadic.append(current)
+        # Don't forget the last group
+        if current_group:
+            groups.append(current_group)
         
-        return dyadic
+        return groups
     
     def _merge_continuations(
         self, 
-        dyadic: list[DyadicExchange]
-    ) -> list[list[DyadicExchange]]:
-        """Merge exchanges when continuations are detected."""
-        if not dyadic:
+        groups: list[list[MessageInfo]]
+    ) -> list[tuple[list[MessageInfo], bool]]:
+        """
+        Merge groups when USER message is a continuation signal.
+        
+        Returns list of (messages, is_continuation) tuples.
+        """
+        if not groups:
             return []
         
-        merged = []
-        current_group = [dyadic[0]]
+        result = []
+        accumulated = groups[0]
         
-        for i in range(1, len(dyadic)):
-            d = dyadic[i]
+        for i in range(1, len(groups)):
+            group = groups[i]
             
-            if is_continuation_prompt(d.first_user_text):
-                current_group.append(d)
+            # Check if first user message in this group is a continuation
+            first_user = next((m for m in group if m.role == 'user'), None)
+            
+            if first_user and is_continuation_prompt(first_user.text_content):
+                # Merge with accumulated
+                accumulated.extend(group)
             else:
-                merged.append(current_group)
-                current_group = [d]
+                # Save accumulated and start new
+                is_continuation = len(result) > 0 and any(
+                    is_continuation_prompt(m.text_content) 
+                    for m in accumulated if m.role == 'user'
+                )
+                result.append((accumulated, is_continuation))
+                accumulated = group
         
-        merged.append(current_group)
-        return merged
+        # Don't forget the last accumulated group
+        if accumulated:
+            is_continuation = any(
+                is_continuation_prompt(m.text_content) 
+                for m in accumulated if m.role == 'user'
+            )
+            result.append((accumulated, is_continuation))
+        
+        return result
     
-    def _persist_exchange(
+    def _get_or_create_exchange(
         self,
-        sequence_id: UUID,
-        position: int,
-        group: list[DyadicExchange],
+        dialogue_id: UUID,
+        messages: list[MessageInfo],
         is_continuation: bool,
-    ) -> tuple[Exchange, int]:
-        """Persist an exchange and its messages."""
-        # Collect all messages
-        all_messages = []
-        for d in group:
-            all_messages.extend(d.messages)
+    ) -> tuple[UUID, bool, int]:
+        """
+        Get existing exchange or create new one.
         
-        if not all_messages:
-            raise ValueError("Empty exchange")
+        Returns (exchange_id, was_newly_created, message_count).
+        """
+        if not messages:
+            raise ValueError("Empty message list")
         
-        # Compute stats
-        user_count = sum(1 for m in all_messages if m.role == 'user')
-        assistant_count = sum(1 for m in all_messages if m.role == 'assistant')
+        first_id = messages[0].message_id
+        last_id = messages[-1].message_id
+        
+        cache_key = (dialogue_id, first_id, last_id)
+        
+        # Check cache
+        if cache_key in self._exchange_cache:
+            return self._exchange_cache[cache_key], False, 0
+        
+        # Check database
+        existing = (
+            self.session.query(Exchange)
+            .filter(Exchange.dialogue_id == dialogue_id)
+            .filter(Exchange.first_message_id == first_id)
+            .filter(Exchange.last_message_id == last_id)
+            .first()
+        )
+        
+        if existing:
+            self._exchange_cache[cache_key] = existing.id
+            return existing.id, False, 0
+        
+        # Create new exchange
+        user_count = sum(1 for m in messages if m.role == 'user')
+        assistant_count = sum(1 for m in messages if m.role == 'assistant')
         
         exchange = Exchange(
-            sequence_id=sequence_id,
-            position=position,
-            first_message_id=all_messages[0].message_id,
-            last_message_id=all_messages[-1].message_id,
-            message_count=len(all_messages),
+            dialogue_id=dialogue_id,
+            first_message_id=first_id,
+            last_message_id=last_id,
+            message_count=len(messages),
             user_message_count=user_count,
             assistant_message_count=assistant_count,
             is_continuation=is_continuation,
-            merged_count=len(group),
-            started_at=all_messages[0].created_at,
-            ended_at=all_messages[-1].created_at,
+            merged_count=1 if not is_continuation else user_count,
+            started_at=messages[0].created_at,
+            ended_at=messages[-1].created_at,
         )
         self.session.add(exchange)
         self.session.flush()
         
         # Create exchange messages
-        for pos, msg in enumerate(all_messages):
+        for pos, msg in enumerate(messages):
             ex_msg = ExchangeMessage(
                 exchange_id=exchange.id,
                 message_id=msg.message_id,
@@ -305,15 +377,22 @@ class ExchangeBuilder:
             self.session.add(ex_msg)
         
         # Create exchange content
-        user_texts = [m.text_content for m in all_messages if m.role == 'user' and m.text_content]
-        assistant_texts = [m.text_content for m in all_messages if m.role == 'assistant' and m.text_content]
+        self._create_exchange_content(exchange.id, messages)
+        
+        self._exchange_cache[cache_key] = exchange.id
+        return exchange.id, True, len(messages)
+    
+    def _create_exchange_content(self, exchange_id: UUID, messages: list[MessageInfo]):
+        """Create aggregated content for an exchange."""
+        user_texts = [m.text_content for m in messages if m.role == 'user' and m.text_content]
+        assistant_texts = [m.text_content for m in messages if m.role == 'assistant' and m.text_content]
         
         user_text = '\n\n'.join(user_texts) if user_texts else None
         assistant_text = '\n\n'.join(assistant_texts) if assistant_texts else None
         full_text = '\n\n'.join(filter(None, [user_text, assistant_text]))
         
         content = ExchangeContent(
-            exchange_id=exchange.id,
+            exchange_id=exchange_id,
             user_text=user_text,
             assistant_text=assistant_text,
             full_text=full_text if full_text else None,
@@ -325,32 +404,16 @@ class ExchangeBuilder:
             total_word_count=len(full_text.split()) if full_text else 0,
         )
         self.session.add(content)
-        
-        return exchange, len(all_messages)
     
-    def _clear_derived(self, sequence_id: UUID):
-        """Clear existing exchange data for a sequence."""
-        sid = str(sequence_id)
-        
+    def _clear_sequence_links(self, dialogue_id: UUID):
+        """Clear existing sequence_exchanges for this dialogue."""
         self.session.execute(
             text("""
-                DELETE FROM derived.exchange_content
-                WHERE exchange_id IN (
-                    SELECT id FROM derived.exchanges WHERE sequence_id = :sid
+                DELETE FROM derived.sequence_exchanges 
+                WHERE sequence_id IN (
+                    SELECT id FROM derived.linear_sequences 
+                    WHERE dialogue_id = :did
                 )
             """),
-            {'sid': sid}
-        )
-        self.session.execute(
-            text("""
-                DELETE FROM derived.exchange_messages
-                WHERE exchange_id IN (
-                    SELECT id FROM derived.exchanges WHERE sequence_id = :sid
-                )
-            """),
-            {'sid': sid}
-        )
-        self.session.execute(
-            text("DELETE FROM derived.exchanges WHERE sequence_id = :sid"),
-            {'sid': sid}
+            {'did': str(dialogue_id)}
         )
