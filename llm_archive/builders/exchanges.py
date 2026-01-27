@@ -277,12 +277,14 @@ class ExchangeBuilder:
         Merge groups when USER message is a continuation signal.
         
         Returns list of (messages, is_continuation) tuples.
+        The is_continuation flag indicates the exchange contains merged continuation prompts.
         """
         if not groups:
             return []
         
         result = []
         accumulated = groups[0]
+        was_merged = False  # Track if any merging happened for this accumulated group
         
         for i in range(1, len(groups)):
             group = groups[i]
@@ -293,22 +295,16 @@ class ExchangeBuilder:
             if first_user and is_continuation_prompt(first_user.text_content):
                 # Merge with accumulated
                 accumulated.extend(group)
+                was_merged = True
             else:
                 # Save accumulated and start new
-                is_continuation = len(result) > 0 and any(
-                    is_continuation_prompt(m.text_content) 
-                    for m in accumulated if m.role == 'user'
-                )
-                result.append((accumulated, is_continuation))
+                result.append((accumulated, was_merged))
                 accumulated = group
+                was_merged = False
         
         # Don't forget the last accumulated group
         if accumulated:
-            is_continuation = any(
-                is_continuation_prompt(m.text_content) 
-                for m in accumulated if m.role == 'user'
-            )
-            result.append((accumulated, is_continuation))
+            result.append((accumulated, was_merged))
         
         return result
     
