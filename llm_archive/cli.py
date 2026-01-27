@@ -11,12 +11,12 @@ from llm_archive.config import DATABASE_URL
 from llm_archive.db import get_session, init_schema, reset_schema
 from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
 from llm_archive.builders import TreeBuilder, ExchangeBuilder, HashBuilder
-from llm_archive.labelers import (
-    LabelManager,
-    WikiLinkLabeler,
-    CodeBlockLabeler,
-    LatexLabeler,
-    ContinuationLabeler,
+from llm_archive.annotators import (
+    AnnotationManager,
+    WikiLinkAnnotator,
+    CodeBlockAnnotator,
+    LatexAnnotator,
+    ContinuationAnnotator,
 )
 
 
@@ -96,7 +96,7 @@ class CLI:
         return counts
     
     def build_exchanges(self):
-        """Build exchanges from linear sequences."""
+        """Build exchanges from dialogue trees."""
         with get_session(self.db_url) as session:
             builder = ExchangeBuilder(session)
             counts = builder.build_all()
@@ -120,17 +120,17 @@ class CLI:
         return results
     
     # ================================================================
-    # Labeling
+    # Annotations
     # ================================================================
     
-    def label(self):
-        """Run all labelers."""
+    def annotate(self):
+        """Run all annotators."""
         with get_session(self.db_url) as session:
-            manager = LabelManager(session)
-            manager.register(WikiLinkLabeler)
-            manager.register(CodeBlockLabeler)
-            manager.register(LatexLabeler)
-            manager.register(ContinuationLabeler)
+            manager = AnnotationManager(session)
+            manager.register(WikiLinkAnnotator)
+            manager.register(CodeBlockAnnotator)
+            manager.register(LatexAnnotator)
+            manager.register(ContinuationAnnotator)
             results = manager.run_all()
         
         return results
@@ -154,7 +154,7 @@ class CLI:
         
         logger.info(f"Found {len(duplicates)} duplicate groups")
         
-        for dup in duplicates[:10]:  # Show first 10
+        for dup in duplicates[:10]:
             print(f"\nHash: {dup['hash'][:16]}...")
             print(f"  Type: {dup['entity_type']}, Scope: {dup['scope']}")
             print(f"  Count: {dup['count']}")
@@ -201,8 +201,8 @@ class CLI:
                 text("SELECT COUNT(*) FROM derived.exchanges")
             ).scalar()
             
-            stats['labels'] = session.execute(
-                text("SELECT COUNT(*) FROM derived.labels WHERE superseded_at IS NULL")
+            stats['annotations'] = session.execute(
+                text("SELECT COUNT(*) FROM derived.annotations WHERE superseded_at IS NULL")
             ).scalar()
             
             stats['content_hashes'] = session.execute(
@@ -241,7 +241,7 @@ class CLI:
         print(f"  Dialogue Trees: {stats['dialogue_trees']}")
         print(f"  Linear Sequences: {stats['linear_sequences']}")
         print(f"  Exchanges: {stats['exchanges']}")
-        print(f"  Labels: {stats['labels']}")
+        print(f"  Annotations: {stats['annotations']}")
         print(f"  Content Hashes: {stats['content_hashes']}")
         
         if stats.get('tree_analysis'):
@@ -265,7 +265,7 @@ class CLI:
         init_db: bool = False,
         schema_dir: str = "schema",
     ):
-        """Run full pipeline: import, build, label."""
+        """Run full pipeline: import, build, annotate."""
         results = {}
         
         if init_db:
@@ -281,8 +281,8 @@ class CLI:
         # Build
         results['build'] = self.build_all()
         
-        # Label
-        results['label'] = self.label()
+        # Annotate
+        results['annotate'] = self.annotate()
         
         # Stats
         self.stats()
