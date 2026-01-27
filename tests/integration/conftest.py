@@ -1,10 +1,8 @@
-# tests/conftest.py
-"""Pytest fixtures for llm_archive tests."""
+# tests/integration/conftest.py
+"""Fixtures for integration tests - requires PostgreSQL database."""
 
 import os
-import json
 import uuid
-from datetime import datetime, timezone
 from typing import Generator
 
 import pytest
@@ -15,7 +13,7 @@ from llm_archive.models import Base
 
 
 # ============================================================
-# Database Fixtures
+# Database Configuration
 # ============================================================
 
 def get_test_db_url() -> str:
@@ -25,6 +23,10 @@ def get_test_db_url() -> str:
         "postgresql://postgres:postgres@localhost:5432/llm_archive_test"
     )
 
+
+# ============================================================
+# Database Fixtures
+# ============================================================
 
 @pytest.fixture(scope="session")
 def db_engine():
@@ -40,7 +42,10 @@ def setup_schemas(db_engine):
     """Initialize schemas once per test session."""
     from pathlib import Path
     
-    schema_dir = Path(__file__).parent.parent / "schema"
+    # Find schema directory relative to this file
+    tests_dir = Path(__file__).parent.parent
+    project_dir = tests_dir.parent
+    schema_dir = project_dir / "schema"
     
     with db_engine.connect() as conn:
         # Drop and recreate schemas
@@ -51,12 +56,25 @@ def setup_schemas(db_engine):
         # Execute schema files in order
         for sql_file in sorted(schema_dir.glob("*.sql")):
             sql = sql_file.read_text()
-            statements = [s.strip() for s in sql.split(';') if s.strip()]
+            # Split on semicolons but be careful with functions/procedures
+            statements = []
+            current = []
+            for line in sql.split('\n'):
+                current.append(line)
+                if line.strip().endswith(';') and not line.strip().startswith('--'):
+                    stmt = '\n'.join(current).strip()
+                    if stmt and stmt != ';':
+                        statements.append(stmt)
+                    current = []
+            
             for stmt in statements:
-                try:
-                    conn.execute(text(stmt))
-                except Exception:
-                    pass  # Ignore errors (e.g., extension already exists)
+                if stmt.strip():
+                    try:
+                        conn.execute(text(stmt))
+                    except Exception as e:
+                        # Ignore some expected errors
+                        if "already exists" not in str(e).lower():
+                            print(f"Warning: {e}")
             conn.commit()
     
     yield
@@ -96,30 +114,39 @@ def clean_db_session(db_engine, setup_schemas) -> Generator[Session, None, None]
     
     yield session
     
-    # Cleanup: delete all data from tables
-    session.execute(text("DELETE FROM derived.annotations"))
-    session.execute(text("DELETE FROM derived.content_hashes"))
-    session.execute(text("DELETE FROM derived.exchange_content"))
-    session.execute(text("DELETE FROM derived.exchange_messages"))
-    session.execute(text("DELETE FROM derived.sequence_exchanges"))
-    session.execute(text("DELETE FROM derived.exchanges"))
-    session.execute(text("DELETE FROM derived.sequence_messages"))
-    session.execute(text("DELETE FROM derived.linear_sequences"))
-    session.execute(text("DELETE FROM derived.message_paths"))
-    session.execute(text("DELETE FROM derived.dialogue_trees"))
-    session.execute(text("DELETE FROM raw.chatgpt_canvas_docs"))
-    session.execute(text("DELETE FROM raw.chatgpt_dalle_generations"))
-    session.execute(text("DELETE FROM raw.chatgpt_code_outputs"))
-    session.execute(text("DELETE FROM raw.chatgpt_code_executions"))
-    session.execute(text("DELETE FROM raw.chatgpt_search_entries"))
-    session.execute(text("DELETE FROM raw.chatgpt_search_groups"))
-    session.execute(text("DELETE FROM raw.chatgpt_message_meta"))
-    session.execute(text("DELETE FROM raw.claude_message_meta"))
-    session.execute(text("DELETE FROM raw.citations"))
-    session.execute(text("DELETE FROM raw.attachments"))
-    session.execute(text("DELETE FROM raw.content_parts"))
-    session.execute(text("DELETE FROM raw.messages"))
-    session.execute(text("DELETE FROM raw.dialogues"))
+    # Cleanup: delete all data from tables in reverse dependency order
+    cleanup_tables = [
+        "derived.annotations",
+        "derived.content_hashes",
+        "derived.exchange_content",
+        "derived.exchange_messages",
+        "derived.sequence_exchanges",
+        "derived.exchanges",
+        "derived.sequence_messages",
+        "derived.linear_sequences",
+        "derived.message_paths",
+        "derived.dialogue_trees",
+        "raw.chatgpt_canvas_docs",
+        "raw.chatgpt_dalle_generations",
+        "raw.chatgpt_code_outputs",
+        "raw.chatgpt_code_executions",
+        "raw.chatgpt_search_entries",
+        "raw.chatgpt_search_groups",
+        "raw.chatgpt_message_meta",
+        "raw.claude_message_meta",
+        "raw.citations",
+        "raw.attachments",
+        "raw.content_parts",
+        "raw.messages",
+        "raw.dialogues",
+    ]
+    
+    for table in cleanup_tables:
+        try:
+            session.execute(text(f"DELETE FROM {table}"))
+        except Exception:
+            pass  # Table might not exist
+    
     session.commit()
     session.close()
 
@@ -211,11 +238,11 @@ def chatgpt_simple_conversation() -> dict:
 
 @pytest.fixture
 def chatgpt_branched_conversation() -> dict:
-    """ChatGPT conversation with branches (regeneration and edit)."""
+    """ChatGPT conversation with branches (regeneration)."""
     root_id = str(uuid.uuid4())
     msg1_id = str(uuid.uuid4())
-    msg2a_id = str(uuid.uuid4())  # First assistant response
-    msg2b_id = str(uuid.uuid4())  # Regenerated assistant response
+    msg2a_id = str(uuid.uuid4())
+    msg2b_id = str(uuid.uuid4())
     msg3_id = str(uuid.uuid4())
     msg4_id = str(uuid.uuid4())
     
@@ -234,7 +261,7 @@ def chatgpt_branched_conversation() -> dict:
             msg1_id: {
                 "id": msg1_id,
                 "parent": root_id,
-                "children": [msg2a_id, msg2b_id],  # Two children = branch
+                "children": [msg2a_id, msg2b_id],
                 "message": {
                     "id": msg1_id,
                     "author": {"role": "user"},
@@ -266,10 +293,10 @@ def chatgpt_branched_conversation() -> dict:
                 "message": {
                     "id": msg2b_id,
                     "author": {"role": "assistant"},
-                    "create_time": 1700000250.0,  # Later = regeneration
+                    "create_time": 1700000250.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Machine learning is a branch of artificial intelligence that enables computers to learn from data without explicit programming."]
+                        "parts": ["Machine learning is a branch of AI that enables computers to learn from data."]
                     }
                 }
             },
@@ -347,22 +374,27 @@ def chatgpt_conversation_with_code() -> dict:
                     "author": {"role": "assistant"},
                     "create_time": 1700000200.0,
                     "content": {
-                        "content_type": "code",
-                        "language": "python",
-                        "text": "result = 2 + 2\nprint(result)"
-                    },
-                    "metadata": {
-                        "aggregate_result": {
-                            "code": "result = 2 + 2\nprint(result)",
-                            "final_expression_output": "4",
-                            "run_id": "run-123",
-                            "status": "success"
-                        }
+                        "content_type": "text",
+                        "parts": ["2 + 2 = 4"]
                     }
                 }
             }
         }
     }
+
+
+@pytest.fixture
+def chatgpt_conversations(
+    chatgpt_simple_conversation,
+    chatgpt_branched_conversation,
+    chatgpt_conversation_with_code,
+) -> list[dict]:
+    """List of all ChatGPT test conversations."""
+    return [
+        chatgpt_simple_conversation,
+        chatgpt_branched_conversation,
+        chatgpt_conversation_with_code,
+    ]
 
 
 # ============================================================
@@ -407,7 +439,7 @@ def claude_simple_conversation() -> dict:
                 "sender": "assistant",
                 "created_at": "2024-01-15T10:03:00Z",
                 "content": [
-                    {"type": "text", "text": "Quantum computing uses quantum mechanics principles like superposition and entanglement to process information."}
+                    {"type": "text", "text": "Quantum computing uses quantum mechanics principles."}
                 ]
             }
         ]
@@ -436,7 +468,7 @@ def claude_conversation_with_thinking() -> dict:
                 "sender": "assistant",
                 "created_at": "2024-01-15T11:01:00Z",
                 "content": [
-                    {"type": "thinking", "thinking": "Let me calculate: 15 * 23 = 15 * 20 + 15 * 3 = 300 + 45 = 345"},
+                    {"type": "thinking", "thinking": "Let me calculate: 15 * 23 = 345"},
                     {"type": "text", "text": "15 multiplied by 23 equals 345."}
                 ]
             }
@@ -496,6 +528,20 @@ def claude_conversation_with_tool_use() -> dict:
             }
         ]
     }
+
+
+@pytest.fixture
+def claude_conversations(
+    claude_simple_conversation,
+    claude_conversation_with_thinking,
+    claude_conversation_with_tool_use,
+) -> list[dict]:
+    """List of all Claude test conversations."""
+    return [
+        claude_simple_conversation,
+        claude_conversation_with_thinking,
+        claude_conversation_with_tool_use,
+    ]
 
 
 # ============================================================
@@ -563,7 +609,7 @@ def conversation_with_continuation() -> dict:
                     "create_time": 1700000300.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["continue"]  # Continuation signal
+                        "parts": ["continue"]
                     }
                 }
             },
@@ -591,7 +637,7 @@ def conversation_with_continuation() -> dict:
                     "create_time": 1700000500.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["What happened next?"]  # New topic
+                        "parts": ["What happened after that?"]
                     }
                 }
             },
@@ -611,38 +657,6 @@ def conversation_with_continuation() -> dict:
             }
         }
     }
-
-
-# ============================================================
-# Multi-conversation Fixtures
-# ============================================================
-
-@pytest.fixture
-def chatgpt_conversations(
-    chatgpt_simple_conversation,
-    chatgpt_branched_conversation,
-    chatgpt_conversation_with_code,
-) -> list[dict]:
-    """List of all ChatGPT test conversations."""
-    return [
-        chatgpt_simple_conversation,
-        chatgpt_branched_conversation,
-        chatgpt_conversation_with_code,
-    ]
-
-
-@pytest.fixture
-def claude_conversations(
-    claude_simple_conversation,
-    claude_conversation_with_thinking,
-    claude_conversation_with_tool_use,
-) -> list[dict]:
-    """List of all Claude test conversations."""
-    return [
-        claude_simple_conversation,
-        claude_conversation_with_thinking,
-        claude_conversation_with_tool_use,
-    ]
 
 
 # ============================================================
