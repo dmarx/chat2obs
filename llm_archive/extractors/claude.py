@@ -11,7 +11,9 @@ from llm_archive.models import (
     Dialogue, Message, ContentPart, Citation, Attachment,
     ClaudeMessageMeta,
 )
-from llm_archive.extractors.base import BaseExtractor, parse_timestamp, normalize_role
+from llm_archive.extractors.base import (
+    BaseExtractor, parse_timestamp, normalize_role, safe_get
+)
 
 
 class ClaudeExtractor(BaseExtractor):
@@ -19,36 +21,75 @@ class ClaudeExtractor(BaseExtractor):
     
     SOURCE_ID = 'claude'
     
-    def extract_dialogue(self, raw: dict[str, Any]) -> UUID | None:
-        """Extract a complete Claude conversation."""
+    def __init__(self, session: Session):
+        super().__init__(session)
+    
+    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+        """
+        Extract a complete Claude conversation.
+        
+        Returns:
+            'new' - new dialogue created
+            'updated' - existing dialogue updated
+            'skipped' - existing dialogue unchanged
+            None - extraction failed
+        """
         source_id = raw.get('uuid')
         if not source_id:
-            logger.warning("Conversation missing UUID")
+            logger.warning("Conversation missing UUID, skipping")
             return None
         
-        dialogue = Dialogue(
-            source=self.SOURCE_ID,
-            source_id=source_id,
-            title=raw.get('name'),
-            created_at=parse_timestamp(raw.get('created_at')),
-            updated_at=parse_timestamp(raw.get('updated_at')),
-            source_json=raw,
-        )
-        self.session.add(dialogue)
-        self.session.flush()
+        updated_at = parse_timestamp(raw.get('updated_at'))
         
+        # Check for existing dialogue
+        existing = self.get_existing_dialogue(source_id)
+        
+        if existing:
+            if self.should_update(existing, updated_at):
+                # Update existing - delete old messages and re-extract
+                logger.debug(f"Updating dialogue {source_id}")
+                self._delete_dialogue_messages(existing.id)
+                existing.title = raw.get('name')
+                existing.updated_at = updated_at
+                existing.source_json = raw
+                dialogue_id = existing.id
+                result = 'updated'
+            else:
+                # Skip - no changes
+                logger.debug(f"Skipping unchanged dialogue {source_id}")
+                return 'skipped'
+        else:
+            # Create new dialogue
+            dialogue = Dialogue(
+                source=self.SOURCE_ID,
+                source_id=source_id,
+                title=raw.get('name'),
+                created_at=parse_timestamp(raw.get('created_at')),
+                updated_at=updated_at,
+                source_json=raw,
+            )
+            self.session.add(dialogue)
+            self.session.flush()
+            dialogue_id = dialogue.id
+            result = 'new'
+        
+        # Clear message ID map for this dialogue
         self._message_id_map = {}
         
-        # Claude is linear, so we chain messages via parent_id
+        # Extract messages (Claude is linear, so no tree structure)
         chat_messages = raw.get('chat_messages', [])
         prev_message_id = None
         
         for msg_data in chat_messages:
-            message_id = self._extract_message(dialogue.id, msg_data, prev_message_id)
+            message_id = self._extract_message(dialogue_id, msg_data, prev_message_id)
             if message_id:
                 prev_message_id = message_id
         
-        return dialogue.id
+        return result
+    
+    def _delete_dialogue_messages(self, dialogue_id: UUID):
+        """Delete all messages for a dialogue (cascade deletes content)."""
+        self.session.query(Message).filter(Message.dialogue_id == dialogue_id).delete()
     
     def _extract_message(
         self, 
@@ -66,7 +107,7 @@ class ClaudeExtractor(BaseExtractor):
         message = Message(
             dialogue_id=dialogue_id,
             source_id=source_id,
-            parent_id=parent_id,
+            parent_id=parent_id,  # Linear chain
             role=normalize_role(sender, self.SOURCE_ID),
             author_id=None,
             author_name=None,
@@ -79,17 +120,26 @@ class ClaudeExtractor(BaseExtractor):
         
         self.register_message_id(source_id, message.id)
         
+        # Extract content parts
         self._extract_content_parts(message.id, msg_data)
+        
+        # Extract attachments
         self._extract_attachments(message.id, msg_data)
+        
+        # Extract Claude-specific metadata
         self._extract_claude_meta(message.id, msg_data)
         
         return message.id
     
     def _extract_content_parts(self, message_id: UUID, msg_data: dict[str, Any]):
         """Extract content parts from a Claude message."""
+        # Claude has top-level 'text' field and structured 'content' array
+        
+        # First, add the main text as a content part
         main_text = msg_data.get('text')
         content_array = msg_data.get('content', [])
         
+        # If there's structured content, use that
         if content_array:
             for seq, part in enumerate(content_array):
                 part_type, text_content = self._classify_content_part(part)
@@ -107,11 +157,13 @@ class ClaudeExtractor(BaseExtractor):
                 self.session.add(content_part)
                 self.session.flush()
                 
+                # Extract citations within this content part
                 citations = part.get('citations', [])
                 if citations:
                     self._extract_citations(content_part.id, citations)
         
         elif main_text:
+            # Fall back to main text field
             content_part = ContentPart(
                 message_id=message_id,
                 sequence=0,
@@ -125,6 +177,7 @@ class ClaudeExtractor(BaseExtractor):
         """Classify a Claude content part and extract text."""
         part_type = part.get('type', 'unknown').lower()
         
+        # Map Claude types to our taxonomy
         type_map = {
             'text': 'text',
             'tool_use': 'tool_use',
@@ -134,6 +187,7 @@ class ClaudeExtractor(BaseExtractor):
         
         normalized_type = type_map.get(part_type, part_type)
         
+        # Extract text content based on type
         text_content = None
         
         if part_type == 'text':
@@ -141,10 +195,12 @@ class ClaudeExtractor(BaseExtractor):
         elif part_type == 'thinking':
             text_content = part.get('thinking')
         elif part_type == 'tool_result':
+            # Tool results might have text in various places
             content = part.get('content')
             if isinstance(content, str):
                 text_content = content
             elif isinstance(content, list):
+                # Concatenate text from nested content
                 texts = []
                 for item in content:
                     if isinstance(item, dict) and item.get('text'):
@@ -164,6 +220,9 @@ class ClaudeExtractor(BaseExtractor):
                 content_part_id=content_part_id,
                 source_id=cit.get('uuid'),
                 url=details.get('url'),
+                title=None,  # Claude citations don't include title
+                snippet=None,
+                published_at=None,
                 start_index=cit.get('start_index'),
                 end_index=cit.get('end_index'),
                 citation_type=details.get('type'),
@@ -173,7 +232,9 @@ class ClaudeExtractor(BaseExtractor):
     
     def _extract_attachments(self, message_id: UUID, msg_data: dict[str, Any]):
         """Extract attachments from a Claude message."""
-        for att in msg_data.get('attachments', []):
+        attachments = msg_data.get('attachments', [])
+        
+        for att in attachments:
             attachment = Attachment(
                 message_id=message_id,
                 file_name=att.get('file_name'),
@@ -184,7 +245,10 @@ class ClaudeExtractor(BaseExtractor):
             )
             self.session.add(attachment)
         
-        for f in msg_data.get('files', []):
+        # Also check 'files' array
+        files = msg_data.get('files', [])
+        for f in files:
+            # Files array is simpler, just has file_name
             if isinstance(f, dict) and f.get('file_name'):
                 attachment = Attachment(
                     message_id=message_id,
@@ -195,6 +259,8 @@ class ClaudeExtractor(BaseExtractor):
     
     def _extract_claude_meta(self, message_id: UUID, msg_data: dict[str, Any]):
         """Extract Claude-specific metadata."""
+        # For now, just store the raw message data
+        # We can add specific fields as we discover what's useful
         meta = ClaudeMessageMeta(
             message_id=message_id,
             source_json=msg_data,
