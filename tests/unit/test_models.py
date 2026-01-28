@@ -117,6 +117,7 @@ class TestContentPartModel:
             sequence=0,
             part_type='text',
             text_content='Hello, world!',
+            source_json={'type': 'text'},
         )
         
         assert part.message_id == message_id
@@ -125,31 +126,67 @@ class TestContentPartModel:
         assert part.text_content == 'Hello, world!'
     
     def test_create_code_content_part(self):
-        """Test creating a code ContentPart."""
+        """Test creating a code ContentPart with language."""
         part = ContentPart(
             message_id=uuid4(),
             sequence=1,
             part_type='code',
             text_content='print("hello")',
             language='python',
+            source_json={'type': 'code', 'language': 'python'},
         )
         
         assert part.part_type == 'code'
         assert part.language == 'python'
+        assert part.text_content == 'print("hello")'
     
     def test_create_image_content_part(self):
-        """Test creating an image ContentPart."""
+        """Test creating an image ContentPart with media type and URL."""
         part = ContentPart(
             message_id=uuid4(),
             sequence=0,
             part_type='image',
             media_type='image/png',
             url='https://example.com/image.png',
+            source_json={'type': 'image'},
         )
         
         assert part.part_type == 'image'
         assert part.media_type == 'image/png'
         assert part.url == 'https://example.com/image.png'
+    
+    def test_create_tool_use_content_part(self):
+        """Test creating a tool_use ContentPart."""
+        part = ContentPart(
+            message_id=uuid4(),
+            sequence=0,
+            part_type='tool_use',
+            tool_name='web_search',
+            tool_use_id='tool-123',
+            tool_input={'query': 'test search'},
+            source_json={'type': 'tool_use'},
+        )
+        
+        assert part.part_type == 'tool_use'
+        assert part.tool_name == 'web_search'
+        assert part.tool_use_id == 'tool-123'
+        assert part.tool_input == {'query': 'test search'}
+    
+    def test_create_tool_result_content_part(self):
+        """Test creating a tool_result ContentPart."""
+        part = ContentPart(
+            message_id=uuid4(),
+            sequence=1,
+            part_type='tool_result',
+            tool_use_id='tool-123',
+            text_content='Search results: ...',
+            is_error=False,
+            source_json={'type': 'tool_result'},
+        )
+        
+        assert part.part_type == 'tool_result'
+        assert part.tool_use_id == 'tool-123'
+        assert part.is_error is False
 
 
 class TestDerivedModels:
@@ -312,29 +349,29 @@ class TestContentHashModel:
         content_hash = ContentHash(
             entity_type='message',
             entity_id=entity_id,
-            scope='full',
+            hash_scope='full',
             normalization='none',
-            hash_value=hash_value,
+            hash_sha256=hash_value,
         )
         
         assert content_hash.entity_type == 'message'
         assert content_hash.entity_id == entity_id
-        assert content_hash.scope == 'full'
+        assert content_hash.hash_scope == 'full'
         assert content_hash.normalization == 'none'
-        assert content_hash.hash_value == hash_value
+        assert content_hash.hash_sha256 == hash_value
     
     def test_create_exchange_hash(self):
         """Test creating an exchange content hash."""
         content_hash = ContentHash(
             entity_type='exchange',
             entity_id=uuid4(),
-            scope='assistant',
+            hash_scope='assistant',
             normalization='normalized',
-            hash_value='b' * 64,
+            hash_sha256='b' * 64,
         )
         
         assert content_hash.entity_type == 'exchange'
-        assert content_hash.scope == 'assistant'
+        assert content_hash.hash_scope == 'assistant'
         assert content_hash.normalization == 'normalized'
 
 
