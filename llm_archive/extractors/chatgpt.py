@@ -176,11 +176,23 @@ class ChatGPTExtractor(BaseExtractor):
             message.deleted_at = None
             logger.debug(f"Restored message {message.source_id}")
         
-        # Delete and recreate content parts
+        # Delete related data before re-extracting
         self._delete_message_content(message.id)
+        self._delete_message_metadata(message.id)
+        
+        # Re-extract related data
         self._extract_content_parts(message.id, msg_data)
         self._extract_attachments(message.id, msg_data)
         self._extract_chatgpt_meta(message.id, msg_data)
+    
+    def _delete_message_metadata(self, message_id: UUID):
+        """Delete ChatGPT-specific metadata for a message."""
+        self.session.query(ChatGPTMessageMeta).filter(
+            ChatGPTMessageMeta.message_id == message_id
+        ).delete()
+        self.session.query(Attachment).filter(
+            Attachment.message_id == message_id
+        ).delete()
     
     def _create_message(self, dialogue_id: UUID, msg_data: dict[str, Any], content_hash: str) -> UUID | None:
         """Create a new message."""
