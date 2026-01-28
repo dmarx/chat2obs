@@ -1,6 +1,9 @@
 # llm_archive/models/raw.py
 """SQLAlchemy models for raw.* schema tables."""
 
+from datetime import datetime
+from uuid import UUID
+
 from sqlalchemy import (
     Column, String, Integer, Boolean, DateTime, ForeignKey, Text, BigInteger,
     ARRAY, func
@@ -11,6 +14,10 @@ from sqlalchemy.orm import declarative_base, relationship
 Base = declarative_base()
 
 
+# ============================================================
+# Core Tables
+# ============================================================
+
 class Source(Base):
     """Registry of dialogue sources."""
     __tablename__ = "sources"
@@ -20,7 +27,7 @@ class Source(Base):
     display_name = Column(String, nullable=False)
     has_native_trees = Column(Boolean, nullable=False)
     role_vocabulary = Column(ARRAY(String), nullable=False)
-    source_metadata = Column(JSONB, name="metadata")
+    source_metadata = Column(JSONB, name="metadata")  # 'metadata' reserved by SQLAlchemy
     
     dialogues = relationship("Dialogue", back_populates="source_rel")
 
@@ -82,6 +89,19 @@ class ContentPart(Base):
     part_type = Column(String, nullable=False)
     text_content = Column(Text)
     
+    # Code-specific fields
+    language = Column(String)  # programming language for code blocks
+    
+    # Media fields
+    media_type = Column(String)  # MIME type (image/png, audio/mp3, etc.)
+    url = Column(String)  # URL for external resources
+    
+    # Tool use fields (Claude)
+    tool_name = Column(String)  # name of tool being used
+    tool_use_id = Column(String)  # links tool_result back to tool_use
+    tool_input = Column(JSONB)  # tool input parameters
+    
+    # Timing and status
     started_at = Column(DateTime(timezone=True))
     ended_at = Column(DateTime(timezone=True))
     is_error = Column(Boolean, default=False)
@@ -133,9 +153,12 @@ class Attachment(Base):
     message = relationship("Message", back_populates="attachments")
 
 
+# ============================================================
 # ChatGPT Extensions
+# ============================================================
 
 class ChatGPTMessageMeta(Base):
+    """ChatGPT-specific message metadata."""
     __tablename__ = "chatgpt_message_meta"
     __table_args__ = {"schema": "raw"}
     
@@ -148,6 +171,7 @@ class ChatGPTMessageMeta(Base):
 
 
 class ChatGPTSearchGroup(Base):
+    """ChatGPT search result groups."""
     __tablename__ = "chatgpt_search_groups"
     __table_args__ = {"schema": "raw"}
     
@@ -161,6 +185,7 @@ class ChatGPTSearchGroup(Base):
 
 
 class ChatGPTSearchEntry(Base):
+    """ChatGPT search result entries."""
     __tablename__ = "chatgpt_search_entries"
     __table_args__ = {"schema": "raw"}
     
@@ -178,6 +203,7 @@ class ChatGPTSearchEntry(Base):
 
 
 class ChatGPTCodeExecution(Base):
+    """ChatGPT code execution records."""
     __tablename__ = "chatgpt_code_executions"
     __table_args__ = {"schema": "raw"}
     
@@ -197,6 +223,7 @@ class ChatGPTCodeExecution(Base):
 
 
 class ChatGPTCodeOutput(Base):
+    """ChatGPT code execution outputs."""
     __tablename__ = "chatgpt_code_outputs"
     __table_args__ = {"schema": "raw"}
     
@@ -213,6 +240,7 @@ class ChatGPTCodeOutput(Base):
 
 
 class ChatGPTDalleGeneration(Base):
+    """ChatGPT DALL-E image generations."""
     __tablename__ = "chatgpt_dalle_generations"
     __table_args__ = {"schema": "raw"}
     
@@ -229,6 +257,7 @@ class ChatGPTDalleGeneration(Base):
 
 
 class ChatGPTCanvasDoc(Base):
+    """ChatGPT canvas document operations."""
     __tablename__ = "chatgpt_canvas_docs"
     __table_args__ = {"schema": "raw"}
     
@@ -244,9 +273,12 @@ class ChatGPTCanvasDoc(Base):
     source_json = Column(JSONB, nullable=False)
 
 
+# ============================================================
 # Claude Extensions
+# ============================================================
 
 class ClaudeMessageMeta(Base):
+    """Claude-specific message metadata."""
     __tablename__ = "claude_message_meta"
     __table_args__ = {"schema": "raw"}
     
