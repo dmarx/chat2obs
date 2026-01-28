@@ -69,6 +69,10 @@ class Message(Base):
     created_at = Column(DateTime(timezone=True))
     updated_at = Column(DateTime(timezone=True))
     
+    # Change tracking
+    content_hash = Column(String)  # hash of content for change detection
+    deleted_at = Column(DateTime(timezone=True))  # soft delete (removed from source)
+    
     source_json = Column(JSONB, nullable=False)
     
     dialogue = relationship("Dialogue", back_populates="messages")
