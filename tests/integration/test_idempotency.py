@@ -464,3 +464,211 @@ class TestSoftDelete:
         # Hash should have changed
         clean_db_session.refresh(msg)
         assert msg.content_hash != original_hash, "Content hash should change when content changes"
+
+
+class TestAssumeImmutableFlag:
+    """Tests for assume_immutable optimization flag."""
+    
+    def test_immutable_mode_skips_hash_check(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode skips content hash comparison."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        original_uuid = msg.id
+        
+        # "Modify" content in source (simulating what we'd do in mutable mode)
+        # In immutable mode, this shouldn't trigger an update
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1800000000.0
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['MODIFIED CONTENT']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # In immutable mode, hash should NOT change (we didn't check it)
+        clean_db_session.refresh(msg)
+        assert msg.id == original_uuid, "UUID should be preserved"
+        assert msg.content_hash == original_hash, "Hash should NOT change in immutable mode"
+    
+    def test_mutable_mode_detects_changes(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that mutable mode (default) detects content changes."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=False)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # Modify content
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1800000000.0
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['MODIFIED CONTENT']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # In mutable mode, hash SHOULD change
+        clean_db_session.refresh(msg)
+        assert msg.content_hash != original_hash, "Hash SHOULD change in mutable mode"
+    
+    def test_immutable_mode_still_creates_new_messages(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode still creates new messages properly."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Add a new message
+        extended = copy.deepcopy(chatgpt_simple_conversation)
+        extended['update_time'] = 1800000000.0
+        
+        new_msg_id = "new-immutable-msg"
+        last_node_id = list(extended['mapping'].keys())[-1]
+        
+        extended['mapping'][new_msg_id] = {
+            "id": new_msg_id,
+            "parent": last_node_id,
+            "children": [],
+            "message": {
+                "id": new_msg_id,
+                "author": {"role": "user"},
+                "create_time": 1700006000.0,
+                "content": {"content_type": "text", "parts": ["New message"]}
+            }
+        }
+        
+        extractor.extract_dialogue(extended)
+        clean_db_session.commit()
+        
+        # New message should be created
+        new_count = clean_db_session.query(Message).count()
+        assert new_count == original_count + 1
+        
+        # And it should have a content hash
+        new_msg = clean_db_session.query(Message).filter(
+            Message.source_id == new_msg_id
+        ).first()
+        assert new_msg is not None
+        assert new_msg.content_hash is not None
+    
+    def test_immutable_mode_still_soft_deletes(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode still soft-deletes removed messages."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Remove a message
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1800000000.0
+        
+        mapping_keys = list(truncated['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del truncated['mapping'][removed_key]
+        
+        for node_id, node in truncated['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Message should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 1
+    
+    def test_immutable_mode_restores_soft_deleted(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode restores soft-deleted messages without re-hashing."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Remove and soft-delete a message
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1800000000.0
+        
+        mapping_keys = list(truncated['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del truncated['mapping'][removed_key]
+        
+        for node_id, node in truncated['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Verify soft-deleted
+        deleted_msg = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).first()
+        assert deleted_msg is not None
+        original_hash = deleted_msg.content_hash
+        
+        # Restore by importing original with newer timestamp
+        restored = copy.deepcopy(chatgpt_simple_conversation)
+        restored['update_time'] = 1900000000.0
+        
+        extractor.extract_dialogue(restored)
+        clean_db_session.commit()
+        
+        # Should be restored
+        clean_db_session.refresh(deleted_msg)
+        assert deleted_msg.deleted_at is None
+        # Hash should be unchanged (we didn't re-hash)
+        assert deleted_msg.content_hash == original_hash
+    
+    def test_claude_immutable_mode(self, clean_db_session, claude_simple_conversation):
+        """Test that assume_immutable works for Claude extractor too."""
+        extractor = ClaudeExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # "Modify" content
+        modified = copy.deepcopy(claude_simple_conversation)
+        modified['updated_at'] = "2025-01-01T00:00:00Z"
+        
+        for m in modified['chat_messages']:
+            if m.get('uuid') == msg.source_id:
+                m['content'] = [{'type': 'text', 'text': 'MODIFIED'}]
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # In immutable mode, hash should NOT change
+        clean_db_session.refresh(msg)
+        assert msg.content_hash == original_hash
