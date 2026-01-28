@@ -22,8 +22,13 @@ class ClaudeExtractor(BaseExtractor):
     
     SOURCE_ID = 'claude'
     
-    def __init__(self, session: Session, assume_immutable: bool = False):
-        super().__init__(session, assume_immutable=assume_immutable)
+    def __init__(
+        self, 
+        session: Session, 
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        super().__init__(session, assume_immutable=assume_immutable, incremental=incremental)
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
         """
@@ -142,11 +147,12 @@ class ClaudeExtractor(BaseExtractor):
                     self.register_message_id(source_id, msg_id)
                     prev_message_id = msg_id
         
-        # Soft-delete messages no longer in source
-        for source_id, existing in existing_messages.items():
-            if source_id not in seen_source_ids and existing.deleted_at is None:
-                existing.deleted_at = datetime.now(timezone.utc)
-                logger.debug(f"Soft-deleted message {source_id}")
+        # Soft-delete messages no longer in source (unless incremental mode)
+        if not self.incremental:
+            for source_id, existing in existing_messages.items():
+                if source_id not in seen_source_ids and existing.deleted_at is None:
+                    existing.deleted_at = datetime.now(timezone.utc)
+                    logger.debug(f"Soft-deleted message {source_id}")
     
     def _update_message(
         self, 
