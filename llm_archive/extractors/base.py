@@ -118,6 +118,12 @@ class BaseExtractor(ABC):
         self.assume_immutable = assume_immutable
         self.incremental = incremental
         self._message_id_map: dict[str, UUID] = {}  # source_id -> native UUID
+        self.counts: dict[str, int] = {}  # Populated by extract_all
+    
+    def _increment_count(self, key: str, amount: int = 1):
+        """Safely increment a count (no-op if counts not initialized)."""
+        if key in self.counts:
+            self.counts[key] += amount
     
     @abstractmethod
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
@@ -134,11 +140,10 @@ class BaseExtractor(ABC):
     
     def extract_all(self, data: list[dict[str, Any]]) -> dict[str, int]:
         """Extract all dialogues from a data list."""
-        counts = {
+        self.counts = {
             'dialogues_new': 0,
             'dialogues_updated': 0,
             'dialogues_skipped': 0,
-            'messages': 0,
             'messages_new': 0,
             'messages_updated': 0,
             'messages_unchanged': 0,
@@ -152,22 +157,22 @@ class BaseExtractor(ABC):
             try:
                 result = self.extract_dialogue(raw)
                 if result == 'new':
-                    counts['dialogues_new'] += 1
+                    self.counts['dialogues_new'] += 1
                 elif result == 'updated':
-                    counts['dialogues_updated'] += 1
+                    self.counts['dialogues_updated'] += 1
                 elif result == 'skipped':
-                    counts['dialogues_skipped'] += 1
+                    self.counts['dialogues_skipped'] += 1
                 elif result is None:
-                    counts['failed'] += 1
+                    self.counts['failed'] += 1
             except Exception as e:
                 logger.error(f"Failed to extract dialogue {i}: {e}")
-                counts['failed'] += 1
+                self.counts['failed'] += 1
                 self.session.rollback()
         
         self.session.commit()
-        total = counts['dialogues_new'] + counts['dialogues_updated']
-        logger.info(f"{self.SOURCE_ID} extraction complete: {total} processed ({counts})")
-        return counts
+        total = self.counts['dialogues_new'] + self.counts['dialogues_updated']
+        logger.info(f"{self.SOURCE_ID} extraction complete: {total} processed ({self.counts})")
+        return self.counts
     
     def get_existing_dialogue(self, source_id: str) -> Dialogue | None:
         """Check if dialogue already exists."""

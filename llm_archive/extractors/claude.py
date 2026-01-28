@@ -119,6 +119,9 @@ class ClaudeExtractor(BaseExtractor):
                     if existing.deleted_at is not None:
                         existing.deleted_at = None
                         logger.debug(f"Restored message {source_id}")
+                        self._increment_count('messages_restored')
+                    else:
+                        self._increment_count('messages_unchanged')
                     # Update parent link if needed (chain structure may have changed)
                     if existing.parent_id != prev_message_id:
                         existing.parent_id = prev_message_id
@@ -134,11 +137,17 @@ class ClaudeExtractor(BaseExtractor):
                             existing.parent_id = prev_message_id
                         self.register_message_id(source_id, existing.id)
                         prev_message_id = existing.id
+                        self._increment_count('messages_unchanged')
                     else:
                         # Changed or was soft-deleted - update in place
+                        was_deleted = existing.deleted_at is not None
                         self._update_message(existing, msg_data, content_hash, prev_message_id)
                         self.register_message_id(source_id, existing.id)
                         prev_message_id = existing.id
+                        if was_deleted:
+                            self._increment_count('messages_restored')
+                        else:
+                            self._increment_count('messages_updated')
             else:
                 # New message - always compute hash for storage
                 content_hash = compute_content_hash(msg_data)
@@ -146,6 +155,7 @@ class ClaudeExtractor(BaseExtractor):
                 if msg_id:
                     self.register_message_id(source_id, msg_id)
                     prev_message_id = msg_id
+                    self._increment_count('messages_new')
         
         # Soft-delete messages no longer in source (unless incremental mode)
         if not self.incremental:
@@ -153,6 +163,7 @@ class ClaudeExtractor(BaseExtractor):
                 if source_id not in seen_source_ids and existing.deleted_at is None:
                     existing.deleted_at = datetime.now(timezone.utc)
                     logger.debug(f"Soft-deleted message {source_id}")
+                    self._increment_count('messages_soft_deleted')
     
     def _update_message(
         self, 
@@ -241,6 +252,7 @@ class ClaudeExtractor(BaseExtractor):
             message_id = self._create_message(dialogue_id, msg_data, content_hash, prev_message_id)
             if message_id:
                 prev_message_id = message_id
+                self._increment_count('messages_new')
     
     def _extract_content_parts(self, message_id: UUID, msg_data: dict[str, Any]):
         """Extract content parts from a Claude message."""
@@ -273,6 +285,7 @@ class ClaudeExtractor(BaseExtractor):
                 )
                 self.session.add(content_part)
                 self.session.flush()
+                self._increment_count('content_parts')
                 
                 # Extract citations within this content part
                 citations = part.get('citations', [])
@@ -289,6 +302,7 @@ class ClaudeExtractor(BaseExtractor):
                 source_json={'text': main_text},
             )
             self.session.add(content_part)
+            self._increment_count('content_parts')
     
     def _classify_content_part(self, part: dict[str, Any]) -> dict[str, Any]:
         """
