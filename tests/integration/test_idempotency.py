@@ -448,9 +448,9 @@ class TestSoftDelete:
         
         assert original_hash is not None, "Content hash should be computed"
         
-        # Modify the message
+        # Modify the message content
         modified = copy.deepcopy(chatgpt_simple_conversation)
-        modified['update_time'] = 1700005000.0
+        modified['update_time'] = 1800000000.0  # Much later timestamp to ensure update
         
         for node_id, node in modified['mapping'].items():
             msg_data = node.get('message')
