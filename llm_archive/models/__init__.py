@@ -26,19 +26,23 @@ from llm_archive.models.derived import (
     SequenceMessage,
     Exchange,
     ExchangeMessage,
+    SequenceExchange,
     ExchangeContent,
-    Label,
+    Annotation,
     ContentHash,
 )
 
 __all__ = [
+    # Base
     "Base",
+    # Raw core
     "Source",
     "Dialogue",
     "Message",
     "ContentPart",
     "Citation",
     "Attachment",
+    # Raw ChatGPT extensions
     "ChatGPTMessageMeta",
     "ChatGPTSearchGroup",
     "ChatGPTSearchEntry",
@@ -46,14 +50,17 @@ __all__ = [
     "ChatGPTCodeOutput",
     "ChatGPTDalleGeneration",
     "ChatGPTCanvasDoc",
+    # Raw Claude extensions
     "ClaudeMessageMeta",
+    # Derived
     "DialogueTree",
     "MessagePath",
     "LinearSequence",
     "SequenceMessage",
     "Exchange",
     "ExchangeMessage",
+    "SequenceExchange",
     "ExchangeContent",
-    "Label",
+    "Annotation",
     "ContentHash",
 ]

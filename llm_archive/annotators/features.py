@@ -1,5 +1,5 @@
-# llm_archive/labelers/features.py
-"""Feature detection labelers."""
+# llm_archive/annotators/features.py
+"""Feature detection annotators."""
 
 import re
 from uuid import UUID
@@ -7,16 +7,14 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 from loguru import logger
 
-from llm_archive.models import (
-    Message, ContentPart, Exchange, ExchangeContent,
-)
-from llm_archive.labelers.base import Labeler
+from llm_archive.models import Message, ContentPart, Exchange, ExchangeContent
+from llm_archive.annotators.base import Annotator
 
 
-class WikiLinkLabeler(Labeler):
+class WikiLinkAnnotator(Annotator):
     """Detect Obsidian-style [[wiki links]] in content."""
     
-    LABEL_TYPE = 'feature'
+    ANNOTATION_TYPE = 'feature'
     ENTITY_TYPE = 'message'
     SOURCE = 'heuristic'
     VERSION = '1.0'
@@ -25,7 +23,6 @@ class WikiLinkLabeler(Labeler):
     
     def compute(self) -> int:
         """Find messages with wiki links."""
-        # Query assistant messages with text content
         results = (
             self.session.query(ContentPart.message_id, ContentPart.text_content)
             .join(Message)
@@ -47,28 +44,26 @@ class WikiLinkLabeler(Labeler):
             full_text = '\n'.join(texts)
             
             if self.PATTERN.search(full_text):
-                # Count links
                 links = self.PATTERN.findall(full_text)
-                if self.add_label(
+                if self.add_annotation(
                     entity_id=msg_id,
-                    label_value='has_wiki_links',
+                    value='has_wiki_links',
                     confidence=1.0,
-                    label_data={'count': len(links)},
+                    data={'count': len(links)},
                 ):
                     count += 1
         
         return count
 
 
-class CodeBlockLabeler(Labeler):
+class CodeBlockAnnotator(Annotator):
     """Detect code blocks (```) in content."""
     
-    LABEL_TYPE = 'feature'
+    ANNOTATION_TYPE = 'feature'
     ENTITY_TYPE = 'message'
     SOURCE = 'heuristic'
     VERSION = '1.0'
     
-    # Match ``` with optional language
     PATTERN = re.compile(r'```(\w*)\n')
     
     def compute(self) -> int:
@@ -91,28 +86,36 @@ class CodeBlockLabeler(Labeler):
             full_text = '\n'.join(texts)
             
             if '```' in full_text:
-                # Detect languages
                 languages = self.PATTERN.findall(full_text)
-                languages = [l for l in languages if l]  # Filter empty
+                languages = [l for l in languages if l]
                 
-                if self.add_label(
+                if self.add_annotation(
                     entity_id=msg_id,
-                    label_value='has_code_blocks',
+                    value='has_code_blocks',
                     confidence=1.0,
-                    label_data={
+                    data={
                         'count': full_text.count('```') // 2,
                         'languages': list(set(languages)),
                     },
                 ):
                     count += 1
+                
+                # Also add language-specific tags
+                for lang in set(languages):
+                    self.add_annotation(
+                        entity_id=msg_id,
+                        value=lang,
+                        key='code_language',
+                        confidence=1.0,
+                    )
         
         return count
 
 
-class LatexLabeler(Labeler):
+class LatexAnnotator(Annotator):
     """Detect LaTeX/MathJax mathematical notation."""
     
-    LABEL_TYPE = 'feature'
+    ANNOTATION_TYPE = 'feature'
     ENTITY_TYPE = 'message'
     SOURCE = 'heuristic'
     VERSION = '1.0'
@@ -151,50 +154,44 @@ class LatexLabeler(Labeler):
             full_text = '\n'.join(texts)
             
             has_latex = False
-            matched_patterns = []
+            found_commands = []
             
-            # Check patterns
             for pattern in self.PATTERNS:
                 if pattern.search(full_text):
                     has_latex = True
-                    matched_patterns.append(pattern.pattern[:20])
+                    break
             
-            # Check commands
-            found_commands = []
             for cmd in self.COMMANDS:
                 if cmd in full_text:
                     has_latex = True
                     found_commands.append(cmd)
             
             if has_latex:
-                if self.add_label(
+                if self.add_annotation(
                     entity_id=msg_id,
-                    label_value='has_latex',
+                    value='has_latex',
                     confidence=1.0,
-                    label_data={
-                        'commands': found_commands[:10],  # Limit
-                    },
+                    data={'commands': found_commands[:10]},
                 ):
                     count += 1
         
         return count
 
 
-class ContinuationLabeler(Labeler):
+class ContinuationAnnotator(Annotator):
     """Detect continuation signals in user messages."""
     
-    LABEL_TYPE = 'continuation_signal'
+    ANNOTATION_TYPE = 'feature'
     ENTITY_TYPE = 'message'
     SOURCE = 'heuristic'
     VERSION = '1.0'
     
-    PATTERNS = [
-        ('continue', ['continue', 'keep going', 'go on', 'carry on']),
-        ('elaborate', ['elaborate', 'expand', 'tell me more', 'more details']),
-        ('finish', ['finish', 'complete', 'wrap up']),
-        ('next', ['next', 'what else', 'and then']),
-        ('quote_elaborate', None),  # Special handling
-    ]
+    PATTERNS = {
+        'continue': ['continue', 'keep going', 'go on', 'carry on'],
+        'elaborate': ['elaborate', 'expand', 'tell me more', 'more details'],
+        'finish': ['finish', 'complete', 'wrap up'],
+        'next': ['next', 'what else', 'and then'],
+    }
     
     def compute(self) -> int:
         """Find user messages that are continuation signals."""
@@ -217,7 +214,6 @@ class ContinuationLabeler(Labeler):
         for msg_id, texts in message_texts.items():
             full_text = '\n'.join(texts).strip().lower()
             
-            # Skip long messages
             if len(full_text.split()) > 10:
                 continue
             
@@ -226,37 +222,40 @@ class ContinuationLabeler(Labeler):
                 lines = full_text.split('\n')
                 last_line = lines[-1].strip()
                 if last_line in ('elaborate', 'continue', 'expand', 'more'):
-                    if self.add_label(
+                    if self.add_annotation(
                         entity_id=msg_id,
-                        label_value='quote_elaborate',
+                        value='continuation_signal',
+                        key='quote_elaborate',
                         confidence=1.0,
                     ):
                         count += 1
                     continue
             
             # Check keyword patterns
-            for pattern_name, keywords in self.PATTERNS:
-                if keywords is None:
-                    continue
-                
+            for pattern_name, keywords in self.PATTERNS.items():
+                matched = False
                 for keyword in keywords:
                     if full_text == keyword or full_text.startswith(keyword + ' '):
-                        if self.add_label(
+                        if self.add_annotation(
                             entity_id=msg_id,
-                            label_value=pattern_name,
+                            value='continuation_signal',
+                            key=pattern_name,
                             confidence=0.9,
-                            label_data={'matched': keyword},
+                            data={'matched': keyword},
                         ):
                             count += 1
+                        matched = True
                         break
+                if matched:
+                    break
         
         return count
 
 
-class ExchangeTypeLabeler(Labeler):
+class ExchangeTypeAnnotator(Annotator):
     """Classify exchange types based on content patterns."""
     
-    LABEL_TYPE = 'exchange_type'
+    ANNOTATION_TYPE = 'tag'
     ENTITY_TYPE = 'exchange'
     SOURCE = 'heuristic'
     VERSION = '1.0'
@@ -274,9 +273,10 @@ class ExchangeTypeLabeler(Labeler):
             exchange_type, confidence = self._classify(content)
             
             if exchange_type:
-                if self.add_label(
+                if self.add_annotation(
                     entity_id=exchange.id,
-                    label_value=exchange_type,
+                    value=exchange_type,
+                    key='exchange_type',
                     confidence=confidence,
                 ):
                     count += 1
@@ -288,25 +288,19 @@ class ExchangeTypeLabeler(Labeler):
         user_text = content.user_text or ''
         assistant_text = content.assistant_text or ''
         
-        # Check for code-heavy exchanges
         code_blocks = assistant_text.count('```')
         if code_blocks >= 2:
             return 'coding', 0.8
         
-        # Check for wiki-style content
         if '[[' in assistant_text and ']]' in assistant_text:
             return 'wiki_article', 0.9
         
-        # Check for Q&A pattern (short question, longer answer)
         if (content.user_word_count or 0) < 50 and (content.assistant_word_count or 0) > 200:
             return 'qa', 0.6
         
-        # Check for long-form generation
         if (content.assistant_word_count or 0) > 500:
-            # Look for article indicators
             if assistant_text.startswith('#') or assistant_text.startswith('**'):
                 return 'article', 0.7
             return 'generation', 0.5
         
-        # Default to discussion
         return 'discussion', 0.4

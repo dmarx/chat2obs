@@ -2,14 +2,14 @@
 -- Convenience views for analysis
 
 -- ============================================================
--- Active labels
+-- ACTIVE ANNOTATIONS
 -- ============================================================
 
-create or replace view derived.v_labels as
-select * from derived.labels where superseded_at is null;
+create or replace view derived.v_annotations as
+select * from derived.annotations where superseded_at is null;
 
 -- ============================================================
--- Dialogue summary
+-- DIALOGUE SUMMARY
 -- ============================================================
 
 create or replace view derived.v_dialogue_summary as
@@ -32,7 +32,7 @@ from raw.dialogues d
 left join derived.dialogue_trees t on t.dialogue_id = d.id;
 
 -- ============================================================
--- Primary path messages
+-- PRIMARY PATH MESSAGES
 -- ============================================================
 
 create or replace view derived.v_primary_messages as
@@ -46,7 +46,7 @@ join derived.message_paths p on p.message_id = m.id
 where p.is_on_primary_path;
 
 -- ============================================================
--- Branch points
+-- BRANCH POINTS
 -- ============================================================
 
 create or replace view derived.v_branch_points as
@@ -67,7 +67,7 @@ join derived.message_paths p on p.message_id = m.id
 where p.child_count > 1;
 
 -- ============================================================
--- Regeneration attempts
+-- REGENERATION ATTEMPTS
 -- ============================================================
 
 create or replace view derived.v_regenerations as
@@ -84,7 +84,7 @@ group by m.dialogue_id, m.parent_id, m.role
 having count(*) > 1;
 
 -- ============================================================
--- Exchanges with content
+-- EXCHANGES WITH CONTENT
 -- ============================================================
 
 create or replace view derived.v_exchanges as
@@ -101,22 +101,40 @@ from derived.exchanges e
 left join derived.exchange_content c on c.exchange_id = e.id;
 
 -- ============================================================
--- Message with content
+-- SEQUENCE WITH EXCHANGES
 -- ============================================================
 
-create or replace view raw.v_message_content as
+create or replace view derived.v_sequence_exchanges as
 select 
-    m.id as message_id,
-    m.dialogue_id,
-    m.role,
-    m.created_at,
-    string_agg(cp.text_content, E'\n' order by cp.sequence) as full_text
-from raw.messages m
-left join raw.content_parts cp on cp.message_id = m.id and cp.text_content is not null
-group by m.id, m.dialogue_id, m.role, m.created_at;
+    ls.id as sequence_id,
+    ls.dialogue_id,
+    ls.is_primary,
+    se.position as exchange_position,
+    e.id as exchange_id,
+    e.first_message_id,
+    e.last_message_id,
+    e.message_count,
+    e.is_continuation
+from derived.linear_sequences ls
+join derived.sequence_exchanges se on se.sequence_id = ls.id
+join derived.exchanges e on e.id = se.exchange_id
+order by ls.id, se.position;
 
 -- ============================================================
--- Content duplicates
+-- NON-PRIMARY SEQUENCES (abandoned paths)
+-- ============================================================
+
+create or replace view derived.v_abandoned_sequences as
+select 
+    ls.*,
+    d.title as dialogue_title,
+    d.source
+from derived.linear_sequences ls
+join raw.dialogues d on d.id = ls.dialogue_id
+where not ls.is_primary;
+
+-- ============================================================
+-- CONTENT DUPLICATES
 -- ============================================================
 
 create or replace view derived.v_content_duplicates as
@@ -132,14 +150,64 @@ group by hash_sha256, hash_scope, entity_type, normalization
 having count(*) > 1;
 
 -- ============================================================
--- Non-primary sequences
+-- MESSAGE WITH CONTENT
 -- ============================================================
 
-create or replace view derived.v_abandoned_sequences as
+create or replace view raw.v_message_content as
 select 
-    ls.*,
-    d.title as dialogue_title,
-    d.source
-from derived.linear_sequences ls
-join raw.dialogues d on d.id = ls.dialogue_id
-where not ls.is_primary;
+    m.id as message_id,
+    m.dialogue_id,
+    m.role,
+    m.created_at,
+    string_agg(cp.text_content, E'\n' order by cp.sequence) as full_text
+from raw.messages m
+left join raw.content_parts cp on cp.message_id = m.id and cp.text_content is not null
+group by m.id, m.dialogue_id, m.role, m.created_at;
+
+-- ============================================================
+-- EXCHANGE ANNOTATIONS
+-- ============================================================
+
+create or replace view derived.v_exchange_annotations as
+select 
+    e.id as exchange_id,
+    e.dialogue_id,
+    a.annotation_type,
+    a.annotation_key,
+    a.annotation_value,
+    a.confidence,
+    a.source as annotation_source
+from derived.exchanges e
+left join derived.v_annotations a on a.entity_type = 'exchange' and a.entity_id = e.id;
+
+-- ============================================================
+-- DIALOGUE ANNOTATIONS
+-- ============================================================
+
+create or replace view derived.v_dialogue_annotations as
+select 
+    d.id as dialogue_id,
+    d.source,
+    d.title,
+    a.annotation_type,
+    a.annotation_key,
+    a.annotation_value,
+    a.confidence,
+    a.source as annotation_source
+from raw.dialogues d
+left join derived.v_annotations a on a.entity_type = 'dialogue' and a.entity_id = d.id;
+
+-- ============================================================
+-- ENTITY TAGS (filtered view of tag-type annotations)
+-- ============================================================
+
+create or replace view derived.v_entity_tags as
+select
+    entity_type,
+    entity_id,
+    annotation_key as tag_namespace,
+    annotation_value as tag_value,
+    confidence,
+    source
+from derived.v_annotations
+where annotation_type = 'tag';

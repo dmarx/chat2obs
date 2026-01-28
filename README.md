@@ -35,6 +35,16 @@ uv pip install -e ".[dev]"
 
 ## Database Setup
 
+### Configure Environment
+
+```bash
+# Copy example env file
+cp .env.example .env
+
+# Edit if needed (defaults work out of the box)
+# vim .env
+```
+
 ### Start PostgreSQL (pgvector)
 
 ```bash
@@ -48,13 +58,12 @@ docker compose ps
 docker compose logs -f db
 ```
 
-The database will be available at:
-- **Host**: `localhost`
-- **Port**: `5432`
-- **Database**: `llm_archive`
-- **User**: `postgres`
-- **Password**: `postgres`
-- **URL**: `postgresql://postgres:postgres@localhost:5432/llm_archive`
+The database configuration is read from `.env`:
+- **Host**: `POSTGRES_HOST` (default: `localhost`)
+- **Port**: `POSTGRES_PORT` (default: `5432`)
+- **Database**: `POSTGRES_DB` (default: `llm_archive`)
+- **User**: `POSTGRES_USER` (default: `postgres`)
+- **Password**: `POSTGRES_PASSWORD` (default: `postgres`)
 
 ### Initialize Schema
 
@@ -106,11 +115,11 @@ uv run llm-archive build_hashes
 uv run llm-archive build_all
 ```
 
-### Labeling
+### Annotations
 
 ```bash
-# Run all labelers
-uv run llm-archive label
+# Run all annotators
+uv run llm-archive annotate
 ```
 
 ### Analysis
@@ -132,6 +141,14 @@ uv run llm-archive run \
     --claude_path=/path/to/claude.json \
     --init_db
 ```
+
+## Idempotent Import
+
+Re-importing the same export files is safe:
+- Dialogues are identified by their source ID
+- If `updated_at` timestamp is newer, dialogue is updated
+- If unchanged, dialogue is skipped
+- Messages are replaced when a dialogue is updated
 
 ## Schema
 
@@ -156,10 +173,11 @@ Computed/analyzed structures:
 - `derived.message_paths` - Materialized paths for each message
 - `derived.linear_sequences` - Root-to-leaf paths
 - `derived.sequence_messages` - Sequence membership
-- `derived.exchanges` - Logical interaction units
+- `derived.exchanges` - Logical interaction units (built from tree, deduplicated)
 - `derived.exchange_messages` - Exchange membership
+- `derived.sequence_exchanges` - Links sequences to exchanges (many-to-many)
 - `derived.exchange_content` - Aggregated content with hashes
-- `derived.labels` - Polymorphic entity labels
+- `derived.annotations` - Polymorphic entity annotations
 - `derived.content_hashes` - Multi-scope content hashes
 
 ## Data Model
@@ -174,21 +192,73 @@ raw.dialogues
 derived.dialogue_trees (1:1 with dialogues)
     └── derived.linear_sequences (one per leaf)
             ├── derived.sequence_messages
-            └── derived.exchanges
-                    ├── derived.exchange_messages
-                    └── derived.exchange_content
+            └── derived.sequence_exchanges → derived.exchanges (many-to-many)
+                                                    ├── derived.exchange_messages
+                                                    └── derived.exchange_content
 
-derived.labels (polymorphic, references any entity)
+derived.annotations (polymorphic, references any entity)
 derived.content_hashes (multi-scope hashes)
 ```
 
-## Label Types
+### Exchange Deduplication
 
-| Entity | Label Type | Example Values |
-|--------|-----------|----------------|
-| message | feature | has_wiki_links, has_code_blocks, has_latex |
-| message | continuation_signal | continue, elaborate, quote_elaborate |
-| exchange | exchange_type | coding, wiki_article, qa, discussion |
+Exchanges are built from the tree and identified by `(dialogue_id, first_message_id, last_message_id)`. When a conversation branches, the shared prefix produces the same exchanges, which are reused rather than duplicated. Each linear sequence references its exchanges via the `sequence_exchanges` join table.
+
+## Annotation Types
+
+| Entity | Type | Key | Example Values |
+|--------|------|-----|----------------|
+| message | feature | - | has_wiki_links, has_code_blocks, has_latex |
+| message | feature | code_language | python, javascript, sql |
+| message | feature | continuation_signal | continue, elaborate, quote_elaborate |
+| exchange | tag | exchange_type | coding, wiki_article, qa, discussion |
+| exchange | title | - | (generated title for wiki export) |
+| dialogue | tag | category | coding, research, writing |
+
+## Custom Annotators
+
+Create custom annotators by subclassing `Annotator`:
+
+```python
+from llm_archive.annotators import Annotator
+from llm_archive.models import Exchange, ExchangeContent
+
+class MyAnnotator(Annotator):
+    ANNOTATION_TYPE = 'tag'       # 'tag', 'title', 'feature', etc.
+    ENTITY_TYPE = 'exchange'      # 'message', 'exchange', 'dialogue'
+    SOURCE = 'heuristic'          # 'heuristic', 'model', 'manual'
+    VERSION = '1.0'
+    
+    def compute(self) -> int:
+        exchanges = (
+            self.session.query(Exchange, ExchangeContent)
+            .join(ExchangeContent)
+            .all()
+        )
+        
+        count = 0
+        for exchange, content in exchanges:
+            if self._matches_criteria(content):
+                if self.add_annotation(
+                    entity_id=exchange.id,
+                    value='my_tag_value',
+                    key='optional_namespace',
+                    confidence=0.9,
+                    data={'extra': 'info'},
+                ):
+                    count += 1
+        return count
+```
+
+Register and run:
+
+```python
+from llm_archive.annotators import AnnotationManager
+
+manager = AnnotationManager(session)
+manager.register(MyAnnotator)
+results = manager.run_all()
+```
 
 ## Tree Analysis
 
@@ -205,8 +275,64 @@ For linear dialogues (Claude), produces degenerate trees with `branch_count=0`.
 ## Pipeline
 
 ```
-Import → Tree Analysis → Exchange Building → Labeling → Hashing
+Import → Tree Analysis → Exchange Building → Annotating → Hashing
                                                    ↓
                                             [Future: Article extraction,
-                                             Knowledge graph, etc.]
+                                             Knowledge graph, Wiki export]
 ```
+
+## Testing
+
+### Setup Test Database
+
+```bash
+# Create test database (separate from main)
+docker exec -it llm_archive_db psql -U postgres -c "CREATE DATABASE llm_archive_test"
+
+# Or set custom test database URL
+export TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/llm_archive_test"
+```
+
+### Run Tests
+
+```bash
+# Install dev dependencies
+uv pip install -e ".[dev]"
+
+# Run all tests
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=llm_archive --cov-report=html
+
+# Run specific test file
+uv run pytest tests/test_extractors.py
+
+# Run specific test
+uv run pytest tests/test_extractors.py::TestChatGPTExtractor::test_extract_simple_conversation
+
+# Run in parallel (faster)
+uv run pytest -n auto
+```
+
+### Test Structure
+
+```
+tests/
+├── conftest.py           # Shared fixtures
+├── test_extractors.py    # ChatGPT/Claude extraction tests
+├── test_builders.py      # Tree/Exchange/Hash builder tests
+├── test_annotators.py    # Annotation system tests
+└── test_idempotency.py   # Re-import behavior tests
+```
+
+### Key Fixtures
+
+| Fixture | Scope | Description |
+|---------|-------|-------------|
+| `db_session` | function | Session with transaction rollback |
+| `clean_db_session` | function | Session that commits (with cleanup) |
+| `chatgpt_simple_conversation` | function | Linear ChatGPT conversation |
+| `chatgpt_branched_conversation` | function | Branched ChatGPT conversation |
+| `claude_simple_conversation` | function | Simple Claude conversation |
+| `fully_populated_db` | function | DB with conversations + derived data |

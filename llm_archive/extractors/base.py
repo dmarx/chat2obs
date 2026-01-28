@@ -1,6 +1,8 @@
 # llm_archive/extractors/base.py
 """Shared extraction utilities and base classes."""
 
+import hashlib
+import json
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any
@@ -8,6 +10,8 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 from loguru import logger
+
+from llm_archive.models import Dialogue, Message, ContentPart
 
 
 def parse_timestamp(value: int | float | str | None) -> datetime | None:
@@ -22,6 +26,7 @@ def parse_timestamp(value: int | float | str | None) -> datetime | None:
         return None
     
     if isinstance(value, str):
+        # ISO 8601 format
         try:
             dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
             if dt.tzinfo is None:
@@ -31,6 +36,7 @@ def parse_timestamp(value: int | float | str | None) -> datetime | None:
             return None
     
     if isinstance(value, (int, float)):
+        # Epoch seconds
         try:
             return datetime.fromtimestamp(value, tz=timezone.utc)
         except (ValueError, OSError):
@@ -39,8 +45,12 @@ def parse_timestamp(value: int | float | str | None) -> datetime | None:
     return None
 
 
-def normalize_role(role: str | None, source: str) -> str:
-    """Normalize role/sender to standard vocabulary."""
+def normalize_role(role: str, source: str) -> str:
+    """
+    Normalize role/sender to standard vocabulary.
+    
+    Standard roles: 'user', 'assistant', 'system', 'tool'
+    """
     if role is None:
         return 'unknown'
     
@@ -65,37 +75,89 @@ def safe_get(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return current
 
 
+def compute_content_hash(source_json: dict | list | str) -> str:
+    """Compute a stable hash of message content for change detection."""
+    # Serialize to JSON with sorted keys for stability
+    if isinstance(source_json, str):
+        content = source_json
+    else:
+        content = json.dumps(source_json, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
 class BaseExtractor(ABC):
-    """Base class for source extractors."""
+    """
+    Base class for source extractors.
     
-    SOURCE_ID: str = None
+    Supports idempotent ingestion with incremental updates:
+    - Skip dialogues that haven't changed (by updated_at timestamp)
+    - Preserve message UUIDs for unchanged messages
+    - Soft-delete messages removed from source (unless incremental=True)
+    - Only rebuild content_parts for actually changed messages
     
-    def __init__(self, session: Session):
+    Args:
+        session: SQLAlchemy session
+        assume_immutable: If True, assume message content never changes once created.
+            This skips content hash comparison for existing messages, which is faster
+            but won't detect in-place edits. Use for providers where edits create new
+            message UUIDs rather than modifying existing ones. Default: False.
+        incremental: If True, treat the import as a delta/partial update. Messages
+            not present in the current import will NOT be soft-deleted. Use when
+            importing partial exports or streaming updates. Default: False.
+    """
+    
+    SOURCE_ID: str = None  # Override in subclass
+    
+    def __init__(
+        self, 
+        session: Session, 
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
         self.session = session
-        self._message_id_map: dict[str, UUID] = {}
+        self.assume_immutable = assume_immutable
+        self.incremental = incremental
+        self._message_id_map: dict[str, UUID] = {}  # source_id -> native UUID
     
     @abstractmethod
-    def extract_dialogue(self, raw: dict[str, Any]) -> UUID | None:
-        """Extract a single dialogue. Returns native UUID or None on failure."""
+    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+        """
+        Extract a single dialogue and all its contents.
+        
+        Returns:
+            'new' - new dialogue created
+            'updated' - existing dialogue updated  
+            'skipped' - existing dialogue unchanged
+            None - extraction failed
+        """
         pass
     
     def extract_all(self, data: list[dict[str, Any]]) -> dict[str, int]:
         """Extract all dialogues from a data list."""
         counts = {
-            'dialogues': 0,
+            'dialogues_new': 0,
+            'dialogues_updated': 0,
+            'dialogues_skipped': 0,
             'messages': 0,
+            'messages_new': 0,
+            'messages_updated': 0,
+            'messages_unchanged': 0,
+            'messages_restored': 0,
+            'messages_soft_deleted': 0,
             'content_parts': 0,
-            'citations': 0,
-            'attachments': 0,
             'failed': 0,
         }
         
         for i, raw in enumerate(data):
             try:
                 result = self.extract_dialogue(raw)
-                if result:
-                    counts['dialogues'] += 1
-                else:
+                if result == 'new':
+                    counts['dialogues_new'] += 1
+                elif result == 'updated':
+                    counts['dialogues_updated'] += 1
+                elif result == 'skipped':
+                    counts['dialogues_skipped'] += 1
+                elif result is None:
                     counts['failed'] += 1
             except Exception as e:
                 logger.error(f"Failed to extract dialogue {i}: {e}")
@@ -103,15 +165,63 @@ class BaseExtractor(ABC):
                 self.session.rollback()
         
         self.session.commit()
-        logger.info(f"{self.SOURCE_ID} extraction complete: {counts}")
+        total = counts['dialogues_new'] + counts['dialogues_updated']
+        logger.info(f"{self.SOURCE_ID} extraction complete: {total} processed ({counts})")
         return counts
     
+    def get_existing_dialogue(self, source_id: str) -> Dialogue | None:
+        """Check if dialogue already exists."""
+        return (
+            self.session.query(Dialogue)
+            .filter(Dialogue.source == self.SOURCE_ID)
+            .filter(Dialogue.source_id == source_id)
+            .first()
+        )
+    
+    def get_existing_messages(self, dialogue_id: UUID) -> dict[str, Message]:
+        """Get all existing messages for a dialogue, keyed by source_id."""
+        messages = (
+            self.session.query(Message)
+            .filter(Message.dialogue_id == dialogue_id)
+            .all()
+        )
+        return {m.source_id: m for m in messages}
+    
+    def should_update(self, existing: Dialogue, new_updated_at: datetime | None) -> bool:
+        """Determine if existing dialogue should be updated."""
+        if new_updated_at is None:
+            return False
+        if existing.updated_at is None:
+            return True
+        return new_updated_at > existing.updated_at
+    
     def register_message_id(self, source_id: str, native_id: UUID):
-        """Register source message ID to native UUID mapping."""
+        """Register a mapping from source message ID to native UUID."""
         self._message_id_map[source_id] = native_id
     
     def resolve_message_id(self, source_id: str | None) -> UUID | None:
-        """Resolve source message ID to native UUID."""
+        """Resolve a source message ID to native UUID."""
         if source_id is None:
             return None
         return self._message_id_map.get(source_id)
+    
+    def _delete_message_content(self, message_id: UUID):
+        """Delete content parts and related data for a message."""
+        # Content parts cascade delete citations
+        self.session.query(ContentPart).filter(
+            ContentPart.message_id == message_id
+        ).delete()
+    
+    def _soft_delete_messages(self, messages: list[Message]) -> int:
+        """Soft delete messages that are no longer in source."""
+        now = datetime.now(timezone.utc)
+        count = 0
+        for msg in messages:
+            if msg.deleted_at is None:
+                msg.deleted_at = now
+                count += 1
+        return count
+    
+    def _restore_message(self, message: Message):
+        """Restore a soft-deleted message."""
+        message.deleted_at = None
