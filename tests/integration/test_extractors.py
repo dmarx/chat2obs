@@ -1,4 +1,4 @@
-# tests/test_extractors.py
+# tests/integration/test_extractors.py
 """Tests for conversation extractors."""
 
 import pytest
@@ -98,7 +98,7 @@ class TestChatGPTExtractor:
         assert len(children) == 2
     
     def test_extract_code_content(self, db_session, chatgpt_conversation_with_code):
-        """Test extracting code execution content."""
+        """Test extracting code execution content with language."""
         extractor = ChatGPTExtractor(db_session)
         extractor.extract_dialogue(chatgpt_conversation_with_code)
         
@@ -108,13 +108,39 @@ class TestChatGPTExtractor:
         
         assert dialogue is not None
         
-        # Check for code content part
+        # Check for code content part with language
         code_parts = db_session.query(ContentPart).filter(
             ContentPart.part_type == 'code'
         ).all()
         
-        # May or may not have code parts depending on extractor implementation
-        # This test verifies extraction doesn't crash
+        assert len(code_parts) >= 1
+        
+        code_part = code_parts[0]
+        assert code_part.language == 'python'
+        assert 'fibonacci' in code_part.text_content
+    
+    def test_extract_image_content(self, db_session, chatgpt_conversation_with_image):
+        """Test extracting image content with media type and URL."""
+        extractor = ChatGPTExtractor(db_session)
+        extractor.extract_dialogue(chatgpt_conversation_with_image)
+        
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "conv-image-001"
+        ).first()
+        
+        assert dialogue is not None
+        
+        # Check for image content part
+        image_parts = db_session.query(ContentPart).filter(
+            ContentPart.part_type == 'image'
+        ).all()
+        
+        assert len(image_parts) >= 1
+        
+        image_part = image_parts[0]
+        assert image_part.media_type == 'image/png'
+        assert image_part.url is not None
+        assert 'dalle-gen-abc123' in image_part.url or 'example.com' in image_part.url
     
     def test_missing_conversation_id(self, db_session):
         """Test handling of conversation without ID."""
@@ -195,7 +221,7 @@ class TestClaudeExtractor:
         assert thinking_parts[0].text_content is not None
     
     def test_extract_tool_use(self, db_session, claude_conversation_with_tool_use):
-        """Test extracting tool use content."""
+        """Test extracting tool use content with all fields."""
         extractor = ClaudeExtractor(db_session)
         extractor.extract_dialogue(claude_conversation_with_tool_use)
         
@@ -204,6 +230,29 @@ class TestClaudeExtractor:
         ).all()
         
         assert len(tool_use_parts) >= 1
+        
+        # Verify tool use fields are extracted
+        tool_use = tool_use_parts[0]
+        assert tool_use.tool_name == 'web_search'
+        assert tool_use.tool_use_id == 'tool-001'
+        assert tool_use.tool_input == {'query': 'recent AI news 2024'}
+        assert tool_use.text_content == 'recent AI news 2024'  # Extracted from input.query
+    
+    def test_extract_tool_result(self, db_session, claude_conversation_with_tool_use):
+        """Test extracting tool result content with linked tool_use_id."""
+        extractor = ClaudeExtractor(db_session)
+        extractor.extract_dialogue(claude_conversation_with_tool_use)
+        
+        tool_result_parts = db_session.query(ContentPart).filter(
+            ContentPart.part_type == 'tool_result'
+        ).all()
+        
+        assert len(tool_result_parts) >= 1
+        
+        # Verify tool result fields
+        tool_result = tool_result_parts[0]
+        assert tool_result.tool_use_id == 'tool-001'  # Links back to tool_use
+        assert tool_result.text_content == 'AI advances in 2024 include...'
     
     def test_missing_uuid(self, db_session):
         """Test handling of conversation without UUID."""
