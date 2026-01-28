@@ -1,6 +1,7 @@
 # llm_archive/extractors/chatgpt.py
 """ChatGPT conversation extractor."""
 
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -14,7 +15,7 @@ from llm_archive.models import (
     ChatGPTCanvasDoc,
 )
 from llm_archive.extractors.base import (
-    BaseExtractor, parse_timestamp, normalize_role, safe_get
+    BaseExtractor, parse_timestamp, normalize_role, safe_get, compute_content_hash
 )
 
 
@@ -29,7 +30,7 @@ class ChatGPTExtractor(BaseExtractor):
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
         """
-        Extract a complete ChatGPT conversation.
+        Extract a complete ChatGPT conversation with incremental updates.
         
         Returns:
             'new' - new dialogue created
@@ -49,14 +50,19 @@ class ChatGPTExtractor(BaseExtractor):
         
         if existing:
             if self.should_update(existing, updated_at):
-                # Update existing - delete old messages and re-extract
+                # Update existing dialogue metadata
                 logger.debug(f"Updating dialogue {source_id}")
-                self._delete_dialogue_messages(existing.id)
                 existing.title = raw.get('title')
                 existing.updated_at = updated_at
                 existing.source_json = raw
                 dialogue_id = existing.id
-                result = 'updated'
+                
+                # Incremental message sync
+                self._message_id_map = {}
+                mapping = raw.get('mapping', {})
+                self._sync_messages(dialogue_id, mapping)
+                
+                return 'updated'
             else:
                 # Skip - no changes
                 logger.debug(f"Skipping unchanged dialogue {source_id}")
@@ -74,79 +80,165 @@ class ChatGPTExtractor(BaseExtractor):
             self.session.add(dialogue)
             self.session.flush()
             dialogue_id = dialogue.id
-            result = 'new'
-        
-        # Clear message ID map for this dialogue
-        self._message_id_map = {}
-        
-        # Extract messages from mapping
-        mapping = raw.get('mapping', {})
-        self._extract_messages(dialogue_id, mapping)
-        
-        return result
+            
+            # Clear message ID map and extract all messages
+            self._message_id_map = {}
+            mapping = raw.get('mapping', {})
+            self._extract_messages_new(dialogue_id, mapping)
+            
+            return 'new'
     
-    def _delete_dialogue_messages(self, dialogue_id: UUID):
-        """Delete all messages for a dialogue (cascade deletes content)."""
-        self.session.query(Message).filter(Message.dialogue_id == dialogue_id).delete()
+    def _sync_messages(self, dialogue_id: UUID, mapping: dict[str, Any]):
+        """
+        Incrementally sync messages - preserve UUIDs for unchanged messages.
+        
+        This method:
+        1. Compares existing messages with new data
+        2. Updates changed messages in place
+        3. Creates new messages
+        4. Soft-deletes messages removed from source
+        """
+        existing_messages = self.get_existing_messages(dialogue_id)
+        seen_source_ids = set()
+        
+        # First pass: identify all message source IDs and compute hashes
+        message_data = {}
+        for node_id, node in mapping.items():
+            msg_data = node.get('message')
+            if not msg_data:
+                continue
+            
+            msg_source_id = msg_data.get('id')
+            if not msg_source_id:
+                continue
+            
+            message_data[msg_source_id] = {
+                'node': node,
+                'msg_data': msg_data,
+                'content_hash': compute_content_hash(msg_data),
+            }
+            seen_source_ids.add(msg_source_id)
+        
+        # Second pass: sync each message
+        for source_id, data in message_data.items():
+            msg_data = data['msg_data']
+            new_hash = data['content_hash']
+            
+            if source_id in existing_messages:
+                existing = existing_messages[source_id]
+                
+                # Check if content changed
+                if existing.content_hash == new_hash and existing.deleted_at is None:
+                    # Unchanged - just register the ID mapping
+                    self.register_message_id(source_id, existing.id)
+                else:
+                    # Changed or was soft-deleted - update in place
+                    self._update_message(existing, msg_data, new_hash)
+                    self.register_message_id(source_id, existing.id)
+            else:
+                # New message
+                msg_id = self._create_message(dialogue_id, msg_data, new_hash)
+                if msg_id:
+                    self.register_message_id(source_id, msg_id)
+        
+        # Third pass: update parent links (now that all messages exist)
+        for source_id, data in message_data.items():
+            node = data['node']
+            parent_source_id = node.get('parent')
+            
+            native_id = self.resolve_message_id(source_id)
+            parent_native_id = self.resolve_message_id(parent_source_id)
+            
+            if native_id:
+                msg = self.session.get(Message, native_id)
+                if msg and msg.parent_id != parent_native_id:
+                    msg.parent_id = parent_native_id
+        
+        # Fourth pass: soft-delete messages no longer in source
+        for source_id, existing in existing_messages.items():
+            if source_id not in seen_source_ids and existing.deleted_at is None:
+                existing.deleted_at = datetime.now(timezone.utc)
+                logger.debug(f"Soft-deleted message {source_id}")
     
-    def _extract_messages(self, dialogue_id: UUID, mapping: dict[str, Any]):
-        """Extract all messages from the mapping tree."""
+    def _update_message(self, message: Message, msg_data: dict[str, Any], content_hash: str):
+        """Update an existing message in place."""
+        # Update message fields
+        message.role = normalize_role(safe_get(msg_data, 'author', 'role'), self.SOURCE_ID)
+        message.author_id = safe_get(msg_data, 'author', 'metadata', 'user_id')
+        message.author_name = safe_get(msg_data, 'author', 'name')
+        message.created_at = parse_timestamp(msg_data.get('create_time'))
+        message.updated_at = parse_timestamp(msg_data.get('update_time'))
+        message.content_hash = content_hash
+        message.source_json = msg_data
+        
+        # Restore if was soft-deleted
+        if message.deleted_at is not None:
+            message.deleted_at = None
+            logger.debug(f"Restored message {message.source_id}")
+        
+        # Delete and recreate content parts
+        self._delete_message_content(message.id)
+        self._extract_content_parts(message.id, msg_data)
+        self._extract_attachments(message.id, msg_data)
+        self._extract_chatgpt_meta(message.id, msg_data)
+    
+    def _create_message(self, dialogue_id: UUID, msg_data: dict[str, Any], content_hash: str) -> UUID | None:
+        """Create a new message."""
+        source_id = msg_data.get('id')
+        if not source_id:
+            return None
+        
+        message = Message(
+            dialogue_id=dialogue_id,
+            source_id=source_id,
+            parent_id=None,  # Set in later pass
+            role=normalize_role(safe_get(msg_data, 'author', 'role'), self.SOURCE_ID),
+            author_id=safe_get(msg_data, 'author', 'metadata', 'user_id'),
+            author_name=safe_get(msg_data, 'author', 'name'),
+            created_at=parse_timestamp(msg_data.get('create_time')),
+            updated_at=parse_timestamp(msg_data.get('update_time')),
+            content_hash=content_hash,
+            source_json=msg_data,
+        )
+        self.session.add(message)
+        self.session.flush()
+        
+        # Extract content parts and metadata
+        self._extract_content_parts(message.id, msg_data)
+        self._extract_attachments(message.id, msg_data)
+        self._extract_chatgpt_meta(message.id, msg_data)
+        
+        return message.id
+    
+    def _extract_messages_new(self, dialogue_id: UUID, mapping: dict[str, Any]):
+        """Extract all messages for a new dialogue."""
         # First pass: create all messages without parent links
         for node_id, node in mapping.items():
             msg_data = node.get('message')
             if not msg_data:
                 continue
             
-            author = msg_data.get('author', {})
-            role = author.get('role')
-            if not role:
-                continue
-            
-            source_id = msg_data.get('id', node_id)
-            
-            message = Message(
-                dialogue_id=dialogue_id,
-                source_id=source_id,
-                parent_id=None,  # Set in second pass
-                role=normalize_role(role, self.SOURCE_ID),
-                author_id=author.get('name'),
-                author_name=author.get('name'),
-                created_at=parse_timestamp(msg_data.get('create_time')),
-                updated_at=parse_timestamp(msg_data.get('update_time')),
-                source_json=node,
-            )
-            self.session.add(message)
-            self.session.flush()
-            
-            # Register for parent resolution
-            self.register_message_id(node_id, message.id)
-            if source_id != node_id:
-                self.register_message_id(source_id, message.id)
-            
-            # Extract content parts
-            self._extract_content_parts(message.id, msg_data)
-            
-            # Extract ChatGPT-specific metadata
-            self._extract_chatgpt_meta(message.id, msg_data)
-            
-            # Extract attachments
-            self._extract_attachments(message.id, msg_data)
+            content_hash = compute_content_hash(msg_data)
+            msg_id = self._create_message(dialogue_id, msg_data, content_hash)
+            if msg_id:
+                self.register_message_id(msg_data.get('id'), msg_id)
         
         # Second pass: set parent links
         for node_id, node in mapping.items():
-            parent_node_id = node.get('parent')
-            if not parent_node_id:
+            msg_data = node.get('message')
+            if not msg_data:
                 continue
             
-            message_id = self.resolve_message_id(node_id)
-            parent_id = self.resolve_message_id(parent_node_id)
+            source_id = msg_data.get('id')
+            parent_source_id = node.get('parent')
             
-            if message_id and parent_id:
-                self.session.execute(
-                    Message.__table__.update()
-                    .where(Message.id == message_id)
-                    .values(parent_id=parent_id)
-                )
+            native_id = self.resolve_message_id(source_id)
+            parent_native_id = self.resolve_message_id(parent_source_id)
+            
+            if native_id and parent_native_id:
+                msg = self.session.get(Message, native_id)
+                if msg:
+                    msg.parent_id = parent_native_id
     
     def _extract_content_parts(self, message_id: UUID, msg_data: dict[str, Any]):
         """Extract content parts from a message."""
