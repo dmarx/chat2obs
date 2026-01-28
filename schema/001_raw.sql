@@ -67,6 +67,10 @@ create table raw.messages (
     created_at          timestamptz,
     updated_at          timestamptz,
     
+    -- Change tracking
+    content_hash        text,               -- hash of content for change detection
+    deleted_at          timestamptz,        -- soft delete (removed from source)
+    
     source_json         jsonb not null,
     
     unique (dialogue_id, source_id)
