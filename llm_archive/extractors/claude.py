@@ -142,16 +142,22 @@ class ClaudeExtractor(BaseExtractor):
         # If there's structured content, use that
         if content_array:
             for seq, part in enumerate(content_array):
-                part_type, text_content = self._classify_content_part(part)
+                part_info = self._classify_content_part(part)
                 
                 content_part = ContentPart(
                     message_id=message_id,
                     sequence=seq,
-                    part_type=part_type,
-                    text_content=text_content,
+                    part_type=part_info.get('part_type', 'unknown'),
+                    text_content=part_info.get('text_content'),
+                    language=part_info.get('language'),
+                    media_type=part_info.get('media_type'),
+                    url=part_info.get('url'),
+                    tool_name=part_info.get('tool_name'),
+                    tool_use_id=part_info.get('tool_use_id'),
+                    tool_input=part_info.get('tool_input'),
                     started_at=parse_timestamp(part.get('start_timestamp')),
                     ended_at=parse_timestamp(part.get('stop_timestamp')),
-                    is_error=part.get('is_error', False),
+                    is_error=part_info.get('is_error') or part.get('is_error', False),
                     source_json=part,
                 )
                 self.session.add(content_part)
@@ -173,8 +179,12 @@ class ClaudeExtractor(BaseExtractor):
             )
             self.session.add(content_part)
     
-    def _classify_content_part(self, part: dict[str, Any]) -> tuple[str, str | None]:
-        """Classify a Claude content part and extract text."""
+    def _classify_content_part(self, part: dict[str, Any]) -> dict[str, Any]:
+        """
+        Classify a Claude content part and extract all relevant fields.
+        
+        Returns dict with: part_type, text_content, tool_name, tool_use_id, tool_input, media_type, url
+        """
         part_type = part.get('type', 'unknown').lower()
         
         # Map Claude types to our taxonomy
@@ -183,22 +193,37 @@ class ClaudeExtractor(BaseExtractor):
             'tool_use': 'tool_use',
             'tool_result': 'tool_result',
             'thinking': 'thinking',
+            'image': 'image',
         }
         
-        normalized_type = type_map.get(part_type, part_type)
+        result = {
+            'part_type': type_map.get(part_type, part_type),
+        }
         
-        # Extract text content based on type
-        text_content = None
-        
+        # Extract fields based on type
         if part_type == 'text':
-            text_content = part.get('text')
+            result['text_content'] = part.get('text')
+        
         elif part_type == 'thinking':
-            text_content = part.get('thinking')
+            result['text_content'] = part.get('thinking')
+        
+        elif part_type == 'tool_use':
+            result['tool_name'] = part.get('name')
+            result['tool_use_id'] = part.get('id')
+            result['tool_input'] = part.get('input')
+            # Some tools have text output
+            if isinstance(part.get('input'), dict):
+                # Try to capture any query or text input
+                result['text_content'] = part['input'].get('query') or part['input'].get('text')
+        
         elif part_type == 'tool_result':
+            result['tool_use_id'] = part.get('tool_use_id')
+            result['is_error'] = part.get('is_error', False)
+            
             # Tool results might have text in various places
             content = part.get('content')
             if isinstance(content, str):
-                text_content = content
+                result['text_content'] = content
             elif isinstance(content, list):
                 # Concatenate text from nested content
                 texts = []
@@ -207,9 +232,17 @@ class ClaudeExtractor(BaseExtractor):
                         texts.append(item['text'])
                     elif isinstance(item, str):
                         texts.append(item)
-                text_content = '\n'.join(texts) if texts else None
+                result['text_content'] = '\n'.join(texts) if texts else None
         
-        return normalized_type, text_content
+        elif part_type == 'image':
+            result['media_type'] = part.get('media_type')
+            # Claude images might have URL or base64 source
+            source = part.get('source', {})
+            if source.get('type') == 'url':
+                result['url'] = source.get('url')
+            # base64 data stays in source_json
+        
+        return result
     
     def _extract_citations(self, content_part_id: UUID, citations: list[dict[str, Any]]):
         """Extract citations from a content part."""
