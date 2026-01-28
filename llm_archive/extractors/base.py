@@ -94,12 +94,20 @@ class BaseExtractor(ABC):
     - Preserve message UUIDs for unchanged messages
     - Soft-delete messages removed from source
     - Only rebuild content_parts for actually changed messages
+    
+    Args:
+        session: SQLAlchemy session
+        assume_immutable: If True, assume message content never changes once created.
+            This skips content hash comparison for existing messages, which is faster
+            but won't detect in-place edits. Use for providers where edits create new
+            message UUIDs rather than modifying existing ones. Default: False.
     """
     
     SOURCE_ID: str = None  # Override in subclass
     
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, assume_immutable: bool = False):
         self.session = session
+        self.assume_immutable = assume_immutable
         self._message_id_map: dict[str, UUID] = {}  # source_id -> native UUID
     
     @abstractmethod
