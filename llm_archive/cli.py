@@ -47,22 +47,58 @@ class CLI:
     # Import
     # ================================================================
     
-    def import_chatgpt(self, path: str):
-        """Import ChatGPT conversations.json export."""
+    def import_chatgpt(
+        self, 
+        path: str,
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        """Import ChatGPT conversations.json export.
+        
+        Args:
+            path: Path to conversations.json file
+            assume_immutable: Skip content hash checks for existing messages.
+                Faster, but won't detect in-place message edits. Use when
+                the provider treats messages as immutable (edits create new IDs).
+            incremental: Don't soft-delete messages missing from this import.
+                Use when importing partial/delta exports.
+        """
         data = self._load_json(path)
         
         with get_session(self.db_url) as session:
-            extractor = ChatGPTExtractor(session)
+            extractor = ChatGPTExtractor(
+                session,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
             counts = extractor.extract_all(data)
         
         return counts
     
-    def import_claude(self, path: str):
-        """Import Claude conversations.json export."""
+    def import_claude(
+        self, 
+        path: str,
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        """Import Claude conversations.json export.
+        
+        Args:
+            path: Path to conversations.json file
+            assume_immutable: Skip content hash checks for existing messages.
+                Faster, but won't detect in-place message edits. Use when
+                the provider treats messages as immutable (edits create new IDs).
+            incremental: Don't soft-delete messages missing from this import.
+                Use when importing partial/delta exports.
+        """
         data = self._load_json(path)
         
         with get_session(self.db_url) as session:
-            extractor = ClaudeExtractor(session)
+            extractor = ClaudeExtractor(
+                session,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
             counts = extractor.extract_all(data)
         
         return counts
@@ -71,15 +107,32 @@ class CLI:
         self,
         chatgpt_path: str | None = None,
         claude_path: str | None = None,
+        assume_immutable: bool = False,
+        incremental: bool = False,
     ):
-        """Import from multiple sources."""
+        """Import from multiple sources.
+        
+        Args:
+            chatgpt_path: Path to ChatGPT conversations.json
+            claude_path: Path to Claude conversations.json
+            assume_immutable: Skip content hash checks for existing messages
+            incremental: Don't soft-delete messages missing from this import
+        """
         results = {}
         
         if chatgpt_path:
-            results['chatgpt'] = self.import_chatgpt(chatgpt_path)
+            results['chatgpt'] = self.import_chatgpt(
+                chatgpt_path,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
         
         if claude_path:
-            results['claude'] = self.import_claude(claude_path)
+            results['claude'] = self.import_claude(
+                claude_path,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
         
         return results
     
@@ -264,8 +317,19 @@ class CLI:
         claude_path: str | None = None,
         init_db: bool = False,
         schema_dir: str = "schema",
+        assume_immutable: bool = False,
+        incremental: bool = False,
     ):
-        """Run full pipeline: import, build, annotate."""
+        """Run full pipeline: import, build, annotate.
+        
+        Args:
+            chatgpt_path: Path to ChatGPT conversations.json
+            claude_path: Path to Claude conversations.json
+            init_db: Initialize database schema before import
+            schema_dir: Directory containing schema files
+            assume_immutable: Skip content hash checks for existing messages
+            incremental: Don't soft-delete messages missing from this import
+        """
         results = {}
         
         if init_db:
@@ -276,6 +340,8 @@ class CLI:
             results['import'] = self.import_all(
                 chatgpt_path=chatgpt_path,
                 claude_path=claude_path,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
             )
         
         # Build
