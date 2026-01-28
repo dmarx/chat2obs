@@ -22,8 +22,8 @@ class ClaudeExtractor(BaseExtractor):
     
     SOURCE_ID = 'claude'
     
-    def __init__(self, session: Session):
-        super().__init__(session)
+    def __init__(self, session: Session, assume_immutable: bool = False):
+        super().__init__(session, assume_immutable=assume_immutable)
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
         """
@@ -90,6 +90,9 @@ class ClaudeExtractor(BaseExtractor):
         Incrementally sync messages - preserve UUIDs for unchanged messages.
         
         Claude conversations are linear, so we maintain the chain structure.
+        
+        When assume_immutable=True, existing messages are assumed unchanged and
+        skipped without hash comparison. This is faster but won't detect edits.
         """
         existing_messages = self.get_existing_messages(dialogue_id)
         seen_source_ids = set()
@@ -102,25 +105,38 @@ class ClaudeExtractor(BaseExtractor):
                 continue
             
             seen_source_ids.add(source_id)
-            content_hash = compute_content_hash(msg_data)
             
             if source_id in existing_messages:
                 existing = existing_messages[source_id]
                 
-                # Check if content changed
-                if existing.content_hash == content_hash and existing.deleted_at is None:
-                    # Unchanged - just update parent link if needed and register
+                if self.assume_immutable:
+                    # Fast path: assume content unchanged, just restore if deleted
+                    if existing.deleted_at is not None:
+                        existing.deleted_at = None
+                        logger.debug(f"Restored message {source_id}")
+                    # Update parent link if needed (chain structure may have changed)
                     if existing.parent_id != prev_message_id:
                         existing.parent_id = prev_message_id
                     self.register_message_id(source_id, existing.id)
                     prev_message_id = existing.id
                 else:
-                    # Changed or was soft-deleted - update in place
-                    self._update_message(existing, msg_data, content_hash, prev_message_id)
-                    self.register_message_id(source_id, existing.id)
-                    prev_message_id = existing.id
+                    # Full check: compute hash and compare
+                    content_hash = compute_content_hash(msg_data)
+                    
+                    if existing.content_hash == content_hash and existing.deleted_at is None:
+                        # Unchanged - just update parent link if needed and register
+                        if existing.parent_id != prev_message_id:
+                            existing.parent_id = prev_message_id
+                        self.register_message_id(source_id, existing.id)
+                        prev_message_id = existing.id
+                    else:
+                        # Changed or was soft-deleted - update in place
+                        self._update_message(existing, msg_data, content_hash, prev_message_id)
+                        self.register_message_id(source_id, existing.id)
+                        prev_message_id = existing.id
             else:
-                # New message
+                # New message - always compute hash for storage
+                content_hash = compute_content_hash(msg_data)
                 msg_id = self._create_message(dialogue_id, msg_data, content_hash, prev_message_id)
                 if msg_id:
                     self.register_message_id(source_id, msg_id)
