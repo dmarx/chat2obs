@@ -104,6 +104,42 @@ class TestMessageModel:
         
         assert message.author_id == 'user-123'
         assert message.author_name == 'John Doe'
+    
+    def test_message_with_content_hash(self):
+        """Test Message with content hash for change detection."""
+        message = Message(
+            dialogue_id=uuid4(),
+            source_id='msg-004',
+            role='user',
+            content_hash='a' * 64,  # SHA-256 hash
+            source_json={},
+        )
+        
+        assert message.content_hash == 'a' * 64
+    
+    def test_message_with_deleted_at(self):
+        """Test Message with soft delete timestamp."""
+        now = datetime.now(timezone.utc)
+        message = Message(
+            dialogue_id=uuid4(),
+            source_id='msg-005',
+            role='user',
+            deleted_at=now,
+            source_json={},
+        )
+        
+        assert message.deleted_at == now
+    
+    def test_message_not_deleted_by_default(self):
+        """Test that deleted_at is None by default."""
+        message = Message(
+            dialogue_id=uuid4(),
+            source_id='msg-006',
+            role='user',
+            source_json={},
+        )
+        
+        assert message.deleted_at is None
 
 
 class TestContentPartModel:
