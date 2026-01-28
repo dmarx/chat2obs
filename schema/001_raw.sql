@@ -1,8 +1,15 @@
 -- schema/001_raw.sql
+-- Raw data layer: source of truth from imports
+
+-- ============================================================
+-- EXTENSIONS
+-- ============================================================
 
 create extension if not exists vector;
 
--- Raw data layer: source of truth from imports
+-- ============================================================
+-- SCHEMA SETUP
+-- ============================================================
 
 create schema if not exists raw;
 
@@ -10,7 +17,7 @@ create schema if not exists raw;
 -- raw.sources
 -- ============================================================
 
-create table if not exists raw.sources (
+create table raw.sources (
     id                  text primary key,
     display_name        text not null,
     has_native_trees    boolean not null,
@@ -18,17 +25,15 @@ create table if not exists raw.sources (
     metadata            jsonb
 );
 
-insert into raw.sources (id, display_name, has_native_trees, role_vocabulary)
-values
+insert into raw.sources (id, display_name, has_native_trees, role_vocabulary) values
     ('chatgpt', 'ChatGPT', true, array['user', 'assistant', 'system', 'tool']),
-    ('claude', 'Claude', false, array['user', 'assistant'])
-on conflict (id) do nothing;
+    ('claude', 'Claude', false, array['user', 'assistant']);
 
 -- ============================================================
 -- raw.dialogues
 -- ============================================================
 
-create table if not exists raw.dialogues (
+create table raw.dialogues (
     id                  uuid primary key default gen_random_uuid(),
     source              text not null references raw.sources(id),
     source_id           text not null,
@@ -47,13 +52,15 @@ create table if not exists raw.dialogues (
 -- raw.messages
 -- ============================================================
 
-create table if not exists raw.messages (
+create table raw.messages (
     id                  uuid primary key default gen_random_uuid(),
     dialogue_id         uuid not null references raw.dialogues on delete cascade,
     source_id           text not null,
     
+    -- Tree structure
     parent_id           uuid references raw.messages,
     
+    -- Normalized fields
     role                text not null,
     author_id           text,
     author_name         text,
@@ -69,7 +76,7 @@ create table if not exists raw.messages (
 -- raw.content_parts
 -- ============================================================
 
-create table if not exists raw.content_parts (
+create table raw.content_parts (
     id                  uuid primary key default gen_random_uuid(),
     message_id          uuid not null references raw.messages on delete cascade,
     sequence            int not null,
@@ -77,6 +84,19 @@ create table if not exists raw.content_parts (
     part_type           text not null,
     text_content        text,
     
+    -- Code-specific fields
+    language            text,               -- programming language for code blocks
+    
+    -- Media fields
+    media_type          text,               -- MIME type (image/png, audio/mp3, etc.)
+    url                 text,               -- URL for external resources
+    
+    -- Tool use fields (Claude)
+    tool_name           text,               -- name of tool being used
+    tool_use_id         text,               -- links tool_result back to tool_use
+    tool_input          jsonb,              -- tool input parameters
+    
+    -- Timing and status
     started_at          timestamptz,
     ended_at            timestamptz,
     is_error            boolean default false,
@@ -90,7 +110,7 @@ create table if not exists raw.content_parts (
 -- raw.citations
 -- ============================================================
 
-create table if not exists raw.citations (
+create table raw.citations (
     id                  uuid primary key default gen_random_uuid(),
     content_part_id     uuid not null references raw.content_parts on delete cascade,
     source_id           text,
@@ -111,7 +131,7 @@ create table if not exists raw.citations (
 -- raw.attachments
 -- ============================================================
 
-create table if not exists raw.attachments (
+create table raw.attachments (
     id                  uuid primary key default gen_random_uuid(),
     message_id          uuid not null references raw.messages on delete cascade,
     
@@ -124,10 +144,10 @@ create table if not exists raw.attachments (
 );
 
 -- ============================================================
--- ChatGPT Extensions
+-- SOURCE EXTENSIONS: ChatGPT
 -- ============================================================
 
-create table if not exists raw.chatgpt_message_meta (
+create table raw.chatgpt_message_meta (
     message_id          uuid primary key references raw.messages on delete cascade,
     model_slug          text,
     status              text,
@@ -136,7 +156,7 @@ create table if not exists raw.chatgpt_message_meta (
     source_json         jsonb not null
 );
 
-create table if not exists raw.chatgpt_search_groups (
+create table raw.chatgpt_search_groups (
     id                  uuid primary key default gen_random_uuid(),
     message_id          uuid not null references raw.messages on delete cascade,
     group_type          text,
@@ -144,7 +164,7 @@ create table if not exists raw.chatgpt_search_groups (
     source_json         jsonb not null
 );
 
-create table if not exists raw.chatgpt_search_entries (
+create table raw.chatgpt_search_entries (
     id                  uuid primary key default gen_random_uuid(),
     group_id            uuid not null references raw.chatgpt_search_groups on delete cascade,
     sequence            int not null,
@@ -156,7 +176,7 @@ create table if not exists raw.chatgpt_search_entries (
     source_json         jsonb not null
 );
 
-create table if not exists raw.chatgpt_code_executions (
+create table raw.chatgpt_code_executions (
     id                  uuid primary key default gen_random_uuid(),
     message_id          uuid not null references raw.messages on delete cascade,
     run_id              text,
@@ -170,7 +190,7 @@ create table if not exists raw.chatgpt_code_executions (
     source_json         jsonb not null
 );
 
-create table if not exists raw.chatgpt_code_outputs (
+create table raw.chatgpt_code_outputs (
     id                  uuid primary key default gen_random_uuid(),
     execution_id        uuid not null references raw.chatgpt_code_executions on delete cascade,
     sequence            int not null,
@@ -181,7 +201,7 @@ create table if not exists raw.chatgpt_code_outputs (
     source_json         jsonb not null
 );
 
-create table if not exists raw.chatgpt_dalle_generations (
+create table raw.chatgpt_dalle_generations (
     id                  uuid primary key default gen_random_uuid(),
     content_part_id     uuid not null references raw.content_parts on delete cascade,
     gen_id              text,
@@ -194,7 +214,7 @@ create table if not exists raw.chatgpt_dalle_generations (
     source_json         jsonb not null
 );
 
-create table if not exists raw.chatgpt_canvas_docs (
+create table raw.chatgpt_canvas_docs (
     id                  uuid primary key default gen_random_uuid(),
     message_id          uuid not null references raw.messages on delete cascade,
     textdoc_id          text,
@@ -208,24 +228,37 @@ create table if not exists raw.chatgpt_canvas_docs (
 );
 
 -- ============================================================
--- Claude Extensions
+-- SOURCE EXTENSIONS: Claude
 -- ============================================================
 
-create table if not exists raw.claude_message_meta (
+create table raw.claude_message_meta (
     message_id          uuid primary key references raw.messages on delete cascade,
     source_json         jsonb not null
 );
 
 -- ============================================================
--- Indexes
+-- RAW INDEXES
 -- ============================================================
 
-create index if not exists idx_raw_dialogues_source on raw.dialogues(source, source_id);
-create index if not exists idx_raw_dialogues_created on raw.dialogues(created_at);
-create index if not exists idx_raw_messages_dialogue on raw.messages(dialogue_id);
-create index if not exists idx_raw_messages_parent on raw.messages(parent_id);
-create index if not exists idx_raw_messages_role on raw.messages(role);
-create index if not exists idx_raw_content_parts_message on raw.content_parts(message_id, sequence);
-create index if not exists idx_raw_content_parts_type on raw.content_parts(part_type);
-create index if not exists idx_raw_citations_part on raw.citations(content_part_id);
-create index if not exists idx_raw_attachments_message on raw.attachments(message_id);
+create index idx_raw_dialogues_source on raw.dialogues(source, source_id);
+create index idx_raw_dialogues_created on raw.dialogues(created_at);
+
+create index idx_raw_messages_dialogue on raw.messages(dialogue_id);
+create index idx_raw_messages_parent on raw.messages(parent_id);
+create index idx_raw_messages_role on raw.messages(role);
+create index idx_raw_messages_created on raw.messages(created_at);
+
+create index idx_raw_content_parts_message on raw.content_parts(message_id, sequence);
+create index idx_raw_content_parts_type on raw.content_parts(part_type);
+
+create index idx_raw_citations_part on raw.citations(content_part_id);
+create index idx_raw_citations_url on raw.citations(url);
+
+create index idx_raw_attachments_message on raw.attachments(message_id);
+
+create index idx_raw_chatgpt_search_groups_msg on raw.chatgpt_search_groups(message_id);
+create index idx_raw_chatgpt_search_entries_group on raw.chatgpt_search_entries(group_id);
+create index idx_raw_chatgpt_code_exec_msg on raw.chatgpt_code_executions(message_id);
+create index idx_raw_chatgpt_code_outputs_exec on raw.chatgpt_code_outputs(execution_id);
+create index idx_raw_chatgpt_dalle_part on raw.chatgpt_dalle_generations(content_part_id);
+create index idx_raw_chatgpt_canvas_msg on raw.chatgpt_canvas_docs(message_id);
