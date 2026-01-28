@@ -154,14 +154,17 @@ class ChatGPTExtractor(BaseExtractor):
         parts = content.get('parts', [])
         
         for seq, part in enumerate(parts):
-            part_type, text_content, part_json = self._classify_content_part(part)
+            part_info = self._classify_content_part(part)
             
             content_part = ContentPart(
                 message_id=message_id,
                 sequence=seq,
-                part_type=part_type,
-                text_content=text_content,
-                source_json=part_json,
+                part_type=part_info.get('part_type', 'unknown'),
+                text_content=part_info.get('text_content'),
+                language=part_info.get('language'),
+                media_type=part_info.get('media_type'),
+                url=part_info.get('url'),
+                source_json=part_info.get('source_json', {}),
             )
             self.session.add(content_part)
             self.session.flush()
@@ -184,29 +187,73 @@ class ChatGPTExtractor(BaseExtractor):
             if first_part:
                 self._extract_citations(first_part.id, citations)
     
-    def _classify_content_part(self, part: str | dict[str, Any]) -> tuple[str, str | None, dict]:
-        """Classify a content part and extract text."""
+    def _classify_content_part(self, part: str | dict[str, Any]) -> dict[str, Any]:
+        """
+        Classify a content part and extract all relevant fields.
+        
+        Returns dict with: part_type, text_content, language, media_type, url, source_json
+        """
         if isinstance(part, str):
-            return 'text', part, {'text': part}
+            return {
+                'part_type': 'text',
+                'text_content': part,
+                'source_json': {'text': part},
+            }
         
         if not isinstance(part, dict):
-            return 'unknown', None, {'raw': str(part)}
+            return {
+                'part_type': 'unknown',
+                'source_json': {'raw': str(part)},
+            }
         
         content_type = part.get('content_type', '')
+        result = {'source_json': part}
         
+        # Image content
         if 'image' in content_type:
-            return 'image', None, part
-        if 'audio' in content_type:
-            return 'audio', None, part
-        if 'video' in content_type:
-            return 'video', None, part
+            result['part_type'] = 'image'
+            result['media_type'] = part.get('content_type')
+            
+            # Try to find URL in various places
+            asset_pointer = part.get('asset_pointer', '')
+            if asset_pointer and asset_pointer.startswith('file-service://'):
+                result['url'] = asset_pointer
+            elif part.get('url'):
+                result['url'] = part.get('url')
+            
+            return result
         
-        # Text might be in various places
+        # Audio content
+        if 'audio' in content_type:
+            result['part_type'] = 'audio'
+            result['media_type'] = part.get('content_type')
+            result['url'] = part.get('url') or part.get('asset_pointer')
+            return result
+        
+        # Video content
+        if 'video' in content_type:
+            result['part_type'] = 'video'
+            result['media_type'] = part.get('content_type')
+            result['url'] = part.get('url') or part.get('asset_pointer')
+            return result
+        
+        # Code content (from code interpreter)
+        if content_type == 'code' or part.get('language'):
+            result['part_type'] = 'code'
+            result['language'] = part.get('language')
+            result['text_content'] = part.get('text') or part.get('code')
+            return result
+        
+        # Text content - might be in various places
         text = part.get('text') or part.get('result') or part.get('content')
         if text and isinstance(text, str):
-            return 'text', text, part
+            result['part_type'] = 'text'
+            result['text_content'] = text
+            return result
         
-        return content_type or 'unknown', None, part
+        # Fallback
+        result['part_type'] = content_type or 'unknown'
+        return result
     
     def _extract_citations(self, content_part_id: UUID, citations: list[dict[str, Any]]):
         """Extract citations from metadata."""
