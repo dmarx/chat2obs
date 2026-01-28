@@ -1,8 +1,9 @@
-# tests/test_idempotency.py
-"""Tests for idempotent import behavior."""
+# tests/integration/test_idempotency.py
+"""Tests for idempotent import behavior with incremental updates."""
 
 import copy
 import pytest
+from datetime import datetime, timezone
 
 from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
 from llm_archive.models import Dialogue, Message
@@ -247,3 +248,219 @@ class TestPartialUpdate:
         # Should have more messages now
         new_msg_count = clean_db_session.query(Message).count()
         assert new_msg_count == original_msg_count + 1
+
+
+class TestUUIDPreservation:
+    """Tests for message UUID preservation during updates."""
+    
+    def test_unchanged_messages_keep_uuids(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that unchanged messages keep their UUIDs."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Record original UUIDs
+        original_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        # Update with later timestamp but same content
+        updated = copy.deepcopy(chatgpt_simple_conversation)
+        updated['update_time'] = 1700005000.0
+        updated['title'] = "New Title"  # Only title changed, not messages
+        
+        extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        
+        # Check UUIDs are preserved
+        new_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        for source_id, original_uuid in original_messages.items():
+            assert source_id in new_messages, f"Message {source_id} should still exist"
+            assert new_messages[source_id] == original_uuid, f"Message {source_id} UUID changed"
+    
+    def test_changed_message_keeps_uuid_updates_content(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that changed messages keep their UUID but update content."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Find a message to modify
+        first_user_msg = clean_db_session.query(Message).filter(
+            Message.role == 'user'
+        ).first()
+        original_uuid = first_user_msg.id
+        original_source_id = first_user_msg.source_id
+        
+        # Modify the message content
+        updated = copy.deepcopy(chatgpt_simple_conversation)
+        updated['update_time'] = 1700005000.0
+        
+        for node_id, node in updated['mapping'].items():
+            msg = node.get('message')
+            if msg and msg.get('id') == original_source_id:
+                msg['content']['parts'] = ['MODIFIED MESSAGE CONTENT']
+                break
+        
+        extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        
+        # UUID should be preserved
+        modified_msg = clean_db_session.query(Message).filter(
+            Message.source_id == original_source_id
+        ).first()
+        
+        assert modified_msg is not None
+        assert modified_msg.id == original_uuid, "UUID should be preserved"
+        assert 'MODIFIED' in str(modified_msg.source_json), "Content should be updated"
+    
+    def test_claude_unchanged_messages_keep_uuids(self, clean_db_session, claude_simple_conversation):
+        """Test UUID preservation for Claude extractor."""
+        extractor = ClaudeExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        
+        # Record original UUIDs
+        original_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        # Update with later timestamp but same messages
+        updated = copy.deepcopy(claude_simple_conversation)
+        updated['updated_at'] = "2024-01-20T10:00:00Z"
+        updated['name'] = "New Title"
+        
+        extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        
+        # Check UUIDs are preserved
+        new_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        for source_id, original_uuid in original_messages.items():
+            assert source_id in new_messages
+            assert new_messages[source_id] == original_uuid
+
+
+class TestSoftDelete:
+    """Tests for soft-delete behavior when messages are removed from source."""
+    
+    def test_removed_message_soft_deleted(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that messages removed from source are soft-deleted."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Remove a message from the conversation
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1700005000.0
+        
+        # Remove the last message
+        mapping_keys = list(truncated['mapping'].keys())
+        last_msg_key = mapping_keys[-1]
+        del truncated['mapping'][last_msg_key]
+        
+        # Update parent to not have children pointing to deleted msg
+        for node_id, node in truncated['mapping'].items():
+            if last_msg_key in node.get('children', []):
+                node['children'].remove(last_msg_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Total message count should be the same (soft-deleted, not hard-deleted)
+        total_count = clean_db_session.query(Message).count()
+        assert total_count == original_count
+        
+        # Active message count should be one less
+        active_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.is_(None)
+        ).count()
+        assert active_count == original_count - 1
+        
+        # Should have one soft-deleted message
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 1
+    
+    def test_soft_deleted_message_restored_on_reappear(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that soft-deleted message is restored if it reappears."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Remove a message
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1700005000.0
+        
+        mapping_keys = list(truncated['mapping'].keys())
+        removed_msg_key = mapping_keys[-1]
+        del truncated['mapping'][removed_msg_key]
+        
+        for node_id, node in truncated['mapping'].items():
+            if removed_msg_key in node.get('children', []):
+                node['children'].remove(removed_msg_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Verify it's soft-deleted
+        deleted_msg = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).first()
+        assert deleted_msg is not None
+        deleted_uuid = deleted_msg.id
+        
+        # Now restore by importing original again with newer timestamp
+        restored = copy.deepcopy(chatgpt_simple_conversation)
+        restored['update_time'] = 1700010000.0
+        
+        extractor.extract_dialogue(restored)
+        clean_db_session.commit()
+        
+        # Message should be restored
+        restored_msg = clean_db_session.query(Message).filter(
+            Message.id == deleted_uuid
+        ).first()
+        
+        assert restored_msg is not None
+        assert restored_msg.deleted_at is None, "Message should be restored (deleted_at = None)"
+    
+    def test_content_hash_detects_changes(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that content hash correctly detects changed messages."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message's content hash
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        assert original_hash is not None, "Content hash should be computed"
+        
+        # Modify the message
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1700005000.0
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['Completely different content']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # Hash should have changed
+        clean_db_session.refresh(msg)
+        assert msg.content_hash != original_hash, "Content hash should change when content changes"
