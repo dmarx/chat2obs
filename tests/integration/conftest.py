@@ -98,7 +98,8 @@ def db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
     yield session
     
     session.close()
-    transaction.rollback()
+    if transaction.is_active:
+        transaction.rollback()
     connection.close()
 
 
@@ -334,7 +335,7 @@ def chatgpt_branched_conversation() -> dict:
 
 @pytest.fixture
 def chatgpt_conversation_with_code() -> dict:
-    """ChatGPT conversation with code execution."""
+    """ChatGPT conversation with code blocks including language."""
     root_id = str(uuid.uuid4())
     msg1_id = str(uuid.uuid4())
     msg2_id = str(uuid.uuid4())
@@ -361,7 +362,7 @@ def chatgpt_conversation_with_code() -> dict:
                     "create_time": 1700000100.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Calculate 2+2"]
+                        "parts": ["Write a Python function to calculate fibonacci numbers"]
                     }
                 }
             },
@@ -375,7 +376,73 @@ def chatgpt_conversation_with_code() -> dict:
                     "create_time": 1700000200.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["2 + 2 = 4"]
+                        "parts": [
+                            "Here's a Python function:",
+                            {
+                                "content_type": "code",
+                                "language": "python",
+                                "text": "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)"
+                            },
+                            "This is a recursive implementation."
+                        ]
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.fixture
+def chatgpt_conversation_with_image() -> dict:
+    """ChatGPT conversation with image content."""
+    root_id = str(uuid.uuid4())
+    msg1_id = str(uuid.uuid4())
+    msg2_id = str(uuid.uuid4())
+    
+    return {
+        "conversation_id": "conv-image-001",
+        "title": "Image Test",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            root_id: {
+                "id": root_id,
+                "parent": None,
+                "children": [msg1_id],
+                "message": None
+            },
+            msg1_id: {
+                "id": msg1_id,
+                "parent": root_id,
+                "children": [msg2_id],
+                "message": {
+                    "id": msg1_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["What's in this image?"]
+                    }
+                }
+            },
+            msg2_id: {
+                "id": msg2_id,
+                "parent": msg1_id,
+                "children": [],
+                "message": {
+                    "id": msg2_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "The image shows a sunset.",
+                            {
+                                "content_type": "image/png",
+                                "asset_pointer": "file-service://dalle-gen-abc123",
+                                "url": "https://example.com/generated-image.png"
+                            }
+                        ]
                     }
                 }
             }
