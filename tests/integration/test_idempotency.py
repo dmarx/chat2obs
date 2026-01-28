@@ -672,3 +672,206 @@ class TestAssumeImmutableFlag:
         # In immutable mode, hash should NOT change
         clean_db_session.refresh(msg)
         assert msg.content_hash == original_hash
+
+
+class TestIncrementalMode:
+    """Tests for incremental (delta import) mode."""
+    
+    def test_incremental_mode_skips_soft_delete(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that incremental mode doesn't soft-delete missing messages."""
+        extractor = ChatGPTExtractor(clean_db_session, incremental=True)
+        
+        # First import - full conversation
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Second import - partial conversation (remove a message)
+        partial = copy.deepcopy(chatgpt_simple_conversation)
+        partial['update_time'] = 1800000000.0
+        
+        mapping_keys = list(partial['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del partial['mapping'][removed_key]
+        
+        for node_id, node in partial['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # In incremental mode, no messages should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 0, "Incremental mode should not soft-delete"
+        
+        # Total count should be unchanged
+        assert clean_db_session.query(Message).count() == original_count
+    
+    def test_non_incremental_mode_does_soft_delete(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that non-incremental mode (default) does soft-delete missing messages."""
+        extractor = ChatGPTExtractor(clean_db_session, incremental=False)
+        
+        # First import - full conversation
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Second import - partial conversation
+        partial = copy.deepcopy(chatgpt_simple_conversation)
+        partial['update_time'] = 1800000000.0
+        
+        mapping_keys = list(partial['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del partial['mapping'][removed_key]
+        
+        for node_id, node in partial['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # In non-incremental mode, missing message should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 1, "Non-incremental mode should soft-delete"
+    
+    def test_incremental_mode_still_adds_new_messages(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that incremental mode still adds new messages."""
+        extractor = ChatGPTExtractor(clean_db_session, incremental=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Add a new message
+        extended = copy.deepcopy(chatgpt_simple_conversation)
+        extended['update_time'] = 1800000000.0
+        
+        new_msg_id = "new-incremental-msg"
+        last_node_id = list(extended['mapping'].keys())[-1]
+        
+        extended['mapping'][new_msg_id] = {
+            "id": new_msg_id,
+            "parent": last_node_id,
+            "children": [],
+            "message": {
+                "id": new_msg_id,
+                "author": {"role": "user"},
+                "create_time": 1700006000.0,
+                "content": {"content_type": "text", "parts": ["New message"]}
+            }
+        }
+        
+        extractor.extract_dialogue(extended)
+        clean_db_session.commit()
+        
+        # New message should be created
+        assert clean_db_session.query(Message).count() == original_count + 1
+    
+    def test_incremental_mode_still_updates_changed_messages(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that incremental mode still updates changed messages."""
+        # Use mutable + incremental mode
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=False, incremental=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # Modify message content
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1800000000.0
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['MODIFIED CONTENT']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # Content should be updated
+        clean_db_session.refresh(msg)
+        assert msg.content_hash != original_hash
+    
+    def test_claude_incremental_mode(self, clean_db_session, claude_simple_conversation):
+        """Test that incremental mode works for Claude extractor."""
+        extractor = ClaudeExtractor(clean_db_session, incremental=True)
+        
+        # First import
+        extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Partial import (remove first message)
+        partial = copy.deepcopy(claude_simple_conversation)
+        partial['updated_at'] = "2025-01-01T00:00:00Z"
+        partial['chat_messages'] = partial['chat_messages'][1:]  # Remove first message
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # No messages should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 0
+    
+    def test_combined_immutable_and_incremental(self, clean_db_session, chatgpt_simple_conversation):
+        """Test combining immutable and incremental modes for fastest delta imports."""
+        extractor = ChatGPTExtractor(
+            clean_db_session, 
+            assume_immutable=True, 
+            incremental=True
+        )
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # Partial import with "modified" content
+        partial = copy.deepcopy(chatgpt_simple_conversation)
+        partial['update_time'] = 1800000000.0
+        
+        # Remove a message
+        mapping_keys = list(partial['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del partial['mapping'][removed_key]
+        
+        # "Modify" existing message (should be ignored in immutable mode)
+        for node_id, node in partial['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['SHOULD BE IGNORED']
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # No soft-deletes (incremental mode)
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 0
+        
+        # Hash unchanged (immutable mode)
+        clean_db_session.refresh(msg)
+        assert msg.content_hash == original_hash
