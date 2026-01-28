@@ -1,4 +1,4 @@
-# tests/test_models.py
+# tests/integration/test_models.py
 """Tests for SQLAlchemy models and relationships."""
 
 import pytest
@@ -18,20 +18,21 @@ class TestRawModels:
     def test_create_dialogue(self, db_session):
         """Test creating a dialogue."""
         dialogue = Dialogue(
-            source='test',
+            source='chatgpt',
             source_id='test-001',
             title='Test Dialogue',
             created_at=datetime.now(timezone.utc),
+            source_json={'test': True},
         )
         db_session.add(dialogue)
         db_session.flush()
         
         assert dialogue.id is not None
-        assert dialogue.source == 'test'
+        assert dialogue.source == 'chatgpt'
     
     def test_create_message_with_parent(self, db_session):
         """Test creating messages with parent relationship."""
-        dialogue = Dialogue(source='test', source_id='test-002')
+        dialogue = Dialogue(source='chatgpt', source_id='test-002', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
@@ -56,7 +57,7 @@ class TestRawModels:
     
     def test_create_content_part(self, db_session):
         """Test creating content parts."""
-        dialogue = Dialogue(source='test', source_id='test-003')
+        dialogue = Dialogue(source='chatgpt', source_id='test-003', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
@@ -82,7 +83,7 @@ class TestRawModels:
     
     def test_dialogue_messages_relationship(self, db_session):
         """Test dialogue to messages relationship."""
-        dialogue = Dialogue(source='test', source_id='test-004')
+        dialogue = Dialogue(source='chatgpt', source_id='test-004', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
@@ -102,7 +103,7 @@ class TestDerivedModels:
     
     def test_create_dialogue_tree(self, db_session):
         """Test creating a dialogue tree."""
-        dialogue = Dialogue(source='test', source_id='test-005')
+        dialogue = Dialogue(source='chatgpt', source_id='test-005', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
@@ -120,7 +121,7 @@ class TestDerivedModels:
     
     def test_create_exchange(self, db_session):
         """Test creating an exchange."""
-        dialogue = Dialogue(source='test', source_id='test-006')
+        dialogue = Dialogue(source='chatgpt', source_id='test-006', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
@@ -144,7 +145,7 @@ class TestDerivedModels:
     
     def test_exchange_content_relationship(self, db_session):
         """Test exchange to content relationship."""
-        dialogue = Dialogue(source='test', source_id='test-007')
+        dialogue = Dialogue(source='chatgpt', source_id='test-007', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
@@ -220,7 +221,7 @@ class TestCascadeDeletes:
     
     def test_delete_dialogue_cascades_to_messages(self, db_session):
         """Test that deleting dialogue deletes messages."""
-        dialogue = Dialogue(source='test', source_id='test-cascade-001')
+        dialogue = Dialogue(source='chatgpt', source_id='test-cascade-001', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
@@ -242,7 +243,7 @@ class TestCascadeDeletes:
     
     def test_delete_message_cascades_to_content(self, db_session):
         """Test that deleting message deletes content parts."""
-        dialogue = Dialogue(source='test', source_id='test-cascade-002')
+        dialogue = Dialogue(source='chatgpt', source_id='test-cascade-002', source_json={})
         db_session.add(dialogue)
         db_session.flush()
         
