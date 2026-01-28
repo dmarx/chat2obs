@@ -39,24 +39,9 @@ jobs:
         run: uv run ruff check .
         continue-on-error: true
 
-  test:
-    name: Test
+  unit-tests:
+    name: Unit Tests
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: llm_archive_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
 
     steps:
       - uses: actions/checkout@v4
@@ -73,17 +58,8 @@ jobs:
         # run: uv sync --locked --all-extras --dev
         run: uv sync --all-extras --dev
 
-      - name: Wait for PostgreSQL
-        run: |
-          until pg_isready -h localhost -p 5432 -U postgres; do
-            echo "Waiting for postgres..."
-            sleep 2
-          done
-
-      - name: Run tests
-        run: uv run pytest --cov=llm_archive --cov-report=xml --cov-report=term-missing
-        env:
-          TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      - name: Run unit tests
+        run: uv run pytest tests/unit -v --cov=llm_archive --cov-report=xml
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
@@ -92,29 +68,10 @@ jobs:
           fail_ci_if_error: false
         continue-on-error: true
 
-  test-matrix:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
 
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: llm_archive_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -123,7 +80,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version-file: "pyproject.toml"
-          
+      
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
@@ -131,17 +88,45 @@ jobs:
         # run: uv sync --locked --all-extras --dev
         run: uv sync --all-extras --dev
 
-      - name: Wait for PostgreSQL
+      - name: Create .env file
         run: |
-          until pg_isready -h localhost -p 5432 -U postgres; do
-            echo "Waiting for postgres..."
+          cat > .env << EOF
+          POSTGRES_HOST=localhost
+          POSTGRES_PORT=5432
+          POSTGRES_DB=llm_archive_test
+          POSTGRES_USER=postgres
+          POSTGRES_PASSWORD=postgres
+          EOF
+
+      - name: Start database with docker-compose
+        run: |
+          docker compose up -d
+          # Wait for database to be ready
+          for i in {1..30}; do
+            if docker compose exec -T db pg_isready -U postgres; then
+              echo "Database is ready"
+              break
+            fi
+            echo "Waiting for database... ($i)"
             sleep 2
           done
 
-      - name: Run tests
-        run: uv run pytest -v
+      - name: Create test database
+        run: |
+          docker compose exec -T db psql -U postgres -c "CREATE DATABASE llm_archive_test" || true
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration -v --cov=llm_archive --cov-report=xml
         env:
-          TEST_DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/llm_archive_test
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+        continue-on-error: true
+
 
   build:
     name: Build Package
