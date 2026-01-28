@@ -4,7 +4,7 @@
 import pytest
 from datetime import datetime, timezone
 
-from llm_archive.extractors.base import parse_timestamp, normalize_role, safe_get
+from llm_archive.extractors.base import parse_timestamp, normalize_role, safe_get, compute_content_hash
 
 
 class TestParseTimestamp:
@@ -139,3 +139,70 @@ class TestTimestampEdgeCases:
         result = parse_timestamp("2024-01-15T10:00:00")
         assert result is not None
         assert result.tzinfo is not None
+
+
+class TestComputeContentHash:
+    """Tests for content hash computation."""
+    
+    def test_hash_dict(self):
+        """Test hashing a dictionary."""
+        data = {'text': 'Hello world', 'role': 'user'}
+        result = compute_content_hash(data)
+        
+        assert result is not None
+        assert len(result) == 64  # SHA-256 hex string
+    
+    def test_hash_string(self):
+        """Test hashing a plain string."""
+        result = compute_content_hash('Hello world')
+        
+        assert result is not None
+        assert len(result) == 64
+    
+    def test_hash_is_deterministic(self):
+        """Test that same content produces same hash."""
+        data = {'message': 'test', 'value': 123}
+        
+        hash1 = compute_content_hash(data)
+        hash2 = compute_content_hash(data)
+        
+        assert hash1 == hash2
+    
+    def test_hash_is_order_independent(self):
+        """Test that key order doesn't affect hash."""
+        data1 = {'a': 1, 'b': 2}
+        data2 = {'b': 2, 'a': 1}
+        
+        hash1 = compute_content_hash(data1)
+        hash2 = compute_content_hash(data2)
+        
+        assert hash1 == hash2
+    
+    def test_different_content_different_hash(self):
+        """Test that different content produces different hash."""
+        data1 = {'text': 'Hello'}
+        data2 = {'text': 'World'}
+        
+        hash1 = compute_content_hash(data1)
+        hash2 = compute_content_hash(data2)
+        
+        assert hash1 != hash2
+    
+    def test_hash_nested_dict(self):
+        """Test hashing nested dictionary."""
+        data = {
+            'content': {
+                'parts': ['Hello', {'type': 'code', 'text': 'print(1)'}]
+            },
+            'metadata': {'author': 'user'}
+        }
+        
+        result = compute_content_hash(data)
+        assert len(result) == 64
+    
+    def test_hash_list(self):
+        """Test hashing a list."""
+        data = [{'text': 'message 1'}, {'text': 'message 2'}]
+        
+        result = compute_content_hash(data)
+        assert len(result) == 64
