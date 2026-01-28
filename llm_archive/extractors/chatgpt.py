@@ -24,8 +24,8 @@ class ChatGPTExtractor(BaseExtractor):
     
     SOURCE_ID = 'chatgpt'
     
-    def __init__(self, session: Session):
-        super().__init__(session)
+    def __init__(self, session: Session, assume_immutable: bool = False):
+        super().__init__(session, assume_immutable=assume_immutable)
         self.counts = {}
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
@@ -93,15 +93,18 @@ class ChatGPTExtractor(BaseExtractor):
         Incrementally sync messages - preserve UUIDs for unchanged messages.
         
         This method:
-        1. Compares existing messages with new data
+        1. Compares existing messages with new data (unless assume_immutable=True)
         2. Updates changed messages in place
         3. Creates new messages
         4. Soft-deletes messages removed from source
+        
+        When assume_immutable=True, existing messages are assumed unchanged and
+        skipped without hash comparison. This is faster but won't detect edits.
         """
         existing_messages = self.get_existing_messages(dialogue_id)
         seen_source_ids = set()
         
-        # First pass: identify all message source IDs and compute hashes
+        # First pass: collect message data
         message_data = {}
         for node_id, node in mapping.items():
             msg_data = node.get('message')
@@ -115,28 +118,36 @@ class ChatGPTExtractor(BaseExtractor):
             message_data[msg_source_id] = {
                 'node': node,
                 'msg_data': msg_data,
-                'content_hash': compute_content_hash(msg_data),
             }
             seen_source_ids.add(msg_source_id)
         
         # Second pass: sync each message
         for source_id, data in message_data.items():
             msg_data = data['msg_data']
-            new_hash = data['content_hash']
             
             if source_id in existing_messages:
                 existing = existing_messages[source_id]
                 
-                # Check if content changed
-                if existing.content_hash == new_hash and existing.deleted_at is None:
-                    # Unchanged - just register the ID mapping
+                if self.assume_immutable:
+                    # Fast path: assume content unchanged, just restore if deleted
+                    if existing.deleted_at is not None:
+                        existing.deleted_at = None
+                        logger.debug(f"Restored message {source_id}")
                     self.register_message_id(source_id, existing.id)
                 else:
-                    # Changed or was soft-deleted - update in place
-                    self._update_message(existing, msg_data, new_hash)
-                    self.register_message_id(source_id, existing.id)
+                    # Full check: compute hash and compare
+                    new_hash = compute_content_hash(msg_data)
+                    
+                    if existing.content_hash == new_hash and existing.deleted_at is None:
+                        # Unchanged - just register the ID mapping
+                        self.register_message_id(source_id, existing.id)
+                    else:
+                        # Changed or was soft-deleted - update in place
+                        self._update_message(existing, msg_data, new_hash)
+                        self.register_message_id(source_id, existing.id)
             else:
-                # New message
+                # New message - always compute hash for storage
+                new_hash = compute_content_hash(msg_data)
                 msg_id = self._create_message(dialogue_id, msg_data, new_hash)
                 if msg_id:
                     self.register_message_id(source_id, msg_id)
