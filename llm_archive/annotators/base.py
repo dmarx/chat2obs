@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import func as sql_func
 from sqlalchemy.orm import Session
 from loguru import logger
 
 from llm_archive.models import Annotation
+from llm_archive.models.derived import AnnotatorCursor
 
 
 class Annotator(ABC):
@@ -19,11 +21,16 @@ class Annotator(ABC):
     Annotators analyze entities and produce annotations stored in
     the derived.annotations table.
     
+    Supports incremental processing via cursor tracking:
+    - Each annotator+version tracks a "high water mark" (cursor)
+    - Only entities created after the cursor are processed
+    - Bump VERSION to force reprocessing all entities
+    
     Subclass and implement:
     - ANNOTATION_TYPE: Type of annotation ('tag', 'title', 'feature', etc.)
     - ENTITY_TYPE: Target entity type ('message', 'exchange', 'dialogue')
     - SOURCE: Provenance ('heuristic', 'model', 'manual')
-    - VERSION: Version string for reproducibility
+    - VERSION: Version string - bump this to reprocess all entities
     - compute(): Main logic to generate annotations
     """
     
@@ -35,11 +42,88 @@ class Annotator(ABC):
     
     def __init__(self, session: Session):
         self.session = session
+        self._cursor: AnnotatorCursor | None = None
+        self._max_created_at: datetime | None = None
+        self._entities_processed: int = 0
+        self._annotations_created: int = 0
+    
+    @property
+    def name(self) -> str:
+        """Annotator name for cursor tracking."""
+        return self.__class__.__name__
+    
+    def get_cursor(self) -> datetime | None:
+        """
+        Get the high water mark for this annotator version.
+        
+        Returns the timestamp of the last processed entity, or None if
+        this annotator version hasn't run before.
+        """
+        cursor = (
+            self.session.query(AnnotatorCursor)
+            .filter(AnnotatorCursor.annotator_name == self.name)
+            .filter(AnnotatorCursor.annotator_version == self.VERSION)
+            .filter(AnnotatorCursor.entity_type == self.ENTITY_TYPE)
+            .first()
+        )
+        
+        self._cursor = cursor
+        return cursor.high_water_mark if cursor else None
+    
+    def update_cursor(self, high_water_mark: datetime, entities_processed: int, annotations_created: int):
+        """
+        Update the cursor position after processing.
+        
+        Args:
+            high_water_mark: The max created_at timestamp seen
+            entities_processed: Number of entities processed in this run
+            annotations_created: Number of annotations created in this run
+        """
+        if self._cursor:
+            # Update existing cursor
+            self._cursor.high_water_mark = high_water_mark
+            self._cursor.entities_processed += entities_processed
+            self._cursor.annotations_created += annotations_created
+            self._cursor.updated_at = datetime.now(timezone.utc)
+        else:
+            # Create new cursor
+            cursor = AnnotatorCursor(
+                annotator_name=self.name,
+                annotator_version=self.VERSION,
+                entity_type=self.ENTITY_TYPE,
+                high_water_mark=high_water_mark,
+                entities_processed=entities_processed,
+                annotations_created=annotations_created,
+            )
+            self.session.add(cursor)
+    
+    def track_entity(self, created_at: datetime | None):
+        """Track an entity being processed for cursor update."""
+        self._entities_processed += 1
+        if created_at and (self._max_created_at is None or created_at > self._max_created_at):
+            self._max_created_at = created_at
+    
+    def finalize_cursor(self):
+        """Finalize cursor update after processing."""
+        if self._max_created_at:
+            self.update_cursor(
+                high_water_mark=self._max_created_at,
+                entities_processed=self._entities_processed,
+                annotations_created=self._annotations_created,
+            )
     
     @abstractmethod
     def compute(self) -> int:
         """
         Compute and persist annotations.
+        
+        Implementations should:
+        1. Call get_cursor() to get the high water mark
+        2. Query only entities with created_at > cursor (or all if cursor is None)
+        3. Call track_entity(created_at) for each entity processed
+        4. Call add_annotation() for each annotation
+        5. Call finalize_cursor() at the end
+        
         Returns count of annotations created/updated.
         """
         pass
@@ -98,6 +182,7 @@ class Annotator(ABC):
             source_version=self.VERSION,
         )
         self.session.add(annotation)
+        self._annotations_created += 1
         return True
     
     def supersede_annotation(

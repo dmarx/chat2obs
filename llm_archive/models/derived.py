@@ -227,3 +227,32 @@ class ContentHash(Base):
     normalization = Column(String, nullable=False, default='none')
     
     computed_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
+# Annotator Cursors
+# ============================================================
+
+class AnnotatorCursor(Base):
+    """
+    Tracks processing state for incremental annotation.
+    
+    Each annotator+version+entity_type combination has a cursor pointing to
+    the last processed entity (by created_at). This allows incremental
+    annotation without re-processing old entities or storing "no match" records.
+    """
+    __tablename__ = "annotator_cursors"
+    __table_args__ = {"schema": "derived"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    
+    annotator_name = Column(String, nullable=False)
+    annotator_version = Column(String, nullable=False)
+    entity_type = Column(String, nullable=False)
+    
+    high_water_mark = Column(DateTime(timezone=True), nullable=False)
+    
+    entities_processed = Column(Integer, nullable=False, default=0)
+    annotations_created = Column(Integer, nullable=False, default=0)
+    
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())

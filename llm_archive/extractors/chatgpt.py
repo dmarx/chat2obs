@@ -31,7 +31,6 @@ class ChatGPTExtractor(BaseExtractor):
         incremental: bool = False,
     ):
         super().__init__(session, assume_immutable=assume_immutable, incremental=incremental)
-        self.counts = {}
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
         """
@@ -138,6 +137,9 @@ class ChatGPTExtractor(BaseExtractor):
                     if existing.deleted_at is not None:
                         existing.deleted_at = None
                         logger.debug(f"Restored message {source_id}")
+                        self._increment_count('messages_restored')
+                    else:
+                        self._increment_count('messages_unchanged')
                     self.register_message_id(source_id, existing.id)
                 else:
                     # Full check: compute hash and compare
@@ -146,16 +148,23 @@ class ChatGPTExtractor(BaseExtractor):
                     if existing.content_hash == new_hash and existing.deleted_at is None:
                         # Unchanged - just register the ID mapping
                         self.register_message_id(source_id, existing.id)
+                        self._increment_count('messages_unchanged')
                     else:
                         # Changed or was soft-deleted - update in place
+                        was_deleted = existing.deleted_at is not None
                         self._update_message(existing, msg_data, new_hash)
                         self.register_message_id(source_id, existing.id)
+                        if was_deleted:
+                            self._increment_count('messages_restored')
+                        else:
+                            self._increment_count('messages_updated')
             else:
                 # New message - always compute hash for storage
                 new_hash = compute_content_hash(msg_data)
                 msg_id = self._create_message(dialogue_id, msg_data, new_hash)
                 if msg_id:
                     self.register_message_id(source_id, msg_id)
+                    self._increment_count('messages_new')
         
         # Third pass: update parent links (now that all messages exist)
         for source_id, data in message_data.items():
@@ -176,6 +185,7 @@ class ChatGPTExtractor(BaseExtractor):
                 if source_id not in seen_source_ids and existing.deleted_at is None:
                     existing.deleted_at = datetime.now(timezone.utc)
                     logger.debug(f"Soft-deleted message {source_id}")
+                    self._increment_count('messages_soft_deleted')
     
     def _update_message(self, message: Message, msg_data: dict[str, Any], content_hash: str):
         """Update an existing message in place."""
@@ -251,6 +261,7 @@ class ChatGPTExtractor(BaseExtractor):
             msg_id = self._create_message(dialogue_id, msg_data, content_hash)
             if msg_id:
                 self.register_message_id(msg_data.get('id'), msg_id)
+                self._increment_count('messages_new')
         
         # Second pass: set parent links
         for node_id, node in mapping.items():
@@ -289,6 +300,7 @@ class ChatGPTExtractor(BaseExtractor):
             )
             self.session.add(content_part)
             self.session.flush()
+            self._increment_count('content_parts')
             
             # Extract DALL-E generations if present
             if isinstance(part, dict):

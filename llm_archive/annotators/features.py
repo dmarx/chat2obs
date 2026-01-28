@@ -23,25 +23,39 @@ class WikiLinkAnnotator(Annotator):
     
     def compute(self) -> int:
         """Find messages with wiki links."""
-        results = (
-            self.session.query(ContentPart.message_id, ContentPart.text_content)
+        cursor = self.get_cursor()
+        
+        # Base query
+        query = (
+            self.session.query(
+                ContentPart.message_id, 
+                ContentPart.text_content,
+                Message.created_at,
+            )
             .join(Message)
             .filter(Message.role == 'assistant')
+            .filter(Message.deleted_at.is_(None))
             .filter(ContentPart.part_type == 'text')
             .filter(ContentPart.text_content.isnot(None))
-            .all()
         )
         
+        # Apply cursor filter
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
         # Group by message
-        message_texts: dict[UUID, list[str]] = {}
-        for msg_id, text in results:
-            if msg_id not in message_texts:
-                message_texts[msg_id] = []
-            message_texts[msg_id].append(text)
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
         
         count = 0
-        for msg_id, texts in message_texts.items():
-            full_text = '\n'.join(texts)
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts'])
             
             if self.PATTERN.search(full_text):
                 links = self.PATTERN.findall(full_text)
@@ -53,6 +67,7 @@ class WikiLinkAnnotator(Annotator):
                 ):
                     count += 1
         
+        self.finalize_cursor()
         return count
 
 
@@ -68,22 +83,35 @@ class CodeBlockAnnotator(Annotator):
     
     def compute(self) -> int:
         """Find messages with code blocks."""
-        results = (
-            self.session.query(ContentPart.message_id, ContentPart.text_content)
+        cursor = self.get_cursor()
+        
+        query = (
+            self.session.query(
+                ContentPart.message_id, 
+                ContentPart.text_content,
+                Message.created_at,
+            )
+            .join(Message)
+            .filter(Message.deleted_at.is_(None))
             .filter(ContentPart.part_type == 'text')
             .filter(ContentPart.text_content.isnot(None))
-            .all()
         )
         
-        message_texts: dict[UUID, list[str]] = {}
-        for msg_id, text in results:
-            if msg_id not in message_texts:
-                message_texts[msg_id] = []
-            message_texts[msg_id].append(text)
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
         
         count = 0
-        for msg_id, texts in message_texts.items():
-            full_text = '\n'.join(texts)
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts'])
             
             if '```' in full_text:
                 languages = self.PATTERN.findall(full_text)
@@ -109,6 +137,7 @@ class CodeBlockAnnotator(Annotator):
                         confidence=1.0,
                     )
         
+        self.finalize_cursor()
         return count
 
 
@@ -134,24 +163,36 @@ class LatexAnnotator(Annotator):
     
     def compute(self) -> int:
         """Find messages with LaTeX content."""
-        results = (
-            self.session.query(ContentPart.message_id, ContentPart.text_content)
+        cursor = self.get_cursor()
+        
+        query = (
+            self.session.query(
+                ContentPart.message_id, 
+                ContentPart.text_content,
+                Message.created_at,
+            )
             .join(Message)
             .filter(Message.role == 'assistant')
+            .filter(Message.deleted_at.is_(None))
             .filter(ContentPart.part_type == 'text')
             .filter(ContentPart.text_content.isnot(None))
-            .all()
         )
         
-        message_texts: dict[UUID, list[str]] = {}
-        for msg_id, text in results:
-            if msg_id not in message_texts:
-                message_texts[msg_id] = []
-            message_texts[msg_id].append(text)
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
         
         count = 0
-        for msg_id, texts in message_texts.items():
-            full_text = '\n'.join(texts)
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts'])
             
             has_latex = False
             found_commands = []
@@ -175,6 +216,7 @@ class LatexAnnotator(Annotator):
                 ):
                     count += 1
         
+        self.finalize_cursor()
         return count
 
 
@@ -195,24 +237,32 @@ class ContinuationAnnotator(Annotator):
     
     def compute(self) -> int:
         """Find user messages that are continuation signals."""
-        results = (
-            self.session.query(Message.id, ContentPart.text_content)
+        cursor = self.get_cursor()
+        
+        query = (
+            self.session.query(Message.id, ContentPart.text_content, Message.created_at)
             .join(ContentPart)
             .filter(Message.role == 'user')
+            .filter(Message.deleted_at.is_(None))
             .filter(ContentPart.part_type == 'text')
             .filter(ContentPart.text_content.isnot(None))
-            .all()
         )
         
-        message_texts: dict[UUID, list[str]] = {}
-        for msg_id, text in results:
-            if msg_id not in message_texts:
-                message_texts[msg_id] = []
-            message_texts[msg_id].append(text)
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
         
         count = 0
-        for msg_id, texts in message_texts.items():
-            full_text = '\n'.join(texts).strip().lower()
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts']).strip().lower()
             
             if len(full_text.split()) > 10:
                 continue
@@ -249,6 +299,7 @@ class ContinuationAnnotator(Annotator):
                 if matched:
                     break
         
+        self.finalize_cursor()
         return count
 
 
@@ -262,14 +313,21 @@ class ExchangeTypeAnnotator(Annotator):
     
     def compute(self) -> int:
         """Classify exchanges."""
-        exchanges = (
+        cursor = self.get_cursor()
+        
+        query = (
             self.session.query(Exchange, ExchangeContent)
             .join(ExchangeContent)
-            .all()
         )
+        
+        if cursor:
+            query = query.filter(Exchange.computed_at > cursor)
+        
+        exchanges = query.all()
         
         count = 0
         for exchange, content in exchanges:
+            self.track_entity(exchange.computed_at)
             exchange_type, confidence = self._classify(content)
             
             if exchange_type:
@@ -281,6 +339,7 @@ class ExchangeTypeAnnotator(Annotator):
                 ):
                     count += 1
         
+        self.finalize_cursor()
         return count
     
     def _classify(self, content: ExchangeContent) -> tuple[str | None, float]:
