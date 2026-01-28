@@ -24,8 +24,13 @@ class ChatGPTExtractor(BaseExtractor):
     
     SOURCE_ID = 'chatgpt'
     
-    def __init__(self, session: Session, assume_immutable: bool = False):
-        super().__init__(session, assume_immutable=assume_immutable)
+    def __init__(
+        self, 
+        session: Session, 
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        super().__init__(session, assume_immutable=assume_immutable, incremental=incremental)
         self.counts = {}
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
@@ -165,11 +170,12 @@ class ChatGPTExtractor(BaseExtractor):
                 if msg and msg.parent_id != parent_native_id:
                     msg.parent_id = parent_native_id
         
-        # Fourth pass: soft-delete messages no longer in source
-        for source_id, existing in existing_messages.items():
-            if source_id not in seen_source_ids and existing.deleted_at is None:
-                existing.deleted_at = datetime.now(timezone.utc)
-                logger.debug(f"Soft-deleted message {source_id}")
+        # Fourth pass: soft-delete messages no longer in source (unless incremental mode)
+        if not self.incremental:
+            for source_id, existing in existing_messages.items():
+                if source_id not in seen_source_ids and existing.deleted_at is None:
+                    existing.deleted_at = datetime.now(timezone.utc)
+                    logger.debug(f"Soft-deleted message {source_id}")
     
     def _update_message(self, message: Message, msg_data: dict[str, Any], content_hash: str):
         """Update an existing message in place."""
