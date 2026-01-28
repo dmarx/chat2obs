@@ -42,6 +42,9 @@ addopts = "-v --tb=short"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+markers = [
+    "integration: marks tests as requiring database",
+]
 
 [tool.coverage.run]
 source = ["llm_archive"]
