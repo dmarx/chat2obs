@@ -3,11 +3,17 @@
 
 -- Latest chunk run per message (helper)
 create or replace view derived.v_latest_chunk_run as
-select
-    message_id,
-    max(run_id) as run_id
-from derived.message_chunks
-group by message_id;
+select distinct on (mc.message_id)
+    mc.message_id,
+    mc.run_id
+from derived.message_chunks mc
+join derived.pipeline_runs pr
+  on pr.id = mc.run_id
+where pr.run_type = 'chunk'
+order by
+    mc.message_id,
+    pr.started_at desc,
+    pr.id desc;  -- stable tie-breaker
 
 -- Chunks (latest run) joined with active annotations
 create or replace view derived.v_message_chunks as
