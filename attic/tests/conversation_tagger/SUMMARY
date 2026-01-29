@@ -1,0 +1,2602 @@
+---
+File: attic/tests/conversation_tagger/conftest.py
+---
+# tests/conftest.py
+"""
+Shared test fixtures and configuration.
+"""
+from pathlib import Path
+import sys
+#PATH=str((Path().cwd().parent /'src').absolute())
+PATH=str((Path().cwd() /'src').absolute())
+print(PATH)
+if PATH not in sys.path:
+    sys.path.append(PATH)
+
+import pytest
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.message import Message
+
+
+@pytest.fixture
+def simple_user_message():
+    """A basic user message."""
+    return Message(**{
+        'author': {'role': 'user'},
+        'create_time': 1000,
+        'content': {'text': 'Hello, how are you?'}
+    })
+
+
+@pytest.fixture
+def simple_assistant_message():
+    """A basic assistant message."""
+    return {
+        'author': {'role': 'assistant'},
+        'create_time': 2000,
+        'content': {'text': 'I am doing well, thank you!'}
+    }
+
+
+@pytest.fixture
+def basic_exchange(simple_user_message, simple_assistant_message):
+    """A simple two-message exchange."""
+    return Exchange.create('test_conv', [simple_user_message, simple_assistant_message])
+
+
+@pytest.fixture
+def minimal_conversation_data():
+    """Minimal conversation data for parsing tests."""
+    return {
+        'conversation_id': 'test_conv',
+        'title': 'Test Conversation',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Test question'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Test answer'}
+                }
+            }
+        }
+    }
+
+
+
+---
+File: attic/tests/conversation_tagger/test_basic_working.py
+---
+# tests/test_basic_working.py
+"""
+Tests for functionality that we know works in the current implementation.
+Updated to test annotation-based system.
+"""
+
+import pytest
+from conversation_tagger import create_default_tagger
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.exchange_tagger import ExchangeTagger
+from conversation_tagger.core.tag import Tag, create_annotation, merge_annotations
+
+
+from conversation_tagger.core.message import MessageOpenAI
+
+def test_annotation_functionality():
+    """Test that annotation helpers work correctly."""
+    # Simple annotation
+    simple = create_annotation('test_annotation', True)
+    assert simple == {'test_annotation': True}
+    
+    # Valued annotation
+    valued = create_annotation('count', 42)
+    assert valued == {'count': 42}
+    
+    # Complex annotation
+    complex_data = {'type': 'test', 'score': 0.95}
+    complex_ann = create_annotation('analysis', complex_data)
+    assert complex_ann == {'analysis': complex_data}
+    
+    # Merge annotations
+    merged = merge_annotations(simple, valued, complex_ann)
+    assert 'test_annotation' in merged
+    assert 'count' in merged
+    assert 'analysis' in merged
+    assert merged['count'] == 42
+
+
+# def test_tag_backward_compatibility():
+#     """Test that Tag objects still work and convert properly."""
+#     tag = Tag('test_tag', value='test_value')
+#     assert tag.name == 'test_tag'
+#     assert tag.attributes['value'] == 'test_value'
+    
+#     # Test conversion to annotation format
+#     annotation_dict = tag.to_dict()
+#     assert annotation_dict == {'test_tag': 'test_value'}
+    
+#     # Test complex tag
+#     complex_tag = Tag('stats', count=5, average=2.5, category='medium')
+#     complex_dict = complex_tag.to_dict()
+#     assert complex_dict == {'stats': {'count': 5, 'average': 2.5, 'category': 'medium'}}
+
+
+def test_exchange_creation_and_annotations():
+    """Test basic exchange creation and annotation handling."""
+    messages = [
+        {'author': {'role': 'user'}, 'content': {'text': 'Test'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}, 'create_time': 2000}
+    ]
+    messages = [MessageOpenAI(data=msg) for msg in messages]
+    exchange = Exchange.create('test_conv', messages)
+    
+    assert exchange.conversation_id == 'test_conv'
+    assert len(exchange.messages) == 2
+    assert len(exchange.get_user_messages()) == 1
+    assert len(exchange.get_assistant_messages()) == 1
+    
+    # Test adding annotations
+    exchange.add_annotation('has_greeting', True)
+    exchange.add_annotation('message_count', 2)
+    exchange.add_annotation('analysis', {'sentiment': 'positive', 'confidence': 0.8})
+    
+    assert exchange.has_annotation('has_greeting')
+    assert exchange.get_annotation('message_count') == 2
+    assert exchange.get_annotation('analysis')['sentiment'] == 'positive'
+    assert not exchange.has_annotation('missing')
+
+
+def test_exchange_text_api_with_annotations():
+    """Test the text extraction API and annotation usage."""
+    messages = [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there'}, 'create_time': 2000}
+    ]
+    messages = [MessageOpenAI(data=msg) for msg in messages]
+    
+    exchange = Exchange.create('test_conv', messages)
+    
+    # Test what the exchange actually provides
+    user_texts = exchange.get_user_texts()
+    assistant_texts = exchange.get_assistant_texts()
+    
+    # Verify these are lists (based on implementation)
+    assert isinstance(user_texts, list)
+    assert isinstance(assistant_texts, list)
+    assert len(user_texts) == 1
+    assert len(assistant_texts) == 1
+    assert 'Hello world' in user_texts[0]
+    assert 'Hi there' in assistant_texts[0]
+    
+    # Test annotation based on text analysis
+    def analyze_text(texts):
+        combined = ' '.join(texts)
+        return {
+            'word_count': len(combined.split()),
+            'char_count': len(combined),
+            'has_greeting': any(word in combined.lower() for word in ['hello', 'hi', 'hey'])
+        }
+    
+    user_analysis = analyze_text(user_texts)
+    assistant_analysis = analyze_text(assistant_texts)
+    
+    exchange.add_annotation('user_analysis', user_analysis)
+    exchange.add_annotation('assistant_analysis', assistant_analysis)
+    
+    assert exchange.get_annotation('user_analysis')['word_count'] == 2
+    assert exchange.get_annotation('assistant_analysis')['has_greeting'] is True
+
+
+def test_exchange_tagger_with_annotations():
+    """Test exchange tagger using the annotation system."""
+    tagger = ExchangeTagger()
+    
+    def greeting_detector(exchange):
+        """A rule that uses the correct API and returns annotation data."""
+        user_texts = exchange.get_user_texts()
+        if user_texts:
+            text = ' '.join(user_texts).lower()
+            if any(greeting in text for greeting in ['hello', 'hi', 'hey']):
+                return {
+                    'has_greeting': True,
+                    'greeting_type': 'informal' if 'hi' in text or 'hey' in text else 'formal'
+                }
+        return False
+    
+    def message_counter(exchange):
+        """Rule that returns simple numeric annotation."""
+        return len(exchange.messages)
+    
+    tagger.add_rule('greeting_analysis', greeting_detector)
+    tagger.add_rule('message_count', message_counter)
+    
+    messages = [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}
+    ]
+    messages = [MessageOpenAI(data=msg) for msg in messages]
+    # Test with exchange that should match
+    exchange = Exchange.create('test', messages)
+    
+    tagged = tagger.tag_exchange(exchange)
+    
+    # Check annotations
+    assert tagged.has_annotation('has_greeting')
+    assert tagged.get_annotation('has_greeting') is True
+    assert tagged.get_annotation('greeting_type') == 'formal'
+    assert tagged.get_annotation('message_count') == 2
+    
+    # Test backward compatibility - can still access as tags
+    # tag_names = [tag.name for tag in tagged.tags]
+    # assert 'has_greeting' in tag_names or any('greeting' in name for name in tag_names)
+    # assert 'message_count' in tag_names
+
+
+def test_conversation_parsing_with_annotations():
+    """Test basic conversation parsing with annotation support."""
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Test Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Hello'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Hi there!'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    
+    # Add a custom annotation rule
+    def simple_stats(exchange):
+        return {
+            'user_messages': len(exchange.get_user_messages()),
+            'assistant_messages': len(exchange.get_assistant_messages()),
+            'total_messages': len(exchange.messages)
+        }
+    
+    tagger.add_exchange_rule('stats', simple_stats)
+    
+    result = tagger.tag_conversation(conversation_data)
+    
+    # Test basic structure
+    assert result.conversation_id == 'test_conv'
+    assert result.title == 'Test Chat'
+    assert result.exchange_count == 1
+    
+    # Test that we can access the exchange and its annotations
+    exchange = result.exchanges[0]
+    assert len(exchange.messages) == 2
+    
+    # Check that our custom annotation rule was applied
+    assert exchange.has_annotation('user_messages')
+    assert exchange.get_annotation('user_messages') == 1
+    assert exchange.get_annotation('assistant_messages') == 1
+    assert exchange.get_annotation('total_messages') == 2
+    
+    # Test text extraction still works
+    user_texts = exchange.get_user_texts()
+    assert isinstance(user_texts, list)
+    assert len(user_texts) == 1
+    assert 'Hello' in user_texts[0]
+
+
+def test_default_tagger_with_annotations():
+    """Test that the default tagger works with annotation system."""
+    tagger = create_default_tagger()
+    assert tagger is not None
+    assert hasattr(tagger, 'exchange_parser')
+    assert hasattr(tagger.exchange_parser, 'exchange_tagger')
+    
+    # Test that it has some default rules
+    assert len(tagger.exchange_parser.exchange_tagger.rules) > 0
+
+
+def test_default_rules_produce_annotations():
+    """Test that default rules work and produce annotations."""
+    conversation_data = {
+        'conversation_id': 'code_conv',
+        'title': 'Code Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'def hello(): print("hello")'},
+                    'metadata': {'attachments': []}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Nice Python function!'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(conversation_data)
+    
+    # Check if any annotations were applied
+    all_annotations = {}
+    for exchange in result.exchanges:
+        all_annotations.update(exchange.annotations)
+    
+    # Also check conversation-level annotations
+    all_annotations.update(result.annotations)
+    
+    annotation_names = list(all_annotations.keys())
+    print(f"Applied annotations: {annotation_names}")
+    
+    # Some rules should work - at minimum we should have non-empty result
+    assert len(result.exchanges) > 0
+    
+    # Should detect code patterns in the first user message
+    first_exchange = result.exchanges[0]
+    # We know from testing that first_user_has_code_patterns should work
+    if first_exchange.has_annotation('first_user_has_code_patterns'):
+        assert first_exchange.get_annotation('first_user_has_code_patterns') is True
+
+
+def test_annotation_backward_compatibility_workflow():
+    """Test complete workflow using both annotations and legacy tags."""
+    # Create exchange
+    exchange = Exchange.create('test', [
+        MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000})
+    ])
+    
+    # Add annotations directly (new way)
+    exchange.add_annotation('modern_flag', True)
+    exchange.add_annotation('score', 85)
+    exchange.add_annotation('metadata', {'version': '2.0', 'processed': True})
+    
+    # # Add via legacy tag interface (old way)
+    # legacy_tags = [
+    #     Tag('legacy_flag'),
+    #     Tag('rating', value=4.5),
+    #     Tag('details', category='important', priority='high')
+    # ]
+    
+    # # This should merge with existing annotations
+    # old_annotations = exchange.annotations.copy()
+    # exchange.tags = exchange.tags + legacy_tags  # Append to existing
+    
+    # Verify all annotations are present
+    assert exchange.has_annotation('modern_flag')
+    assert exchange.has_annotation('score')
+    assert exchange.has_annotation('metadata')
+    # assert exchange.has_annotation('legacy_flag')
+    # assert exchange.has_annotation('rating')
+    # assert exchange.has_annotation('details')
+    
+    # Verify values are correct
+    assert exchange.get_annotation('modern_flag') is True
+    assert exchange.get_annotation('score') == 85
+    # assert exchange.get_annotation('rating') == 4.5
+    # assert exchange.get_annotation('details')['category'] == 'important'
+    
+    # # Test that we can still get everything as tags
+    # all_tags = exchange.tags
+    # tag_names = [tag.name for tag in all_tags]
+    # assert 'modern_flag' in tag_names
+    # assert 'legacy_flag' in tag_names
+    # assert 'score' in tag_names
+    # assert 'rating' in tag_names
+
+
+def test_rule_return_value_handling():
+    """Test that different rule return value types are handled correctly."""
+    tagger = ExchangeTagger()
+    
+    def bool_rule(exchange):
+        return True
+    
+    def string_rule(exchange):
+        return "detected"
+    
+    def number_rule(exchange):
+        return 42
+    
+    def dict_rule(exchange):
+        return {
+            'count': 3,
+            'type': 'test',
+            'valid': True
+        }
+    
+    # def legacy_tag_rule(exchange):
+    #     return Tag('legacy', style='old', version=1.0)
+    
+    def false_rule(exchange):
+        return False
+    
+    def none_rule(exchange):
+        return None
+    
+    tagger.add_rule('bool_test', bool_rule)
+    tagger.add_rule('string_test', string_rule)
+    tagger.add_rule('number_test', number_rule)
+    tagger.add_rule('dict_test', dict_rule)
+    # tagger.add_rule('legacy_test', legacy_tag_rule)
+    tagger.add_rule('false_test', false_rule)
+    tagger.add_rule('none_test', none_rule)
+    
+    exchange = Exchange.create('test', [
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'test'}, 'create_time': 1000})
+    ])
+    
+    tagged = tagger.tag_exchange(exchange)
+    
+    # Check that different return types are handled correctly
+    assert tagged.get_annotation('bool_test') is True
+    assert tagged.get_annotation('string_test') == "detected"
+    assert tagged.get_annotation('number_test') == 42
+    
+    # Dict rule should create multiple annotations
+    assert tagged.get_annotation('count') == 3
+    assert tagged.get_annotation('type') == 'test'
+    assert tagged.get_annotation('valid') is True
+    
+    # Legacy tag should be converted
+    # assert tagged.has_annotation('legacy')
+    # legacy_data = tagged.get_annotation('legacy')
+    # assert legacy_data['style'] == 'old'
+    # assert legacy_data['version'] == 1.0
+    
+    # False and None should not create annotations
+    assert not tagged.has_annotation('false_test')
+    assert not tagged.has_annotation('none_test')
+
+
+
+---
+File: attic/tests/conversation_tagger/test_core.py
+---
+# tests/test_core.py
+"""
+Core functionality tests for conversation tagging system.
+Updated to test both annotation system and backward compatibility.
+"""
+
+import pytest
+from conversation_tagger.core.tag import Tag, create_annotation, merge_annotations
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.conversation import Conversation
+from conversation_tagger.core.message import MessageOpenAI
+
+def test_annotation_helpers():
+    """Test annotation helper functions."""
+    # Simple annotation
+    simple = create_annotation('has_code', True)
+    assert simple == {'has_code': True}
+    
+    # Annotation with value
+    valued = create_annotation('length', 150)
+    assert valued == {'length': 150}
+    
+    # Annotation with structured data
+    structured = create_annotation('stats', {'count': 5, 'avg': 2.5})
+    assert structured == {'stats': {'count': 5, 'avg': 2.5}}
+    
+    # Merge annotations
+    merged = merge_annotations(simple, valued, structured)
+    assert merged == {'has_code': True, 'length': 150, 'stats': {'count': 5, 'avg': 2.5}}
+
+
+def test_tag_backward_compatibility():
+    """Test that Tag objects still work and convert properly."""
+    # Simple tag
+    simple_tag = Tag('simple')
+    assert simple_tag.name == 'simple'
+    assert simple_tag.attributes == {}
+    assert simple_tag.to_dict() == {'simple': True}
+    
+    # Tag with single value attribute
+    value_tag = Tag('length', value=100)
+    assert value_tag.to_dict() == {'length': 100}
+    
+    # Tag with multiple attributes
+    complex_tag = Tag('stats', count=5, avg=2.5)
+    assert complex_tag.to_dict() == {'stats': {'count': 5, 'avg': 2.5}}
+    
+    # Test equality
+    assert simple_tag == 'simple'
+    assert simple_tag != complex_tag
+
+
+def test_exchange_annotations():
+    """Test exchange annotation functionality."""
+    messages = [
+        {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Hi!'}, 'create_time': 2000}
+    ]
+    messages = [MessageOpenAI(data=msg) for msg in messages]
+    
+    exchange = Exchange.create('conv_1', messages)
+    
+    # Test adding annotations
+    exchange.add_annotation('has_greeting', True)
+    exchange.add_annotation('message_count', 2)
+    exchange.add_annotation('stats', {'user_msgs': 1, 'assistant_msgs': 1})
+    
+    assert exchange.has_annotation('has_greeting')
+    assert exchange.get_annotation('message_count') == 2
+    assert exchange.get_annotation('stats')['user_msgs'] == 1
+    assert not exchange.has_annotation('missing_annotation')
+    assert exchange.get_annotation('missing_annotation', 'default') == 'default'
+    
+    # # Test backward compatibility with tags property
+    # tags = exchange.tags
+    # assert len(tags) == 3
+    # tag_names = [tag.name for tag in tags]
+    # assert 'has_greeting' in tag_names
+    # assert 'message_count' in tag_names
+    # assert 'stats' in tag_names
+
+
+# def test_exchange_tags_compatibility():
+#     """Test that setting tags still works via backward compatibility."""
+#     exchange = Exchange.create('conv_1', [])
+    
+#     # Set tags the old way
+#     old_tags = [
+#         Tag('simple'),
+#         Tag('valued', value=42),
+#         Tag('complex', count=3, type='test')
+#     ]
+#     exchange.tags = old_tags
+    
+#     # Should be converted to annotations
+#     assert exchange.has_annotation('simple')
+#     assert exchange.get_annotation('simple') is True
+#     assert exchange.get_annotation('valued') == 42
+#     assert exchange.get_annotation('complex') == {'count': 3, 'type': 'test'}
+
+
+def test_exchange_merging_annotations():
+    """Test merging exchanges preserves annotations."""
+    messages1=[
+        {'author': {'role': 'user'}, 'content': {'text': 'First'}, 'create_time': 1000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'Response'}, 'create_time': 2000}
+    ]
+    messages1 = [MessageOpenAI(data=msg) for msg in messages1]
+    exchange_1 = Exchange.create('conv_1', messages1)
+    exchange_1.add_annotation('has_code', True)
+    exchange_1.add_annotation('part', 1)
+
+    messages2=[
+        {'author': {'role': 'user'}, 'content': {'text': 'Continue'}, 'create_time': 3000},
+        {'author': {'role': 'assistant'}, 'content': {'text': 'More'}, 'create_time': 4000}
+    ]
+    messages2 = [MessageOpenAI(data=msg) for msg in messages2]
+    exchange_2 = Exchange.create('conv_1', messages2)
+    exchange_2.add_annotation('has_continuation', True)
+    exchange_2.add_annotation('part', 2)
+    
+    merged = exchange_1 + exchange_2
+    
+    assert len(merged) == 4
+    assert merged.has_annotation('has_code')
+    assert merged.has_annotation('has_continuation')
+    assert merged.get_annotation('part') == 2  # Second exchange value wins
+    
+    # Verify time ordering
+    times = [msg.created_date for msg in merged.messages]
+    assert times == [1000, 2000, 3000, 4000]
+
+
+def test_conversation_annotations():
+    """Test conversation annotation functionality."""
+    exchanges = [
+        Exchange.create('conv_1', [
+            MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'Q1'}, 'create_time': 1000}),
+            MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'A1'}, 'create_time': 2000})
+        ]),
+        Exchange.create('conv_1', [
+            MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'Q2'}, 'create_time': 3000}),
+            MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'A2'}, 'create_time': 4000})
+        ])  
+    ]
+    
+    # Add annotations to exchanges
+    exchanges[0].add_annotation('has_greeting', True)
+    exchanges[1].add_annotation('has_code', True)
+    
+    conv = Conversation('conv_1', 'Test Chat', exchanges)
+    
+    # Test conversation-level annotations
+    conv.add_annotation('is_technical', True)
+    conv.add_annotation('complexity', 'medium')
+    
+    assert conv.has_annotation('is_technical')
+    assert conv.get_annotation('complexity') == 'medium'
+    
+    # Test aggregated annotations from exchanges
+    assert conv.has_annotation('has_greeting')
+    assert conv.has_annotation('has_code')
+    
+    # Test properties still work
+    assert conv.exchange_count == 2
+    assert conv.total_message_count == 4
+    assert 'Q1' in conv.get_all_user_text()
+
+
+# def test_conversation_tags_compatibility():
+#     """Test conversation backward compatibility with tags."""
+#     conv = Conversation('conv_1', 'Test', [])
+    
+#     # Set tags the old way
+#     old_tags = [
+#         Tag('multi_turn'),
+#         Tag('length', category='medium', count=5)
+#     ]
+#     conv.tags = old_tags
+    
+#     # Should be converted to annotations
+#     assert conv.has_annotation('multi_turn')
+#     assert conv.get_annotation('multi_turn') is True
+#     assert conv.get_annotation('length') == {'category': 'medium', 'count': 5}
+    
+#     # Test getting tags back
+#     tags = conv.tags
+#     tag_names = [tag.name for tag in tags]
+#     assert 'multi_turn' in tag_names
+#     assert 'length' in tag_names
+
+
+@pytest.fixture
+def sample_conversation_data():
+    """Sample conversation data for parsing tests."""
+    return {
+        'conversation_id': 'test_conv',
+        'title': 'Test Chat',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Hello'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Hi there!'}
+                }
+            }
+        }
+    }
+
+
+def test_simple_parsing(sample_conversation_data):
+    """Test basic conversation parsing with annotations."""
+    from conversation_tagger.core.exchange_parser import ExchangeParserOAI
+
+    parser = ExchangeParserOAI()
+    conversation = parser.parse_conversation(sample_conversation_data)
+    
+    assert isinstance(conversation, Conversation)
+    assert conversation.conversation_id == 'test_conv'
+    assert conversation.exchange_count == 1
+    assert 'Hello' in conversation.get_all_user_text()
+    
+    # Should initially only have source annotation.
+    assert len(conversation.annotations) == 1
+    assert conversation.get_annotation('source') == 'oai'
+
+    # Test adding annotations
+    conversation.add_annotation('parsed', True)
+    assert conversation.has_annotation('parsed')
+
+
+
+---
+File: attic/tests/conversation_tagger/test_detection.py
+---
+# tests/conversation_tagger/test_detection.py
+"""
+Unit tests for detection.py detection functions.
+Updated to test annotation-based system.
+"""
+
+import pytest
+from conversation_tagger.core.detection import *
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.conversation import Conversation
+from conversation_tagger.core.tag import Tag
+
+from conversation_tagger.core.message import MessageOpenAI
+
+######################
+# Conversation Tests #
+######################
+
+def test_create_conversation_length_annotation():
+    """Test conversation length annotation creation."""
+    # Single exchange
+    conv_single = Conversation('test', 'Single', [Exchange.create('test', [])])
+    annotation = create_conversation_length_annotation(conv_single)
+    assert 'conversation_length' in annotation
+    length_data = annotation['conversation_length']
+    assert length_data['count'] == 1
+    assert length_data['category'] == 'single'
+    
+    # Short (3 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(3)]
+    conv_short = Conversation('test', 'Short', exchanges)
+    annotation = create_conversation_length_annotation(conv_short)
+    length_data = annotation['conversation_length']
+    assert length_data['count'] == 3
+    assert length_data['category'] == 'short'
+    
+    # Medium (7 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(7)]
+    conv_medium = Conversation('test', 'Medium', exchanges)
+    annotation = create_conversation_length_annotation(conv_medium)
+    length_data = annotation['conversation_length']
+    assert length_data['count'] == 7
+    assert length_data['category'] == 'medium'
+    
+    # Long (15 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(15)]
+    conv_long = Conversation('test', 'Long', exchanges)
+    annotation = create_conversation_length_annotation(conv_long)
+    length_data = annotation['conversation_length']
+    assert length_data['count'] == 15
+    assert length_data['category'] == 'long'
+    
+    # Very long (30 exchanges)
+    exchanges = [Exchange.create('test', []) for _ in range(30)]
+    conv_very_long = Conversation('test', 'VeryLong', exchanges)
+    annotation = create_conversation_length_annotation(conv_very_long)
+    length_data = annotation['conversation_length']
+    assert length_data['count'] == 30
+    assert length_data['category'] == 'very_long'
+
+
+def test_conversation_feature_summary():
+    """Test feature aggregation across exchanges."""
+    # Create exchanges with different feature annotations
+    exchange1 = Exchange.create('test', [])
+    exchange1.add_annotation('has_code_blocks', True)
+    exchange1.add_annotation('has_web_search', True)
+    exchange1.add_annotation('gizmo_1', {'gizmo_id': 'gpt-4'})
+    
+    exchange2 = Exchange.create('test', [])
+    exchange2.add_annotation('has_code_blocks', True)
+    exchange2.add_annotation('has_github_repos', True)
+    exchange2.add_annotation('plugin_1', {'plugin_id': 'web'})
+    
+    exchange3 = Exchange.create('test', [])
+    exchange3.add_annotation('has_latex_math', True)
+    
+    conv = Conversation('test', 'Test', [exchange1, exchange2, exchange3])
+    annotations = conversation_feature_summary(conv)
+    
+    # has_code_blocks appears in 2/3 exchanges
+    assert 'conversation_has_code_blocks' in annotations
+    code_data = annotations['conversation_has_code_blocks']
+    assert code_data['exchange_count'] == 2
+    assert code_data['total_exchanges'] == 3
+    assert code_data['percentage'] == 66.7
+    
+    assert 'conversation_has_web_search' in annotations
+    search_data = annotations['conversation_has_web_search']
+    assert search_data['exchange_count'] == 1
+    assert search_data['percentage'] == 33.3
+    
+    assert 'conversation_has_gizmo_usage' in annotations
+    gizmo_data = annotations['conversation_has_gizmo_usage']
+    assert gizmo_data['exchange_count'] == 1
+    assert gizmo_data['percentage'] == 33.3
+    
+    assert 'conversation_has_plugin_usage' in annotations
+    plugin_data = annotations['conversation_has_plugin_usage']
+    assert plugin_data['exchange_count'] == 1
+    assert plugin_data['percentage'] == 33.3
+
+    assert 'conversation_has_latex_math' in annotations
+    
+    # Empty conversation should return empty dict
+    empty_conv = Conversation('test', 'Empty', [])
+    empty_annotations = conversation_feature_summary(empty_conv)
+    assert empty_annotations == {}
+
+
+def test_conversation_gizmo_plugin_summary():
+    """Test gizmo/plugin aggregation across exchanges."""
+    # Create exchanges with gizmo/plugin annotations
+    exchange1 = Exchange.create('test', [])
+    exchange1.add_annotation('gizmo_1', {'gizmo_id': 'gpt-4'})
+    exchange1.add_annotation('plugin_1', {'plugin_id': 'web_browser'})
+    
+    exchange2 = Exchange.create('test', [])
+    exchange2.add_annotation('gizmo_2', {'gizmo_id': 'gpt-4'})  # Same gizmo again
+    exchange2.add_annotation('plugin_2', {'plugin_id': 'python'})
+    
+    exchange3 = Exchange.create('test', [])
+    exchange3.add_annotation('gizmo_3', {'gizmo_id': 'dalle'})
+    
+    conv = Conversation('test', 'Test', [exchange1, exchange2, exchange3])
+    annotations = conversation_gizmo_plugin_summary(conv)
+    
+    # Should have gizmo and plugin summary annotations
+    assert len(annotations) == 2
+    
+    gizmo_data = annotations['conversation_gizmo_usage']
+    assert gizmo_data['unique_gizmos'] == 2  # gpt-4, dalle
+    assert gizmo_data['total_usage'] == 3   # gpt-4 used twice
+    assert set(gizmo_data['gizmo_list']) == {'gpt-4', 'dalle'}
+    
+    plugin_data = annotations['conversation_plugin_usage']
+    assert plugin_data['unique_plugins'] == 2  # web_browser, python
+    assert plugin_data['total_usage'] == 2
+    assert set(plugin_data['plugin_list']) == {'web_browser', 'python'}
+    
+    # No gizmo/plugin usage should return empty dict
+    empty_exchange = Exchange.create('test', [])
+    empty_conv = Conversation('test', 'Empty', [empty_exchange])
+    empty_annotations = conversation_gizmo_plugin_summary(empty_conv)
+    assert empty_annotations == {}
+
+
+######################
+#  Exchange Tests    #
+######################
+
+def test_has_github_repos():
+    """Test GitHub repository detection."""
+    # Exchange with GitHub repos
+    msg_with_repos = MessageOpenAI(data={
+        'author': {'role': 'user'},
+        'metadata': {'selected_github_repos': ['owner/repo1', 'owner/repo2']},
+        'content': {'text': 'Help with code'},
+        'create_time': 1700000000.0
+    })
+    exchange_with = Exchange.create('test', [msg_with_repos])
+    assert has_github_repos(exchange_with) == True
+    
+    # Exchange without GitHub repos
+    msg_without_repos = MessageOpenAI(data={
+        'author': {'role': 'user'},
+        'metadata': {'selected_github_repos': []},
+        'content': {'text': 'General question'},
+        'create_time': 1700000000.0
+    })
+    exchange_without = Exchange.create('test', [msg_without_repos])
+    assert has_github_repos(exchange_without) == False
+
+
+def test_get_gizmo_annotations():
+    """Test gizmo annotation generation."""
+    # Exchange with single gizmo
+    msg_with_gizmo = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4-turbo'},
+        'content': {'text': 'Response from specialized model'},
+        'create_time': 1700000000.0
+    })
+    exchange_single = Exchange.create('test', [msg_with_gizmo])
+    annotations = get_gizmo_annotations(exchange_single)
+    assert len(annotations) == 1
+    assert 'gizmo_1' in annotations
+    assert annotations['gizmo_1']['gizmo_id'] == 'gpt-4-turbo'
+    
+    # Exchange with multiple messages using different gizmos
+    msg_gizmo1 = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'gpt-4'},
+        'content': {'text': 'First response'},
+        'create_time': 1700000000.0
+    })
+    msg_gizmo2 = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'metadata': {'gizmo_id': 'dalle'},
+        'content': {'text': 'Second response'},
+        'create_time': 1700000000.0
+    })
+    exchange_multiple = Exchange.create('test', [msg_gizmo1, msg_gizmo2])
+    annotations = get_gizmo_annotations(exchange_multiple)
+    assert len(annotations) == 2
+    gizmo_ids = {data['gizmo_id'] for data in annotations.values()}
+    assert gizmo_ids == {'gpt-4', 'dalle'}
+    
+    # Exchange without gizmo usage
+    msg_no_gizmo = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular response'},
+        'create_time': 1700000000.0
+    })
+    exchange_none = Exchange.create('test', [msg_no_gizmo])
+    annotations = get_gizmo_annotations(exchange_none)
+    assert annotations == {}
+
+
+def test_get_plugin_annotations():
+    """Test plugin annotation generation."""
+    # Exchange with plugin_id only
+    msg_plugin_id = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'web_browser'}},
+        'content': {'text': 'Searching web'},
+        'create_time': 1700000000.0
+    })
+    exchange_plugin_id = Exchange.create('test', [msg_plugin_id])
+    annotations = get_plugin_annotations(exchange_plugin_id)
+    assert len(annotations) == 1
+    assert 'plugin_1' in annotations
+    assert annotations['plugin_1']['plugin_id'] == 'web_browser'
+    
+    # Exchange with both plugin_id and namespace
+    msg_both = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'metadata': {'invoked_plugin': {'plugin_id': 'image_gen', 'namespace': 'dalle'}},
+        'content': {'text': 'Generating image'},
+        'create_time': 1700000000.0
+    })
+    exchange_both = Exchange.create('test', [msg_both])
+    annotations = get_plugin_annotations(exchange_both)
+    assert len(annotations) == 2
+    plugin_ids = {data['plugin_id'] for data in annotations.values()}
+    assert plugin_ids == {'image_gen', 'dalle'}
+    
+    # Exchange without plugin usage
+    msg_none = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'metadata': {},
+        'content': {'text': 'Regular response'},
+        'create_time': 1700000000.0
+    })
+    exchange_none = Exchange.create('test', [msg_none])
+    annotations = get_plugin_annotations(exchange_none)
+    assert annotations == {}
+
+
+def test_has_code_blocks():
+    """Test code block detection."""
+    # Exchange with code blocks
+    user_msg = MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'Fix this: ```python\nprint("hello")\n```'}, 'create_time': 1700000000.0})
+    assistant_msg = MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'Here is the fix: ```python\nprint("Hello!")\n```'}, 'create_time': 1700000000.0})
+    exchange_with = Exchange.create('test', [user_msg, assistant_msg])
+    assert has_code_blocks(exchange_with) == True
+    
+    # Exchange without code blocks
+    user_msg_no_code = MessageOpenAI(data={'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}, 'create_time': 1700000000.0})
+    assistant_msg_no_code = MessageOpenAI(data={'author': {'role': 'assistant'}, 'content': {'text': 'Python is a programming language'}, 'create_time': 1700000000.0}) 
+    exchange_without = Exchange.create('test', [user_msg_no_code, assistant_msg_no_code])
+    assert has_code_blocks(exchange_without) == False
+
+
+def test_has_latex_math():
+    """Test LaTeX math detection."""
+    # Block math
+    msg_block_math = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'content': {'text': 'The quadratic formula is: $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$'},
+        'create_time': 1700000000.0
+    })
+    exchange_block = Exchange.create('test', [msg_block_math])
+    assert has_latex_math(exchange_block) == True
+    
+    # LaTeX commands
+    msg_latex_commands = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'content': {'text': 'The integral \\int_{0}^{\\infty} e^{-x} dx = 1'},
+        'create_time': 1700000000.0
+    })
+    exchange_commands = Exchange.create('test', [msg_latex_commands])
+    assert has_latex_math(exchange_commands) == True
+    
+    # No math
+    msg_no_math = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'content': {'text': 'This is regular text without any mathematical notation'},
+        'create_time': 1700000000.0
+    })
+    exchange_no_math = Exchange.create('test', [msg_no_math])
+    assert has_latex_math(exchange_no_math) == False
+
+
+def test_first_user_has_large_content():
+    """Test large content detection in first user message."""
+    # Large content (over 2000 chars)
+    large_text = 'x' * 2500
+    msg_large = MessageOpenAI(data={
+        'author': {'role': 'user'},
+        'content': {'text': large_text},
+        'create_time': 1700000000.0
+    })
+    exchange_large = Exchange.create('test', [msg_large])
+    assert first_user_has_large_content(exchange_large) == True
+    
+    # Small content
+    msg_small = MessageOpenAI(data={
+        'author': {'role': 'user'},
+        'content': {'text': 'Short question'},
+        'create_time': 1700000000.0
+    })
+    exchange_small = Exchange.create('test', [msg_small])
+    assert first_user_has_large_content(exchange_small) == False
+    
+    # Custom threshold
+    medium_text = 'x' * 1500
+    msg_medium = MessageOpenAI(data={
+        'author': {'role': 'user'},
+        'content': {'text': medium_text},
+        'create_time': 1700000000.0
+    })
+    exchange_medium = Exchange.create('test', [msg_medium])
+    assert first_user_has_large_content(exchange_medium, min_length=1000) == True
+    assert first_user_has_large_content(exchange_medium, min_length=2000) == False
+
+
+def test_user_has_attachments():
+    """Test user attachment detection."""
+    # User with attachments 
+    msg_with_attachments = MessageOpenAI(data={
+        'author': {'role': 'user'},
+        'metadata': {'attachments': [{'id': 'file1', 'name': 'document.pdf'}]},
+        'content': {'text': 'Please analyze this file'},
+        'create_time': 1700000000.0
+    })
+    exchange_with = Exchange.create('test', [msg_with_attachments])
+    assert user_has_attachments(exchange_with) == True
+    
+    # User without attachments
+    msg_without_attachments = MessageOpenAI(data={
+        'author': {'role': 'user'},
+        'metadata': {'attachments': []},
+        'content': {'text': 'General question'},
+        'create_time': 1700000000.0
+    })  
+    exchange_without = Exchange.create('test', [msg_without_attachments])
+    assert user_has_attachments(exchange_without) == False
+
+
+def test_extract_proposed_title():
+    """Test proposed title extraction from assistant messages."""
+    # Test markdown header title (single #)
+    msg_markdown_h1 = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'content': {'text': '# Introduction to Python\n\nPython is a programming language...'},
+        'create_time': 1700000000.0
+    })
+    exchange_h1 = Exchange.create('test', [msg_markdown_h1])
+    title_h1 = extract_proposed_title(exchange_h1)
+    assert title_h1 == 'Introduction to Python'
+    
+    # Test bold title
+    msg_bold_title = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'content': {'text': '**Machine Learning Basics**\n\nMachine learning is...'},
+        'create_time': 1700000000.0
+    })
+    exchange_bold = Exchange.create('test', [msg_bold_title])
+    title_bold = extract_proposed_title(exchange_bold)
+    assert title_bold == 'Machine Learning Basics'
+    
+    # Test no title format (regular text)
+    msg_no_title = MessageOpenAI(data={
+        'author': {'role': 'assistant'},
+        'content': {'text': 'This is just regular text without any title formatting.'},
+        'create_time': 1700000000.0
+    })
+    exchange_no_title = Exchange.create('test', [msg_no_title])
+    title_none = extract_proposed_title(exchange_no_title)
+    assert title_none is None
+
+
+def test_naive_title_extraction():
+    """Test the helper function directly."""
+    # Test markdown headers
+    assert naive_title_extraction('# Simple Title') == 'Simple Title'
+    assert naive_title_extraction('## Header Level 2') == 'Header Level 2'
+    
+    # Test bold titles
+    assert naive_title_extraction('**Bold Title**') == 'Bold Title'
+    
+    # Test no title formats
+    assert naive_title_extraction('Regular text') is None
+    assert naive_title_extraction('Not a title format') is None
+    
+    # Test with whitespace
+    assert naive_title_extraction('  # Title with spaces  ') == 'Title with spaces'
+
+
+
+---
+File: attic/tests/conversation_tagger/test_integration.py
+---
+# tests/test_integration.py
+"""
+Integration tests for the complete conversation tagging system.
+Updated to test annotation-based system.
+"""
+
+import pytest
+from conversation_tagger import create_default_tagger, ConversationTagger
+from conversation_tagger.core.exchange import Exchange
+
+@pytest.fixture
+def sample_coding_conversation():
+    """A realistic conversation about coding that should trigger multiple annotations."""
+    return {
+        'conversation_id': 'coding_conv',
+        'title': 'Python help session',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Can you help me write a Python function to calculate fibonacci numbers?'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'Sure! Here\'s a simple fibonacci function:\n\n```python\ndef fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)\n```'}
+                }
+            },
+            'msg3': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 3000,
+                    'content': {'text': 'Can you make it more efficient?'}
+                }
+            },
+            'msg4': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 4000,
+                    'content': {'text': 'Yes, here\'s a dynamic programming version:\n\n```python\ndef fibonacci_dp(n):\n    if n <= 1:\n        return n\n    \n    dp = [0, 1]\n    for i in range(2, n + 1):\n        dp.append(dp[i-1] + dp[i-2])\n    \n    return dp[n]\n```'}
+                }
+            }
+        }
+    }
+
+
+def test_default_tagger_creation():
+    """Test that default tagger is created with expected rules."""
+    tagger = create_default_tagger()
+    
+    assert isinstance(tagger, ConversationTagger)
+    assert len(tagger.exchange_parser.exchange_tagger.rules) > 0
+    
+    # Should have some default exchange rules
+    rule_names = list(tagger.exchange_parser.exchange_tagger.rules.keys())
+    assert 'has_wiki_links' in rule_names
+
+
+def test_end_to_end_tagging_with_annotations(sample_coding_conversation):
+    """Test complete tagging pipeline with realistic conversation."""
+    tagger = create_default_tagger()
+    
+    # Add a custom rule for testing
+    def mentions_python(exchange):
+        text = (' '.join(exchange.get_user_texts()) + ' ' + ' '.join(exchange.get_assistant_texts())).lower()
+        return 'python' in text
+    
+    def count_code_blocks(exchange):
+        """Return annotation with count of code blocks."""
+        all_text = ' '.join(exchange.get_user_texts() + exchange.get_assistant_texts())
+        count = all_text.count('```')
+        if count > 0:
+            return {'code_block_markers': count, 'has_code_blocks': True}
+        return False
+    
+    tagger.add_exchange_rule('mentions_python', mentions_python)
+    tagger.add_exchange_rule('code_analysis', count_code_blocks)
+    
+    result = tagger.tag_conversation(sample_coding_conversation)
+    
+    # Basic structure checks
+    assert result.conversation_id == 'coding_conv'
+    assert result.exchange_count == 2  # Two separate exchanges
+    assert result.total_message_count == 4
+    
+    # Check that our custom rules fired
+    all_annotations = {}
+    for exchange in result.exchanges:
+        all_annotations.update(exchange.annotations)
+    
+    assert 'mentions_python' in all_annotations
+    assert all_annotations['mentions_python'] is True
+    
+    # Should detect code blocks
+    assert 'has_code_blocks' in all_annotations or any(
+        exchange.has_annotation('has_code_blocks') for exchange in result.exchanges
+    )
+
+
+
+def test_conversation_with_attachments():
+    """Test conversation that includes file attachments."""
+    conversation_with_file = {
+        'conversation_id': 'file_conv',
+        'title': 'File analysis',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Can you analyze this Python file?'},
+                    'metadata': {
+                        'attachments': [
+                            {'id': 'file1', 'name': 'script.py', 'mime_type': 'text/x-python'}
+                        ]
+                    }
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'I can help analyze your Python script...'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(conversation_with_file)
+    
+    # Should detect attachment-related annotations
+    all_annotations = {}
+    for exchange in result.exchanges:
+        all_annotations.update(exchange.annotations)
+    
+    assert 'first_user_has_attachments' in all_annotations
+    assert 'first_user_has_code_attachments' in all_annotations
+    
+    # Test values
+    assert all_annotations['first_user_has_attachments'] is True
+    assert all_annotations['first_user_has_code_attachments'] is True
+
+
+def test_math_conversation():
+    """Test conversation with mathematical content."""
+    math_conversation = {
+        'conversation_id': 'math_conv',
+        'title': 'Math help',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Explain the quadratic formula'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'The quadratic formula is: $$x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(math_conversation)
+    
+    # Should detect LaTeX math
+    exchange = result.exchanges[0]
+    assert exchange.has_annotation('has_latex_math')
+    assert exchange.get_annotation('has_latex_math') is True
+
+
+def test_large_content_detection():
+    """Test detection of large content messages."""
+    large_content = 'x' * 2500  # Over the threshold
+    
+    large_message_conversation = {
+        'conversation_id': 'large_conv',
+        'title': 'Large content',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': large_content}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'That\'s a lot of content!'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(large_message_conversation)
+    
+    exchange = result.exchanges[0]
+    assert exchange.has_annotation('first_user_has_large_content')
+    assert exchange.get_annotation('first_user_has_large_content') is True
+
+
+def test_conversation_level_annotations():
+    """Test conversation-level annotation aggregation."""
+    tagger = create_default_tagger()
+    
+    # Multi-exchange conversation
+    conversation_data = {
+        'conversation_id': 'multi_conv',
+        'title': 'Multi-exchange test',
+        'mapping': {
+            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'First question'}}},
+            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'First answer'}}},
+            'msg3': {'message': {'author': {'role': 'user'}, 'create_time': 3000, 'content': {'text': 'Second question'}}},
+            'msg4': {'message': {'author': {'role': 'assistant'}, 'create_time': 4000, 'content': {'text': 'Second answer'}}},
+            'msg5': {'message': {'author': {'role': 'user'}, 'create_time': 5000, 'content': {'text': 'Third question'}}},
+            'msg6': {'message': {'author': {'role': 'assistant'}, 'create_time': 6000, 'content': {'text': 'Third answer'}}}
+        }
+    }
+    
+    result = tagger.tag_conversation(conversation_data)
+    
+    # Should have conversation-level length annotation
+    assert result.has_annotation('conversation_length')
+    length_data = result.get_annotation('conversation_length')
+    assert length_data['count'] == 3
+    assert length_data['category'] == 'short'  # 3 exchanges = short
+
+
+def test_gizmo_plugin_annotations():
+    """Test gizmo and plugin annotation detection."""
+    gizmo_conversation = {
+        'conversation_id': 'gizmo_conv',
+        'title': 'Gizmo usage',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1000,
+                    'content': {'text': 'Generate an image'}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 2000,
+                    'content': {'text': 'I\'ll generate that for you'},
+                    'metadata': {'gizmo_id': 'dalle-3'}
+                }
+            }
+        }
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(gizmo_conversation)
+    
+    # Should detect gizmo usage at exchange level
+    exchange = result.exchanges[0]
+    
+    # Check for gizmo annotations (could be gizmo_1, gizmo_2, etc.)
+    gizmo_annotations = {k: v for k, v in exchange.annotations.items() if k.startswith('gizmo_')}
+    assert len(gizmo_annotations) >= 1
+    
+    # At least one should have dalle-3 as gizmo_id
+    found_dalle = False
+    for annotation_value in gizmo_annotations.values():
+        if isinstance(annotation_value, dict) and annotation_value.get('gizmo_id') == 'dalle-3':
+            found_dalle = True
+            break
+    assert found_dalle
+
+
+def test_empty_conversation_handling():
+    """Test handling of edge cases like empty conversations."""
+    empty_conversation = {
+        'conversation_id': 'empty_conv',
+        'title': 'Empty',
+        'mapping': {}
+    }
+    
+    tagger = create_default_tagger()
+    result = tagger.tag_conversation(empty_conversation)
+    
+    assert result.conversation_id == 'empty_conv'
+    assert result.exchange_count == 0
+    assert result.total_message_count == 0
+    assert len(result.annotations) >= 0  # May have some conversation-level annotations
+
+
+# def test_annotation_vs_tag_consistency():
+#     """Test that annotation and tag interfaces give consistent results."""
+#     tagger = create_default_tagger()
+    
+#     # Add custom rule that returns complex data
+#     def complex_analysis(exchange):
+#         return {
+#             'message_count': len(exchange.messages),
+#             'user_word_count': len(' '.join(exchange.get_user_texts()).split()),
+#             'assistant_word_count': len(' '.join(exchange.get_assistant_texts()).split())
+#         }
+    
+#     tagger.add_exchange_rule('analysis', complex_analysis)
+    
+#     conversation_data = {
+#         'conversation_id': 'test_conv',
+#         'title': 'Test',
+#         'mapping': {
+#             'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello world test'}}},
+#             'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there friend'}}}
+#         }
+#     }
+    
+#     result = tagger.tag_conversation(conversation_data)
+#     exchange = result.exchanges[0]
+    
+#     # Test annotation interface
+#     assert exchange.has_annotation('message_count')
+#     assert exchange.get_annotation('message_count') == 2
+#     assert exchange.get_annotation('user_word_count') == 3
+#     assert exchange.get_annotation('assistant_word_count') == 3
+    
+#     # Test tag interface (backward compatibility)
+#     tags = exchange.tags
+    
+#     # Find the analysis-related tags
+#     analysis_tags = [tag for tag in tags if 'message_count' in tag.name or 'word_count' in tag.name]
+#     assert len(analysis_tags) >= 3  # Should have all three annotations as separate tags or one combined tag
+    
+#     # Test round-trip: annotations -> tags -> annotations
+#     original_annotations = exchange.annotations.copy()
+    
+#     # Convert to tags and back
+#     tag_list = exchange.tags
+#     new_exchange = Exchange.create('test', [])
+#     new_exchange.tags = tag_list
+    
+#     # Should preserve the key data (exact format may differ)
+#     assert new_exchange.has_annotation('message_count')
+#     assert new_exchange.get_annotation('message_count') == 2
+
+
+def test_claude_conversation_parsing():
+    """Test parsing a Claude conversation."""
+    claude_conversation = {
+        'uuid': 'test-uuid',
+        'name': 'Test Claude Chat',
+        'chat_messages': [
+            {
+                'uuid': 'msg1-uuid',
+                'text': 'Hello Claude',
+                'sender': 'user',
+                'created_at': '2024-01-01T12:00:00Z',
+                'content': [{'type': 'text', 'text': 'Hello Claude'}],
+                'attachments': []
+            },
+            {
+                'uuid': 'msg2-uuid', 
+                'text': 'Hello! How can I help you today?',
+                'sender': 'assistant',
+                'created_at': '2024-01-01T12:00:01Z',
+                'content': [{'type': 'text', 'text': 'Hello! How can I help you today?'}],
+                'attachments': []
+            }
+        ]
+    }
+    
+    tagger = create_default_tagger(source="claude")
+    result = tagger.tag_conversation(claude_conversation)
+    
+    assert result.conversation_id == 'test-uuid'
+    assert result.exchange_count == 1
+    assert 'Hello Claude' in result.get_all_user_text()
+
+
+---
+File: attic/tests/conversation_tagger/test_message_ids.py
+---
+# tests/conversation_tagger/test_message_ids.py
+"""
+Tests for message ID functionality.
+"""
+
+import pytest
+from conversation_tagger.core.message import MessageOpenAI, MessageClaude
+from conversation_tagger.core.exchange import Exchange
+
+
+def test_message_openai_id():
+    """Test that OpenAI messages extract IDs correctly."""
+    msg_data = {
+        'id': 'msg-12345',
+        'author': {'role': 'user'},
+        'create_time': 1700000000.0,
+        'content': {'text': 'Hello world'},
+        'metadata': {}
+    }
+    
+    message = MessageOpenAI(data=msg_data)
+    assert message.id == 'msg-12345'
+    
+    # Test missing ID
+    msg_data_no_id = {
+        'author': {'role': 'user'},
+        'create_time': 1700000000.0,
+        'content': {'text': 'Hello world'},
+        'metadata': {}
+    }
+    
+    message_no_id = MessageOpenAI(data=msg_data_no_id)
+    assert message_no_id.id is None
+
+
+def test_message_claude_id():
+    """Test that Claude messages extract IDs correctly."""
+    msg_data = {
+        'uuid': 'claude-msg-67890',
+        'text': 'Hello world',
+        'sender': 'user',
+        'created_at': '2024-01-01T12:00:00Z',
+        'updated_at': '2024-01-01T12:00:00Z',
+        'content': [{'type': 'text', 'text': 'Hello world'}],
+        'attachments': [],
+        'files': []
+    }
+    
+    message = MessageClaude(data=msg_data)
+    assert message.id == 'claude-msg-67890'
+    
+    # Test missing UUID
+    msg_data_no_uuid = {
+        'text': 'Hello world',
+        'sender': 'user',
+        'created_at': '2024-01-01T12:00:00Z',
+        'updated_at': '2024-01-01T12:00:00Z',
+        'content': [{'type': 'text', 'text': 'Hello world'}],
+        'attachments': [],
+        'files': []
+    }
+    
+    message_no_uuid = MessageClaude(data=msg_data_no_uuid)
+    assert message_no_uuid.id is None
+
+
+def test_exchange_get_message_ids():
+    """Test that exchanges can return all message IDs."""
+    # Create messages with IDs
+    msg1_data = {
+        'id': 'user-msg-1',
+        'author': {'role': 'user'},
+        'create_time': 1700000000.0,
+        'content': {'text': 'Question'},
+        'metadata': {}
+    }
+    
+    msg2_data = {
+        'id': 'assistant-msg-1',
+        'author': {'role': 'assistant'},
+        'create_time': 1700000001.0,
+        'content': {'text': 'Answer'},
+        'metadata': {}
+    }
+    
+    msg3_data = {
+        'id': 'user-msg-2',
+        'author': {'role': 'user'},
+        'create_time': 1700000002.0,
+        'content': {'text': 'Follow up'},
+        'metadata': {}
+    }
+    
+    messages = [
+        MessageOpenAI(data=msg1_data),
+        MessageOpenAI(data=msg2_data),
+        MessageOpenAI(data=msg3_data)
+    ]
+    
+    exchange = Exchange.create('test_conv', messages)
+    message_ids = exchange.get_message_ids()
+    
+    assert len(message_ids) == 3
+    assert 'user-msg-1' in message_ids
+    assert 'assistant-msg-1' in message_ids
+    assert 'user-msg-2' in message_ids
+    assert message_ids == ['user-msg-1', 'assistant-msg-1', 'user-msg-2']
+
+
+def test_exchange_get_message_ids_with_missing_ids():
+    """Test exchange message ID extraction with some missing IDs."""
+    # Mix of messages with and without IDs
+    msg1_data = {
+        'id': 'msg-with-id',
+        'author': {'role': 'user'},
+        'create_time': 1700000000.0,
+        'content': {'text': 'Question'},
+        'metadata': {}
+    }
+    
+    msg2_data = {
+        # No ID field
+        'author': {'role': 'assistant'},
+        'create_time': 1700000001.0,
+        'content': {'text': 'Answer'},
+        'metadata': {}
+    }
+    
+    messages = [
+        MessageOpenAI(data=msg1_data),
+        MessageOpenAI(data=msg2_data)
+    ]
+    
+    exchange = Exchange.create('test_conv', messages)
+    message_ids = exchange.get_message_ids()
+    
+    # Should only include messages with non-empty IDs
+    assert len(message_ids) == 1
+    assert 'msg-with-id' in message_ids
+
+
+def test_exchange_get_message_ids_empty_exchange():
+    """Test get_message_ids with empty exchange."""
+    exchange = Exchange.create('test_conv', [])
+    message_ids = exchange.get_message_ids()
+    
+    assert message_ids == []
+
+
+def test_exchange_merging_preserves_message_ids():
+    """Test that merging exchanges preserves all message IDs."""
+    # First exchange
+    msg1_data = {
+        'id': 'msg-1',
+        'author': {'role': 'user'},
+        'create_time': 1700000000.0,
+        'content': {'text': 'First question'},
+        'metadata': {}
+    }
+    
+    msg2_data = {
+        'id': 'msg-2',
+        'author': {'role': 'assistant'},
+        'create_time': 1700000001.0,
+        'content': {'text': 'First answer'},
+        'metadata': {}
+    }
+    
+    exchange1 = Exchange.create('test_conv', [
+        MessageOpenAI(data=msg1_data),
+        MessageOpenAI(data=msg2_data)
+    ])
+    
+    # Second exchange
+    msg3_data = {
+        'id': 'msg-3',
+        'author': {'role': 'user'},
+        'create_time': 1700000002.0,
+        'content': {'text': 'Continue'},
+        'metadata': {}
+    }
+    
+    msg4_data = {
+        'id': 'msg-4',
+        'author': {'role': 'assistant'},
+        'create_time': 1700000003.0,
+        'content': {'text': 'Continued answer'},
+        'metadata': {}
+    }
+    
+    exchange2 = Exchange.create('test_conv', [
+        MessageOpenAI(data=msg3_data),
+        MessageOpenAI(data=msg4_data)
+    ])
+    
+    # Merge exchanges
+    merged = exchange1 + exchange2
+    message_ids = merged.get_message_ids()
+    
+    assert len(message_ids) == 4
+    assert 'msg-1' in message_ids
+    assert 'msg-2' in message_ids
+    assert 'msg-3' in message_ids
+    assert 'msg-4' in message_ids
+    
+    # Should be in chronological order
+    assert message_ids == ['msg-1', 'msg-2', 'msg-3', 'msg-4']
+
+
+def test_mixed_message_types_with_ids():
+    """Test exchange with mixed OpenAI and Claude messages (hypothetical scenario)."""
+    # This tests the interface consistency between message types
+    oai_msg_data = {
+        'id': 'oai-msg-1',
+        'author': {'role': 'user'},
+        'create_time': 1700000000.0,
+        'content': {'text': 'OpenAI question'},
+        'metadata': {}
+    }
+    
+    claude_msg_data = {
+        'uuid': 'claude-msg-1',
+        'text': 'Claude response',
+        'sender': 'assistant',
+        'created_at': '2024-01-01T12:00:01Z',
+        'updated_at': '2024-01-01T12:00:01Z',
+        'content': [{'type': 'text', 'text': 'Claude response'}],
+        'attachments': [],
+        'files': []
+    }
+    
+    # In practice, exchanges would typically have one message type,
+    # but this tests interface consistency
+    oai_message = MessageOpenAI(data=oai_msg_data)
+    claude_message = MessageClaude(data=claude_msg_data)
+    
+    assert oai_message.id == 'oai-msg-1'
+    assert claude_message.id == 'claude-msg-1'
+    
+    # Both implement the same id interface
+    assert hasattr(oai_message, 'id')
+    assert hasattr(claude_message, 'id')
+
+
+# Add to existing test files as needed
+def test_message_id_property_in_existing_tests():
+    """Test that existing message objects now have id property."""
+    # From existing test patterns
+    simple_user_message = {
+        'id': 'test-user-msg',
+        'author': {'role': 'user'},
+        'create_time': 1000,
+        'content': {'text': 'Hello, how are you?'}
+    }
+    
+    simple_assistant_message = {
+        'id': 'test-assistant-msg', 
+        'author': {'role': 'assistant'},
+        'create_time': 2000,
+        'content': {'text': 'I am doing well, thank you!'}
+    }
+    
+    user_msg = MessageOpenAI(data=simple_user_message)
+    assistant_msg = MessageOpenAI(data=simple_assistant_message)
+    
+    assert user_msg.id == 'test-user-msg'
+    assert assistant_msg.id == 'test-assistant-msg'
+    
+    exchange = Exchange.create('test_conv', [user_msg, assistant_msg])
+    message_ids = exchange.get_message_ids()
+    
+    assert message_ids == ['test-user-msg', 'test-assistant-msg']
+
+
+---
+File: attic/tests/conversation_tagger/test_parameterized.py
+---
+# tests/conversation_tagger/test_basic_working_parameterized.py
+"""
+Updated basic tests using streamlined parameterization approach.
+"""
+
+import pytest
+from conversation_tagger import create_default_tagger
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.exchange_tagger import ExchangeTagger
+from conversation_tagger.core.tag import Tag, create_annotation, merge_annotations
+from conversation_tagger.core.message import MessageOpenAI, MessageClaude
+
+
+def get_simple_conversation_data():
+    """Return simple conversation data for both sources."""
+    oai_data = {
+        'conversation_id': 'test_oai',
+        'title': 'Test ChatGPT',
+        'mapping': {
+            'msg1': {
+                'message': {
+                    'author': {'role': 'user'},
+                    'create_time': 1700000000.0,
+                    'content': {'text': 'Hello world'},
+                    'metadata': {}
+                }
+            },
+            'msg2': {
+                'message': {
+                    'author': {'role': 'assistant'},
+                    'create_time': 1700000001.0,
+                    'content': {'text': 'Hi there!'},
+                    'metadata': {}
+                }
+            }
+        }
+    }
+    
+    claude_data = {
+        'uuid': 'test-claude',
+        'name': 'Test Claude',
+        'created_at': '2024-01-01T12:00:00Z',
+        'updated_at': '2024-01-01T12:00:02Z',
+        'account': {'uuid': 'account-uuid'},
+        'chat_messages': [
+            {
+                'uuid': 'msg1-uuid',
+                'text': 'Hello world',
+                'sender': 'user',
+                'created_at': '2024-01-01T12:00:00Z',
+                'updated_at': '2024-01-01T12:00:00Z',
+                'content': [{'type': 'text', 'text': 'Hello world'}],
+                'attachments': [],
+                'files': []
+            },
+            {
+                'uuid': 'msg2-uuid',
+                'text': 'Hi there!',
+                'sender': 'assistant',
+                'created_at': '2024-01-01T12:00:01Z',
+                'updated_at': '2024-01-01T12:00:01Z',
+                'content': [{'type': 'text', 'text': 'Hi there!'}],
+                'attachments': [],
+                'files': []
+            }
+        ]
+    }
+    
+    return oai_data, claude_data
+
+
+class TestBasicFunctionality:
+    """Test basic functionality across both data sources."""
+    
+    def test_annotation_functionality(self):
+        """Test that annotation helpers work correctly."""
+        # Simple annotation
+        simple = create_annotation('test_annotation', True)
+        assert simple == {'test_annotation': True}
+        
+        # Valued annotation
+        valued = create_annotation('count', 42)
+        assert valued == {'count': 42}
+        
+        # Complex annotation
+        complex_data = {'type': 'test', 'score': 0.95}
+        complex_ann = create_annotation('analysis', complex_data)
+        assert complex_ann == {'analysis': complex_data}
+        
+        # Merge annotations
+        merged = merge_annotations(simple, valued, complex_ann)
+        assert 'test_annotation' in merged
+        assert 'count' in merged
+        assert 'analysis' in merged
+        assert merged['count'] == 42
+
+    @pytest.mark.parametrize("source,data", [
+        ("oai", get_simple_conversation_data()[0]),
+        ("claude", get_simple_conversation_data()[1])
+    ])
+    def test_conversation_parsing_basic(self, source, data):
+        """Test basic conversation parsing works for both sources."""
+        tagger = create_default_tagger(source=source)
+        result = tagger.tag_conversation(data)
+        
+        # Basic structure checks
+        assert result.conversation_id in ['test_oai', 'test-claude']
+        assert 'Test' in result.title
+        assert result.exchange_count == 1
+        assert result.total_message_count == 2
+        
+        # Text extraction works
+        user_text = result.get_all_user_text()
+        assistant_text = result.get_all_assistant_text()
+        assert 'Hello world' in user_text
+        assert 'Hi there!' in assistant_text
+
+    @pytest.mark.parametrize("source,data", [
+        ("oai", get_simple_conversation_data()[0]),
+        ("claude", get_simple_conversation_data()[1])
+    ])
+    def test_exchange_annotations(self, source, data):
+        """Test exchange annotation handling across sources."""
+        tagger = create_default_tagger(source=source)
+        
+        # Add custom annotation rule
+        def greeting_detector(exchange):
+            user_texts = exchange.get_user_texts()
+            if user_texts:
+                text = ' '.join(user_texts).lower()
+                if any(greeting in text for greeting in ['hello', 'hi', 'hey']):
+                    return {
+                        'has_greeting': True,
+                        'greeting_type': 'informal' if 'hi' in text or 'hey' in text else 'formal'
+                    }
+            return False
+        
+        tagger.add_exchange_rule('greeting_analysis', greeting_detector)
+        
+        result = tagger.tag_conversation(data)
+        exchange = result.exchanges[0]
+        
+        # Check that annotations were applied
+        assert exchange.has_annotation('has_greeting')
+        assert exchange.get_annotation('has_greeting') is True
+        assert exchange.get_annotation('greeting_type') == 'formal'  # "hello" is formal
+
+    @pytest.mark.parametrize("source", ["oai", "claude"])
+    def test_default_tagger_creation(self, source):
+        """Test that default tagger can be created for both sources."""
+        tagger = create_default_tagger(source=source)
+        assert tagger is not None
+        assert hasattr(tagger, 'exchange_parser')
+        assert hasattr(tagger.exchange_parser, 'exchange_tagger')
+        
+        # Should have some default rules
+        assert len(tagger.exchange_parser.exchange_tagger.rules) > 0
+
+    @pytest.mark.parametrize("source", ["oai", "claude"])
+    def test_exchange_tagger_rule_handling(self, source):
+        """Test exchange tagger rule handling across sources."""
+        tagger = ExchangeTagger()
+        
+        def bool_rule(exchange):
+            return True
+        
+        def dict_rule(exchange):
+            return {
+                'message_count': len(exchange.messages),
+                'has_user': len(exchange.get_user_messages()) > 0
+            }
+        
+        def false_rule(exchange):
+            return False
+        
+        tagger.add_rule('bool_test', bool_rule)
+        tagger.add_rule('dict_test', dict_rule)
+        tagger.add_rule('false_test', false_rule)
+        
+        # Create message object based on source
+        if source == "oai":
+            message_data = {
+                'author': {'role': 'user'},
+                'create_time': 1700000000.0,
+                'content': {'text': 'test'},
+                'metadata': {}
+            }
+            message_obj = MessageOpenAI(data=message_data)
+        else:
+            message_data = {
+                'uuid': 'test-uuid',
+                'text': 'test',
+                'sender': 'user',
+                'created_at': '2024-01-01T12:00:00Z',
+                'updated_at': '2024-01-01T12:00:00Z',
+                'content': [{'type': 'text', 'text': 'test'}],
+                'attachments': [],
+                'files': []
+            }
+            message_obj = MessageClaude(data=message_data)
+        
+        exchange = Exchange.create('test', [message_obj])
+        tagged = tagger.tag_exchange(exchange)
+        
+        # Check annotations
+        assert tagged.get_annotation('bool_test') is True
+        assert tagged.get_annotation('message_count') == 1
+        assert tagged.get_annotation('has_user') is True
+        assert not tagged.has_annotation('false_test')  # False shouldn't create annotation
+
+
+class TestTextExtraction:
+    """Test text extraction APIs work consistently across sources."""
+    
+    @pytest.mark.parametrize("source", ["oai", "claude"])
+    def test_user_text_extraction(self, source):
+        """Test user text extraction works for both sources."""
+        if source == "oai":
+            message_data = {
+                'author': {'role': 'user'},
+                'create_time': 1700000000.0,
+                'content': {'text': 'This is a test message'},
+                'metadata': {}
+            }
+            message_obj = MessageOpenAI(data=message_data)
+        else:
+            message_data = {
+                'uuid': 'user-text-uuid',
+                'text': 'This is a test message',
+                'sender': 'user',
+                'created_at': '2024-01-01T12:00:00Z',
+                'updated_at': '2024-01-01T12:00:00Z',
+                'content': [{'type': 'text', 'text': 'This is a test message'}],
+                'attachments': [],
+                'files': []
+            }
+            message_obj = MessageClaude(data=message_data)
+        
+        exchange = Exchange.create('test', [message_obj])
+        user_texts = exchange.get_user_texts()
+        
+        assert isinstance(user_texts, list)
+        assert len(user_texts) == 1
+        assert 'This is a test message' in user_texts[0]
+
+    @pytest.mark.parametrize("source", ["oai", "claude"])
+    def test_assistant_text_extraction(self, source):
+        """Test assistant text extraction works for both sources."""
+        if source == "oai":
+            message_data = {
+                'author': {'role': 'assistant'},
+                'create_time': 1700000000.0,
+                'content': {'text': 'This is an assistant response'},
+                'metadata': {}
+            }
+            message_obj = MessageOpenAI(data=message_data)
+        else:
+            message_data = {
+                'uuid': 'assistant-text-uuid',
+                'text': 'This is an assistant response',
+                'sender': 'assistant',
+                'created_at': '2024-01-01T12:00:00Z',
+                'updated_at': '2024-01-01T12:00:00Z',
+                'content': [{'type': 'text', 'text': 'This is an assistant response'}],
+                'attachments': [],
+                'files': []
+            }
+            message_obj = MessageClaude(data=message_data)
+        
+        exchange = Exchange.create('test', [message_obj])
+        assistant_texts = exchange.get_assistant_texts()
+        
+        assert isinstance(assistant_texts, list)
+        assert len(assistant_texts) == 1
+        assert 'This is an assistant response' in assistant_texts[0]
+
+
+class TestExchangeMerging:
+    """Test exchange merging functionality works consistently."""
+    
+    @pytest.mark.parametrize("source", ["oai", "claude"])
+    def test_exchange_merging_preserves_annotations(self, source):
+        """Test that merging exchanges preserves annotations from both."""
+        if source == "oai":
+            msg1_data = {
+                'author': {'role': 'user'},
+                'create_time': 1700000000.0,
+                'content': {'text': 'First'},
+                'metadata': {}
+            }
+            msg2_data = {
+                'author': {'role': 'assistant'},
+                'create_time': 1700000001.0,
+                'content': {'text': 'Response 1'},
+                'metadata': {}
+            }
+            msg3_data = {
+                'author': {'role': 'user'},
+                'create_time': 1700000002.0,
+                'content': {'text': 'Second'},
+                'metadata': {}
+            }
+            msg4_data = {
+                'author': {'role': 'assistant'},
+                'create_time': 1700000003.0,
+                'content': {'text': 'Response 2'},
+                'metadata': {}
+            }
+            
+            msg1_obj = MessageOpenAI(data=msg1_data)
+            msg2_obj = MessageOpenAI(data=msg2_data)
+            msg3_obj = MessageOpenAI(data=msg3_data)
+            msg4_obj = MessageOpenAI(data=msg4_data)
+        else:
+            msg1_data = {
+                'uuid': 'msg1-uuid',
+                'text': 'First',
+                'sender': 'user',
+                'created_at': '2024-01-01T12:00:00Z',
+                'updated_at': '2024-01-01T12:00:00Z',
+                'content': [{'type': 'text', 'text': 'First'}],
+                'attachments': [],
+                'files': []
+            }
+            msg2_data = {
+                'uuid': 'msg2-uuid',
+                'text': 'Response 1',
+                'sender': 'assistant',
+                'created_at': '2024-01-01T12:00:01Z',
+                'updated_at': '2024-01-01T12:00:01Z',
+                'content': [{'type': 'text', 'text': 'Response 1'}],
+                'attachments': [],
+                'files': []
+            }
+            msg3_data = {
+                'uuid': 'msg3-uuid',
+                'text': 'Second',
+                'sender': 'user',
+                'created_at': '2024-01-01T12:00:02Z',
+                'updated_at': '2024-01-01T12:00:02Z',
+                'content': [{'type': 'text', 'text': 'Second'}],
+                'attachments': [],
+                'files': []
+            }
+            msg4_data = {
+                'uuid': 'msg4-uuid',
+                'text': 'Response 2',
+                'sender': 'assistant',
+                'created_at': '2024-01-01T12:00:03Z',
+                'updated_at': '2024-01-01T12:00:03Z',
+                'content': [{'type': 'text', 'text': 'Response 2'}],
+                'attachments': [],
+                'files': []
+            }
+            
+            msg1_obj = MessageClaude(data=msg1_data)
+            msg2_obj = MessageClaude(data=msg2_data)
+            msg3_obj = MessageClaude(data=msg3_data)
+            msg4_obj = MessageClaude(data=msg4_data)
+        
+        exchange1 = Exchange.create('test', [msg1_obj, msg2_obj])
+        exchange1.add_annotation('first_exchange', True)
+        exchange1.add_annotation('part', 1)
+        
+        exchange2 = Exchange.create('test', [msg3_obj, msg4_obj])
+        exchange2.add_annotation('second_exchange', True)
+        exchange2.add_annotation('part', 2)
+        
+        merged = exchange1 + exchange2
+        
+        # Check basic structure
+        assert len(merged.messages) == 4
+        
+        # Check annotations were merged
+        assert merged.has_annotation('first_exchange')
+        assert merged.has_annotation('second_exchange')
+        assert merged.get_annotation('part') == 2  # Second exchange wins
+        
+        # Check message ordering is preserved
+        user_texts = merged.get_user_texts()
+        assert 'First' in user_texts[0]
+        assert 'Second' in user_texts[1]
+
+
+# Test error handling
+@pytest.mark.parametrize("source", ["oai", "claude"])
+def test_empty_conversation_handling(source):
+    """Test handling of empty conversations."""
+    if source == "oai":
+        empty_data = {
+            'conversation_id': 'empty_oai',
+            'title': 'Empty',
+            'mapping': {}
+        }
+    else:
+        empty_data = {
+            'uuid': 'empty-claude',
+            'name': 'Empty',
+            'created_at': '2024-01-01T12:00:00Z',
+            'updated_at': '2024-01-01T12:00:00Z',
+            'account': {'uuid': 'account-uuid'},
+            'chat_messages': []
+        }
+    
+    tagger = create_default_tagger(source=source)
+    result = tagger.tag_conversation(empty_data)
+    
+    assert result.exchange_count == 0
+    assert result.total_message_count == 0
+
+
+@pytest.mark.parametrize("source", ["oai", "claude"])
+def test_rule_error_handling(source):
+    """Test that broken rules don't crash the system."""
+    tagger = create_default_tagger(source=source)
+    
+    def broken_rule(exchange):
+        raise ValueError("This rule always fails")
+    
+    def working_rule(exchange):
+        return True
+    
+    tagger.add_exchange_rule('broken', broken_rule)
+    tagger.add_exchange_rule('working', working_rule)
+    
+    if source == "oai":
+        data = {
+            'conversation_id': 'test',
+            'title': 'Test',
+            'mapping': {
+                'msg1': {
+                    'message': {
+                        'author': {'role': 'user'},
+                        'create_time': 1700000000.0,
+                        'content': {'text': 'Hello'},
+                        'metadata': {}
+                    }
+                }
+            }
+        }
+    else:
+        data = {
+            'uuid': 'test-uuid',
+            'name': 'Test',
+            'created_at': '2024-01-01T12:00:00Z',
+            'updated_at': '2024-01-01T12:00:00Z',
+            'account': {'uuid': 'account-uuid'},
+            'chat_messages': [
+                {
+                    'uuid': 'msg1-uuid',
+                    'text': 'Hello',
+                    'sender': 'user',
+                    'created_at': '2024-01-01T12:00:00Z',
+                    'updated_at': '2024-01-01T12:00:00Z',
+                    'content': [{'type': 'text', 'text': 'Hello'}],
+                    'attachments': [],
+                    'files': []
+                }
+            ]
+        }
+    
+    # Should not raise exception
+    result = tagger.tag_conversation(data)
+    
+    exchange = result.exchanges[0]
+    # Working rule should apply, broken rule should be skipped
+    assert exchange.has_annotation('working')
+    assert not exchange.has_annotation('broken')
+
+
+---
+File: attic/tests/conversation_tagger/test_tagging.py
+---
+# tests/test_tagging.py
+"""
+Tagging functionality tests for exchanges and conversations.
+Updated to test annotation-based system.
+"""
+
+import pytest
+from conversation_tagger.core.exchange_tagger import ExchangeTagger
+from conversation_tagger.core.tagger import ConversationTagger
+from conversation_tagger.core.exchange import Exchange
+from conversation_tagger.core.message import Message, MessageOpenAI
+#from conversation_tagger.core.tag import Tag
+
+
+def test_exchange_tagger_annotations():
+    """Test basic exchange tagging with annotations."""
+    tagger = ExchangeTagger()
+    
+    def has_greeting(exchange):
+        user_text = ' '.join(exchange.get_user_texts()).lower()
+        return 'hello' in user_text or 'hi' in user_text
+    
+    def message_stats(exchange):
+        """Return multiple annotations."""
+        user_count = len(exchange.get_user_messages())
+        assistant_count = len(exchange.get_assistant_messages())
+        return {
+            'user_message_count': user_count,
+            'assistant_message_count': assistant_count,
+            'total_messages': user_count + assistant_count
+        }
+    
+    tagger.add_rule('greeting', has_greeting)
+    tagger.add_rule('stats', message_stats)
+    
+    # Test with greeting
+    exchange = Exchange.create('test', [
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'Hello world!'}, 'create_time': 1000}),
+        MessageOpenAI({'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}) 
+    ])
+    
+    tagged = tagger.tag_exchange(exchange)
+    
+    # Check simple boolean annotation
+    assert tagged.has_annotation('greeting')
+    assert tagged.get_annotation('greeting') is True
+    
+    # Check multiple annotations from one rule
+    assert tagged.has_annotation('user_message_count')
+    assert tagged.get_annotation('user_message_count') == 1
+    assert tagged.has_annotation('assistant_message_count')
+    assert tagged.get_annotation('assistant_message_count') == 1
+    assert tagged.get_annotation('total_messages') == 2
+    
+    # Test without greeting
+    exchange_no_greeting = Exchange.create('test', [
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'What is Python?'}, 'create_time': 1000})
+    ])
+    
+    tagged_no_greeting = tagger.tag_exchange(exchange_no_greeting)
+    assert not tagged_no_greeting.has_annotation('greeting')
+    assert tagged_no_greeting.get_annotation('user_message_count') == 1
+    assert tagged_no_greeting.get_annotation('assistant_message_count') == 0
+
+
+# def test_exchange_tagger_with_legacy_tags():
+#     """Test exchange tagging with legacy Tag return values."""
+#     tagger = ExchangeTagger()
+    
+#     def length_category(exchange):
+#         """Return a legacy Tag object."""
+#         text = ' '.join(exchange.get_user_texts())
+#         length = len(text)
+#         if length > 50:
+#             return Tag('message_length', size='long', chars=length)
+#         elif length > 10:
+#             return Tag('message_length', size='medium', chars=length)
+#         return False
+    
+#     tagger.add_rule('length_category', length_category)
+    
+#     long_exchange = Exchange.create('test', [
+#         {'author': {'role': 'user'}, 'content': {'text': 'This is a very long message that should definitely be tagged as long since it exceeds the threshold'}, 'create_time': 1000}
+#     ])
+    
+#     tagged = tagger.tag_exchange(long_exchange)
+    
+#     # Should convert Tag to annotation
+#     assert tagged.has_annotation('message_length')
+#     length_data = tagged.get_annotation('message_length')
+#     assert length_data['size'] == 'long'
+#     assert length_data['chars'] > 50
+
+
+def test_exchange_tagger_with_string_values():
+    """Test exchange tagging with string return values."""
+    tagger = ExchangeTagger()
+    
+    def get_language(exchange):
+        """Return a string value."""
+        text = ' '.join(exchange.get_user_texts()).lower()
+        if 'python' in text:
+            return 'python'
+        elif 'javascript' in text:
+            return 'javascript'
+        return None
+    
+    tagger.add_rule('language', get_language)
+    
+    python_exchange = Exchange.create('test', [
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'Help with Python code'}, 'create_time': 1000})
+    ])
+    
+    tagged = tagger.tag_exchange(python_exchange)
+    assert tagged.has_annotation('language')
+    assert tagged.get_annotation('language') == 'python'
+
+
+def test_conversation_tagger_annotations():
+    """Test conversation-level tagging with annotations."""
+    tagger = ConversationTagger()
+    
+    def is_multi_turn(conversation):
+        return conversation.exchange_count > 1
+    
+    def exchange_summary(conversation):
+        """Return structured annotation data."""
+        return {
+            'exchange_count': conversation.exchange_count,
+            'total_messages': conversation.total_message_count,
+            'has_continuations': conversation.has_continuations
+        }
+    
+    tagger.add_conversation_rule('multi_turn', is_multi_turn)
+    tagger.add_conversation_rule('summary', exchange_summary)
+    
+    # Create conversation data with multiple exchanges
+    conversation_data = {
+        'conversation_id': 'test_conv',
+        'title': 'Multi-turn conversation',
+        'mapping': {
+            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'First'}}},
+            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Response 1'}}},
+            'msg3': {'message': {'author': {'role': 'user'}, 'create_time': 3000, 'content': {'text': 'Second'}}},
+            'msg4': {'message': {'author': {'role': 'assistant'}, 'create_time': 4000, 'content': {'text': 'Response 2'}}}
+        }
+    }
+    
+    result = tagger.tag_conversation(conversation_data)
+    
+    # Check annotations
+    assert result.has_annotation('multi_turn')
+    assert result.get_annotation('multi_turn') is True
+    
+    assert result.has_annotation('exchange_count')
+    assert result.get_annotation('exchange_count') == 2
+    assert result.has_annotation('total_messages')
+    assert result.get_annotation('total_messages') == 4
+
+
+# def test_conversation_tagger_with_legacy_tags():
+#     """Test conversation tagger with legacy Tag objects."""
+#     tagger = ConversationTagger()
+    
+#     def complexity_tag(conversation):
+#         """Return legacy Tag object."""
+#         if conversation.exchange_count > 5:
+#             return Tag('complexity', level='high', exchanges=conversation.exchange_count)
+#         return Tag('complexity', level='low', exchanges=conversation.exchange_count)
+    
+#     tagger.add_conversation_rule('complexity', complexity_tag)
+    
+#     conversation_data = {
+#         'conversation_id': 'test_conv',
+#         'title': 'Simple conversation',
+#         'mapping': {
+#             'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Hello'}}},
+#             'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Hi there!'}}}
+#         }
+#     }
+    
+#     result = tagger.tag_conversation(conversation_data)
+    
+#     # Should convert Tag to annotation
+#     assert result.has_annotation('complexity')
+#     complexity_data = result.get_annotation('complexity')
+#     assert complexity_data['level'] == 'low'
+#     assert complexity_data['exchanges'] == 1
+
+
+def test_tagging_error_handling():
+    """Test that tagging rules handle errors gracefully."""
+    tagger = ExchangeTagger()
+    
+    def broken_rule(exchange):
+        raise ValueError("This rule always fails")
+    
+    def working_rule(exchange):
+        return True
+    
+    tagger.add_rule('broken', broken_rule)
+    tagger.add_rule('working', working_rule)
+    
+    exchange = Exchange.create('test', [
+        MessageOpenAI({'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000})
+    ])
+    
+    # Should not raise exception
+    tagged = tagger.tag_exchange(exchange)
+    
+    # Working rule should apply, broken rule should be skipped
+    assert tagged.has_annotation('working')
+    assert tagged.get_annotation('working') is True
+    assert not tagged.has_annotation('broken')
+
+
+# def test_exchange_backward_compatibility():
+#     """Test that old Tag-based code still works."""
+#     exchange = Exchange.create('test', [
+#         {'author': {'role': 'user'}, 'content': {'text': 'Hello'}, 'create_time': 1000}
+#     ])
+    
+#     # Add annotations directly
+#     exchange.add_annotation('has_greeting', True)
+#     exchange.add_annotation('length', 50)
+#     exchange.add_annotation('stats', {'words': 1, 'chars': 5})
+    
+#     # Test getting tags (backward compatibility)
+#     tags = exchange.tags
+#     tag_names = [tag.name for tag in tags]
+#     assert 'has_greeting' in tag_names
+#     assert 'length' in tag_names
+#     assert 'stats' in tag_names
+    
+#     # Find specific tags
+#     greeting_tag = next(tag for tag in tags if tag.name == 'has_greeting')
+#     assert greeting_tag.attributes == {}  # Simple boolean becomes empty attributes
+    
+#     length_tag = next(tag for tag in tags if tag.name == 'length')
+#     assert length_tag.attributes == {'value': 50}  # Single value
+    
+#     stats_tag = next(tag for tag in tags if tag.name == 'stats')
+#     assert stats_tag.attributes == {'words': 1, 'chars': 5}  # Multiple attributes
+
+
+@pytest.fixture
+def conversation_with_continuation():
+    """Conversation data that should trigger continuation merging."""
+    return {
+        'conversation_id': 'test_conv',
+        'title': 'Continuation test',
+        'mapping': {
+            'msg1': {'message': {'author': {'role': 'user'}, 'create_time': 1000, 'content': {'text': 'Tell me about Python'}}},
+            'msg2': {'message': {'author': {'role': 'assistant'}, 'create_time': 2000, 'content': {'text': 'Python is a language...'}}},
+            'msg3': {'message': {'author': {'role': 'user'}, 'create_time': 3000, 'content': {'text': 'continue'}}},
+            'msg4': {'message': {'author': {'role': 'assistant'}, 'create_time': 4000, 'content': {'text': 'It was created by Guido...'}}}
+        }
+    }
+
+
+def test_continuation_detection_with_annotations(conversation_with_continuation):
+    """Test that continuation patterns merge exchanges correctly."""
+    tagger = ConversationTagger()
+    
+    # Add a rule that detects continuations
+    def detect_continuation(exchange):
+        return exchange.has_continuations()
+    
+    tagger.add_exchange_rule('has_continuation', detect_continuation)
+    
+    result = tagger.tag_conversation(conversation_with_continuation)
+    
+    # Should merge into single exchange due to continuation
+    assert result.exchange_count == 1
+    
+    exchange = result.exchanges[0]
+    assert len(exchange) == 4
+    assert exchange.has_continuations()
+    
+    # Should have continuation annotation
+    assert exchange.has_annotation('has_continuation')
+    assert exchange.get_annotation('has_continuation') is True
+    
+    user_text = ' '.join(exchange.get_user_texts())
+    assert 'Tell me about Python' in user_text
+    assert 'continue' in user_text
+
+
+# def test_mixed_annotation_and_tag_workflow():
+#     """Test workflow mixing new annotations with legacy Tag objects."""
+#     tagger = ExchangeTagger()
+    
+#     def modern_rule(exchange):
+#         """Modern rule returning dict of annotations."""
+#         return {
+#             'message_count': len(exchange.messages),
+#             'has_user': len(exchange.get_user_messages()) > 0,
+#             'has_assistant': len(exchange.get_assistant_messages()) > 0
+#         }
+    
+#     def legacy_rule(exchange):
+#         """Legacy rule returning Tag object."""
+#         if len(exchange.get_user_texts()) > 0:
+#             text_length = len(' '.join(exchange.get_user_texts()))
+#             return Tag('user_text_stats', length=text_length, word_count=len(' '.join(exchange.get_user_texts()).split()))
+#         return False
+    
+#     tagger.add_rule('modern', modern_rule)
+#     tagger.add_rule('legacy', legacy_rule)
+    
+#     exchange = Exchange.create('test', [
+#         {'author': {'role': 'user'}, 'content': {'text': 'Hello world'}, 'create_time': 1000},
+#         {'author': {'role': 'assistant'}, 'content': {'text': 'Hi there!'}, 'create_time': 2000}
+#     ])
+    
+#     tagged = tagger.tag_exchange(exchange)
+    
+#     # Modern annotations
+#     assert tagged.get_annotation('message_count') == 2
+#     assert tagged.get_annotation('has_user') is True
+#     assert tagged.get_annotation('has_assistant') is True
+    
+#     # Legacy tag converted to annotation
+#     assert tagged.has_annotation('user_text_stats')
+#     stats = tagged.get_annotation('user_text_stats')
+#     assert stats['length'] == 11  # "Hello world"
+#     assert stats['word_count'] == 2
+    
+#     # Test backward compatibility - can still get as tags
+#     tags = tagged.tags
+#     tag_names = [tag.name for tag in tags]
+#     assert 'message_count' in tag_names
+#     assert 'has_user' in tag_names
+#     assert 'user_text_stats' in tag_names
+
+

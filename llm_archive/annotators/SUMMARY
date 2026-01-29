@@ -1,0 +1,758 @@
+---
+File: llm_archive/annotators/__init__.py
+---
+# llm_archive/annotators/__init__.py
+"""Annotation infrastructure for entities.
+
+Annotators analyze entities and produce annotations stored in derived.annotations.
+
+Annotation Types:
+- tag: For filtering (topic:physics, quality:high)
+- title: For generation (wiki article titles)
+- summary: Brief description
+- feature: Detected features (has_code_blocks, has_latex)
+- topic: Subject classification
+- quality: Quality assessment
+
+Creating Custom Annotators:
+-------------------------
+1. Subclass Annotator
+2. Set ANNOTATION_TYPE, ENTITY_TYPE, SOURCE
+3. Implement compute() method
+4. Use add_annotation() to persist
+
+Example:
+    class MyAnnotator(Annotator):
+        ANNOTATION_TYPE = 'custom'
+        ENTITY_TYPE = 'exchange'
+        SOURCE = 'heuristic'
+        VERSION = '1.0'
+        
+        def compute(self) -> int:
+            exchanges = self.session.query(Exchange).all()
+            count = 0
+            for ex in exchanges:
+                if self._my_condition(ex):
+                    if self.add_annotation(
+                        entity_id=ex.id,
+                        value='my_value',
+                        key='optional_key',
+                    ):
+                        count += 1
+            return count
+"""
+
+from llm_archive.annotators.base import Annotator, AnnotationManager
+from llm_archive.annotators.features import (
+    WikiLinkAnnotator,
+    CodeBlockAnnotator,
+    LatexAnnotator,
+    ContinuationAnnotator,
+)
+
+__all__ = [
+    "Annotator",
+    "AnnotationManager",
+    "WikiLinkAnnotator",
+    "CodeBlockAnnotator",
+    "LatexAnnotator",
+    "ContinuationAnnotator",
+]
+
+
+
+---
+File: llm_archive/annotators/base.py
+---
+# llm_archive/annotators/base.py
+"""Base annotation infrastructure."""
+
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import func as sql_func
+from sqlalchemy.orm import Session
+from loguru import logger
+
+from llm_archive.models import Annotation
+from llm_archive.models.derived import AnnotatorCursor
+
+
+class Annotator(ABC):
+    """
+    Base class for annotation generators.
+    
+    Annotators analyze entities and produce annotations stored in
+    the derived.annotations table.
+    
+    Supports incremental processing via cursor tracking:
+    - Each annotator+version tracks a "high water mark" (cursor)
+    - Only entities created after the cursor are processed
+    - Bump VERSION to force reprocessing all entities
+    
+    Subclass and implement:
+    - ANNOTATION_TYPE: Type of annotation ('tag', 'title', 'feature', etc.)
+    - ENTITY_TYPE: Target entity type ('message', 'exchange', 'dialogue')
+    - SOURCE: Provenance ('heuristic', 'model', 'manual')
+    - VERSION: Version string - bump this to reprocess all entities
+    - compute(): Main logic to generate annotations
+    """
+    
+    # Override in subclass
+    ANNOTATION_TYPE: str = None
+    ENTITY_TYPE: str = None
+    SOURCE: str = 'heuristic'
+    VERSION: str = '1.0'
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self._cursor: AnnotatorCursor | None = None
+        self._max_created_at: datetime | None = None
+        self._entities_processed: int = 0
+        self._annotations_created: int = 0
+    
+    @property
+    def name(self) -> str:
+        """Annotator name for cursor tracking."""
+        return self.__class__.__name__
+    
+    def get_cursor(self) -> datetime | None:
+        """
+        Get the high water mark for this annotator version.
+        
+        Returns the timestamp of the last processed entity, or None if
+        this annotator version hasn't run before.
+        """
+        cursor = (
+            self.session.query(AnnotatorCursor)
+            .filter(AnnotatorCursor.annotator_name == self.name)
+            .filter(AnnotatorCursor.annotator_version == self.VERSION)
+            .filter(AnnotatorCursor.entity_type == self.ENTITY_TYPE)
+            .first()
+        )
+        
+        self._cursor = cursor
+        return cursor.high_water_mark if cursor else None
+    
+    def update_cursor(self, high_water_mark: datetime, entities_processed: int, annotations_created: int):
+        """
+        Update the cursor position after processing.
+        
+        Args:
+            high_water_mark: The max created_at timestamp seen
+            entities_processed: Number of entities processed in this run
+            annotations_created: Number of annotations created in this run
+        """
+        if self._cursor:
+            # Update existing cursor
+            self._cursor.high_water_mark = high_water_mark
+            self._cursor.entities_processed += entities_processed
+            self._cursor.annotations_created += annotations_created
+            self._cursor.updated_at = datetime.now(timezone.utc)
+        else:
+            # Create new cursor
+            cursor = AnnotatorCursor(
+                annotator_name=self.name,
+                annotator_version=self.VERSION,
+                entity_type=self.ENTITY_TYPE,
+                high_water_mark=high_water_mark,
+                entities_processed=entities_processed,
+                annotations_created=annotations_created,
+            )
+            self.session.add(cursor)
+    
+    def track_entity(self, created_at: datetime | None):
+        """Track an entity being processed for cursor update."""
+        self._entities_processed += 1
+        if created_at and (self._max_created_at is None or created_at > self._max_created_at):
+            self._max_created_at = created_at
+    
+    def finalize_cursor(self):
+        """Finalize cursor update after processing."""
+        if self._max_created_at:
+            self.update_cursor(
+                high_water_mark=self._max_created_at,
+                entities_processed=self._entities_processed,
+                annotations_created=self._annotations_created,
+            )
+    
+    @abstractmethod
+    def compute(self) -> int:
+        """
+        Compute and persist annotations.
+        
+        Implementations should:
+        1. Call get_cursor() to get the high water mark
+        2. Query only entities with created_at > cursor (or all if cursor is None)
+        3. Call track_entity(created_at) for each entity processed
+        4. Call add_annotation() for each annotation
+        5. Call finalize_cursor() at the end
+        
+        Returns count of annotations created/updated.
+        """
+        pass
+    
+    def add_annotation(
+        self,
+        entity_id: UUID,
+        value: str,
+        key: str | None = None,
+        confidence: float | None = None,
+        data: dict | None = None,
+    ) -> bool:
+        """
+        Add or update an annotation.
+        
+        Args:
+            entity_id: Target entity UUID
+            value: Annotation value (required)
+            key: Optional sub-key for namespacing
+            confidence: Optional confidence score (0.0-1.0)
+            data: Optional additional structured data
+        
+        Returns:
+            True if a new annotation was created, False if existing.
+        """
+        # Check for existing active annotation
+        existing = (
+            self.session.query(Annotation)
+            .filter(Annotation.entity_type == self.ENTITY_TYPE)
+            .filter(Annotation.entity_id == entity_id)
+            .filter(Annotation.annotation_type == self.ANNOTATION_TYPE)
+            .filter(Annotation.annotation_key == key if key else Annotation.annotation_key.is_(None))
+            .filter(Annotation.annotation_value == value)
+            .filter(Annotation.superseded_at.is_(None))
+            .first()
+        )
+        
+        if existing:
+            # Update if confidence changed significantly
+            if confidence is not None and existing.confidence != confidence:
+                if abs((existing.confidence or 0) - confidence) > 0.01:
+                    existing.confidence = confidence
+                    existing.annotation_data = data
+            return False
+        
+        # Create new annotation
+        annotation = Annotation(
+            entity_type=self.ENTITY_TYPE,
+            entity_id=entity_id,
+            annotation_type=self.ANNOTATION_TYPE,
+            annotation_key=key,
+            annotation_value=value,
+            annotation_data=data,
+            confidence=confidence,
+            source=self.SOURCE,
+            source_version=self.VERSION,
+        )
+        self.session.add(annotation)
+        self._annotations_created += 1
+        return True
+    
+    def supersede_annotation(
+        self,
+        entity_id: UUID,
+        value: str,
+        key: str | None = None,
+        new_annotation_id: UUID | None = None,
+    ):
+        """Mark an existing annotation as superseded."""
+        existing = (
+            self.session.query(Annotation)
+            .filter(Annotation.entity_type == self.ENTITY_TYPE)
+            .filter(Annotation.entity_id == entity_id)
+            .filter(Annotation.annotation_type == self.ANNOTATION_TYPE)
+            .filter(Annotation.annotation_key == key if key else Annotation.annotation_key.is_(None))
+            .filter(Annotation.annotation_value == value)
+            .filter(Annotation.superseded_at.is_(None))
+            .first()
+        )
+        
+        if existing:
+            existing.superseded_at = datetime.now(timezone.utc)
+            existing.superseded_by = new_annotation_id
+
+
+class AnnotationManager:
+    """
+    Manages annotation operations and annotator execution.
+    """
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self.annotators: list[Annotator] = []
+    
+    def register(self, annotator_class: type[Annotator]):
+        """Register an annotator class."""
+        annotator = annotator_class(self.session)
+        self.annotators.append(annotator)
+    
+    def run_all(self) -> dict[str, int]:
+        """Run all registered annotators."""
+        results = {}
+        
+        for annotator in self.annotators:
+            name = annotator.__class__.__name__
+            try:
+                count = annotator.compute()
+                results[name] = count
+                logger.info(f"{name}: {count} annotations")
+            except Exception as e:
+                logger.error(f"{name} failed: {e}")
+                results[name] = -1
+                self.session.rollback()
+        
+        self.session.commit()
+        return results
+    
+    def get_annotations(
+        self,
+        entity_type: str | None = None,
+        entity_id: UUID | None = None,
+        annotation_type: str | None = None,
+        active_only: bool = True,
+    ) -> list[Annotation]:
+        """Query annotations with filters."""
+        query = self.session.query(Annotation)
+        
+        if entity_type:
+            query = query.filter(Annotation.entity_type == entity_type)
+        if entity_id:
+            query = query.filter(Annotation.entity_id == entity_id)
+        if annotation_type:
+            query = query.filter(Annotation.annotation_type == annotation_type)
+        if active_only:
+            query = query.filter(Annotation.superseded_at.is_(None))
+        
+        return query.all()
+    
+    def get_entity_annotations(self, entity_type: str, entity_id: UUID) -> dict[str, Any]:
+        """Get all active annotations for an entity as a dict."""
+        annotations = self.get_annotations(entity_type=entity_type, entity_id=entity_id)
+        
+        result = {}
+        for ann in annotations:
+            key_parts = [ann.annotation_type]
+            if ann.annotation_key:
+                key_parts.append(ann.annotation_key)
+            key_parts.append(ann.annotation_value)
+            key = ':'.join(key_parts)
+            
+            result[key] = {
+                'confidence': ann.confidence,
+                'source': ann.source,
+                'data': ann.annotation_data,
+            }
+        
+        return result
+    
+    def get_tags(self, entity_type: str, entity_id: UUID) -> list[str]:
+        """Get tag values for an entity."""
+        annotations = self.get_annotations(
+            entity_type=entity_type, 
+            entity_id=entity_id,
+            annotation_type='tag',
+        )
+        return [ann.annotation_value for ann in annotations]
+    
+    def get_title(self, entity_type: str, entity_id: UUID) -> str | None:
+        """Get title annotation for an entity."""
+        annotations = self.get_annotations(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            annotation_type='title',
+        )
+        return annotations[0].annotation_value if annotations else None
+    
+    def clear_annotations(
+        self,
+        entity_type: str | None = None,
+        annotation_type: str | None = None,
+        source: str | None = None,
+    ):
+        """Clear annotations matching filters (hard delete)."""
+        query = self.session.query(Annotation)
+        
+        if entity_type:
+            query = query.filter(Annotation.entity_type == entity_type)
+        if annotation_type:
+            query = query.filter(Annotation.annotation_type == annotation_type)
+        if source:
+            query = query.filter(Annotation.source == source)
+        
+        count = query.delete()
+        logger.info(f"Deleted {count} annotations")
+        return count
+
+
+---
+File: llm_archive/annotators/features.py
+---
+# llm_archive/annotators/features.py
+"""Feature detection annotators."""
+
+import re
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+from loguru import logger
+
+from llm_archive.models import Message, ContentPart, Exchange, ExchangeContent
+from llm_archive.annotators.base import Annotator
+
+
+class WikiLinkAnnotator(Annotator):
+    """Detect Obsidian-style [[wiki links]] in content."""
+    
+    ANNOTATION_TYPE = 'feature'
+    ENTITY_TYPE = 'message'
+    SOURCE = 'heuristic'
+    VERSION = '1.0'
+    
+    PATTERN = re.compile(r'\[\[.+?\]\]')
+    
+    def compute(self) -> int:
+        """Find messages with wiki links."""
+        cursor = self.get_cursor()
+        
+        # Base query
+        query = (
+            self.session.query(
+                ContentPart.message_id, 
+                ContentPart.text_content,
+                Message.created_at,
+            )
+            .join(Message)
+            .filter(Message.role == 'assistant')
+            .filter(Message.deleted_at.is_(None))
+            .filter(ContentPart.part_type == 'text')
+            .filter(ContentPart.text_content.isnot(None))
+        )
+        
+        # Apply cursor filter
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
+        # Group by message
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
+        
+        count = 0
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts'])
+            
+            if self.PATTERN.search(full_text):
+                links = self.PATTERN.findall(full_text)
+                if self.add_annotation(
+                    entity_id=msg_id,
+                    value='has_wiki_links',
+                    confidence=1.0,
+                    data={'count': len(links)},
+                ):
+                    count += 1
+        
+        self.finalize_cursor()
+        return count
+
+
+class CodeBlockAnnotator(Annotator):
+    """Detect code blocks (```) in content."""
+    
+    ANNOTATION_TYPE = 'feature'
+    ENTITY_TYPE = 'message'
+    SOURCE = 'heuristic'
+    VERSION = '1.0'
+    
+    PATTERN = re.compile(r'```(\w*)\n')
+    
+    def compute(self) -> int:
+        """Find messages with code blocks."""
+        cursor = self.get_cursor()
+        
+        query = (
+            self.session.query(
+                ContentPart.message_id, 
+                ContentPart.text_content,
+                Message.created_at,
+            )
+            .join(Message)
+            .filter(Message.deleted_at.is_(None))
+            .filter(ContentPart.part_type == 'text')
+            .filter(ContentPart.text_content.isnot(None))
+        )
+        
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
+        
+        count = 0
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts'])
+            
+            if '```' in full_text:
+                languages = self.PATTERN.findall(full_text)
+                languages = [l for l in languages if l]
+                
+                if self.add_annotation(
+                    entity_id=msg_id,
+                    value='has_code_blocks',
+                    confidence=1.0,
+                    data={
+                        'count': full_text.count('```') // 2,
+                        'languages': list(set(languages)),
+                    },
+                ):
+                    count += 1
+                
+                # Also add language-specific tags
+                for lang in set(languages):
+                    self.add_annotation(
+                        entity_id=msg_id,
+                        value=lang,
+                        key='code_language',
+                        confidence=1.0,
+                    )
+        
+        self.finalize_cursor()
+        return count
+
+
+class LatexAnnotator(Annotator):
+    """Detect LaTeX/MathJax mathematical notation."""
+    
+    ANNOTATION_TYPE = 'feature'
+    ENTITY_TYPE = 'message'
+    SOURCE = 'heuristic'
+    VERSION = '1.0'
+    
+    PATTERNS = [
+        re.compile(r'\$\$.+?\$\$', re.DOTALL),
+        re.compile(r'\\\(.+?\\\)', re.DOTALL),
+        re.compile(r'\\\[.+?\\\]', re.DOTALL),
+    ]
+    
+    COMMANDS = [
+        '\\frac', '\\sum', '\\int', '\\sqrt', '\\alpha', '\\beta',
+        '\\gamma', '\\theta', '\\pi', '\\sigma', '\\infty', '\\partial',
+        '\\nabla', '\\Delta', '\\Omega', '\\lambda', '\\mu',
+    ]
+    
+    def compute(self) -> int:
+        """Find messages with LaTeX content."""
+        cursor = self.get_cursor()
+        
+        query = (
+            self.session.query(
+                ContentPart.message_id, 
+                ContentPart.text_content,
+                Message.created_at,
+            )
+            .join(Message)
+            .filter(Message.role == 'assistant')
+            .filter(Message.deleted_at.is_(None))
+            .filter(ContentPart.part_type == 'text')
+            .filter(ContentPart.text_content.isnot(None))
+        )
+        
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
+        
+        count = 0
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts'])
+            
+            has_latex = False
+            found_commands = []
+            
+            for pattern in self.PATTERNS:
+                if pattern.search(full_text):
+                    has_latex = True
+                    break
+            
+            for cmd in self.COMMANDS:
+                if cmd in full_text:
+                    has_latex = True
+                    found_commands.append(cmd)
+            
+            if has_latex:
+                if self.add_annotation(
+                    entity_id=msg_id,
+                    value='has_latex',
+                    confidence=1.0,
+                    data={'commands': found_commands[:10]},
+                ):
+                    count += 1
+        
+        self.finalize_cursor()
+        return count
+
+
+class ContinuationAnnotator(Annotator):
+    """Detect continuation signals in user messages."""
+    
+    ANNOTATION_TYPE = 'feature'
+    ENTITY_TYPE = 'message'
+    SOURCE = 'heuristic'
+    VERSION = '1.0'
+    
+    PATTERNS = {
+        'continue': ['continue', 'keep going', 'go on', 'carry on'],
+        'elaborate': ['elaborate', 'expand', 'tell me more', 'more details'],
+        'finish': ['finish', 'complete', 'wrap up'],
+        'next': ['next', 'what else', 'and then'],
+    }
+    
+    def compute(self) -> int:
+        """Find user messages that are continuation signals."""
+        cursor = self.get_cursor()
+        
+        query = (
+            self.session.query(Message.id, ContentPart.text_content, Message.created_at)
+            .join(ContentPart)
+            .filter(Message.role == 'user')
+            .filter(Message.deleted_at.is_(None))
+            .filter(ContentPart.part_type == 'text')
+            .filter(ContentPart.text_content.isnot(None))
+        )
+        
+        if cursor:
+            query = query.filter(Message.created_at > cursor)
+        
+        results = query.all()
+        
+        message_data: dict[UUID, dict] = {}
+        for msg_id, text, created_at in results:
+            if msg_id not in message_data:
+                message_data[msg_id] = {'texts': [], 'created_at': created_at}
+            message_data[msg_id]['texts'].append(text)
+        
+        count = 0
+        for msg_id, data in message_data.items():
+            self.track_entity(data['created_at'])
+            full_text = '\n'.join(data['texts']).strip().lower()
+            
+            if len(full_text.split()) > 10:
+                continue
+            
+            # Check quote+elaborate pattern
+            if full_text.startswith('>'):
+                lines = full_text.split('\n')
+                last_line = lines[-1].strip()
+                if last_line in ('elaborate', 'continue', 'expand', 'more'):
+                    if self.add_annotation(
+                        entity_id=msg_id,
+                        value='continuation_signal',
+                        key='quote_elaborate',
+                        confidence=1.0,
+                    ):
+                        count += 1
+                    continue
+            
+            # Check keyword patterns
+            for pattern_name, keywords in self.PATTERNS.items():
+                matched = False
+                for keyword in keywords:
+                    if full_text == keyword or full_text.startswith(keyword + ' '):
+                        if self.add_annotation(
+                            entity_id=msg_id,
+                            value='continuation_signal',
+                            key=pattern_name,
+                            confidence=0.9,
+                            data={'matched': keyword},
+                        ):
+                            count += 1
+                        matched = True
+                        break
+                if matched:
+                    break
+        
+        self.finalize_cursor()
+        return count
+
+
+class ExchangeTypeAnnotator(Annotator):
+    """Classify exchange types based on content patterns."""
+    
+    ANNOTATION_TYPE = 'tag'
+    ENTITY_TYPE = 'exchange'
+    SOURCE = 'heuristic'
+    VERSION = '1.0'
+    
+    def compute(self) -> int:
+        """Classify exchanges."""
+        cursor = self.get_cursor()
+        
+        query = (
+            self.session.query(Exchange, ExchangeContent)
+            .join(ExchangeContent)
+        )
+        
+        if cursor:
+            query = query.filter(Exchange.computed_at > cursor)
+        
+        exchanges = query.all()
+        
+        count = 0
+        for exchange, content in exchanges:
+            self.track_entity(exchange.computed_at)
+            exchange_type, confidence = self._classify(content)
+            
+            if exchange_type:
+                if self.add_annotation(
+                    entity_id=exchange.id,
+                    value=exchange_type,
+                    key='exchange_type',
+                    confidence=confidence,
+                ):
+                    count += 1
+        
+        self.finalize_cursor()
+        return count
+    
+    def _classify(self, content: ExchangeContent) -> tuple[str | None, float]:
+        """Classify an exchange based on content."""
+        user_text = content.user_text or ''
+        assistant_text = content.assistant_text or ''
+        
+        code_blocks = assistant_text.count('```')
+        if code_blocks >= 2:
+            return 'coding', 0.8
+        
+        if '[[' in assistant_text and ']]' in assistant_text:
+            return 'wiki_article', 0.9
+        
+        if (content.user_word_count or 0) < 50 and (content.assistant_word_count or 0) > 200:
+            return 'qa', 0.6
+        
+        if (content.assistant_word_count or 0) > 500:
+            if assistant_text.startswith('#') or assistant_text.startswith('**'):
+                return 'article', 0.7
+            return 'generation', 0.5
+        
+        return 'discussion', 0.4
+

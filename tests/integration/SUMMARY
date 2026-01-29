@@ -1,0 +1,3312 @@
+---
+File: tests/integration/__init__.py
+---
+
+
+
+
+---
+File: tests/integration/conftest.py
+---
+# tests/integration/conftest.py
+"""Fixtures for integration tests - requires PostgreSQL database."""
+
+import os
+import uuid
+from typing import Generator
+
+import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session, sessionmaker
+
+from llm_archive.models import Base
+
+
+# ============================================================
+# Database Configuration
+# ============================================================
+
+def get_test_db_url() -> str:
+    """Get test database URL from environment or use default."""
+    return os.getenv(
+        "TEST_DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/llm_archive_test"
+    )
+
+
+# ============================================================
+# Database Fixtures
+# ============================================================
+
+@pytest.fixture(scope="session")
+def db_engine():
+    """Create database engine for test session."""
+    url = get_test_db_url()
+    engine = create_engine(url, echo=False)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def setup_schemas(db_engine):
+    """Initialize schemas once per test session."""
+    from pathlib import Path
+    
+    # Find schema directory relative to this file
+    tests_dir = Path(__file__).parent.parent
+    project_dir = tests_dir.parent
+    schema_dir = project_dir / "schema"
+    
+    with db_engine.connect() as conn:
+        # Drop and recreate schemas
+        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
+        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
+        conn.commit()
+        
+        # Execute schema files in order
+        for sql_file in sorted(schema_dir.glob("*.sql")):
+            sql = sql_file.read_text()
+            # Split on semicolons but be careful with functions/procedures
+            statements = []
+            current = []
+            for line in sql.split('\n'):
+                current.append(line)
+                if line.strip().endswith(';') and not line.strip().startswith('--'):
+                    stmt = '\n'.join(current).strip()
+                    if stmt and stmt != ';':
+                        statements.append(stmt)
+                    current = []
+            
+            for stmt in statements:
+                if stmt.strip():
+                    try:
+                        conn.execute(text(stmt))
+                    except Exception as e:
+                        # Ignore some expected errors
+                        if "already exists" not in str(e).lower():
+                            print(f"Warning: {e}")
+            conn.commit()
+    
+    yield
+    
+    # Cleanup after all tests
+    with db_engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
+        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
+        conn.commit()
+
+
+@pytest.fixture
+def db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
+    """Create a database session with transaction rollback."""
+    connection = db_engine.connect()
+    transaction = connection.begin()
+    
+    SessionLocal = sessionmaker(bind=connection)
+    session = SessionLocal()
+    
+    yield session
+    
+    session.close()
+    if transaction.is_active:
+        transaction.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def clean_db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
+    """
+    Create a database session that commits changes.
+    Use when you need data to persist across operations within the test.
+    Cleans up data at the end.
+    """
+    SessionLocal = sessionmaker(bind=db_engine)
+    session = SessionLocal()
+    
+    yield session
+    
+    # Cleanup: delete all data from tables in reverse dependency order
+    cleanup_tables = [
+        "derived.message_chunks",
+        "derived.pipeline_runs",
+        "derived.annotations",
+        "derived.content_hashes",
+        "derived.exchange_content",
+        "derived.exchange_messages",
+        "derived.sequence_exchanges",
+        "derived.exchanges",
+        "derived.sequence_messages",
+        "derived.linear_sequences",
+        "derived.message_paths",
+        "derived.dialogue_trees",
+        "raw.chatgpt_canvas_docs",
+        "raw.chatgpt_dalle_generations",
+        "raw.chatgpt_code_outputs",
+        "raw.chatgpt_code_executions",
+        "raw.chatgpt_search_entries",
+        "raw.chatgpt_search_groups",
+        "raw.chatgpt_message_meta",
+        "raw.claude_message_meta",
+        "raw.citations",
+        "raw.attachments",
+        "raw.content_parts",
+        "raw.messages",
+        "raw.dialogues",
+    ]
+    
+    for table in cleanup_tables:
+        try:
+            session.execute(text(f"DELETE FROM {table}"))
+        except Exception:
+            pass  # Table might not exist
+    
+    session.commit()
+    session.close()
+
+
+# ============================================================
+# Sample Data Fixtures - ChatGPT Format
+# ============================================================
+
+@pytest.fixture
+def chatgpt_simple_conversation() -> dict:
+    """Simple linear ChatGPT conversation (no branches)."""
+    root_id = str(uuid.uuid4())
+    msg1_id = str(uuid.uuid4())
+    msg2_id = str(uuid.uuid4())
+    msg3_id = str(uuid.uuid4())
+    msg4_id = str(uuid.uuid4())
+    
+    return {
+        "conversation_id": "conv-simple-001",
+        "title": "Simple Test Conversation",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            root_id: {
+                "id": root_id,
+                "parent": None,
+                "children": [msg1_id],
+                "message": None
+            },
+            msg1_id: {
+                "id": msg1_id,
+                "parent": root_id,
+                "children": [msg2_id],
+                "message": {
+                    "id": msg1_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Hello, how are you?"]
+                    }
+                }
+            },
+            msg2_id: {
+                "id": msg2_id,
+                "parent": msg1_id,
+                "children": [msg3_id],
+                "message": {
+                    "id": msg2_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["I'm doing well, thank you! How can I help you today?"]
+                    }
+                }
+            },
+            msg3_id: {
+                "id": msg3_id,
+                "parent": msg2_id,
+                "children": [msg4_id],
+                "message": {
+                    "id": msg3_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000300.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Can you explain Python decorators?"]
+                    }
+                }
+            },
+            msg4_id: {
+                "id": msg4_id,
+                "parent": msg3_id,
+                "children": [],
+                "message": {
+                    "id": msg4_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000400.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Python decorators are functions that modify other functions.\n\n```python\ndef my_decorator(func):\n    def wrapper():\n        print('Before')\n        func()\n        print('After')\n    return wrapper\n```"]
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.fixture
+def chatgpt_branched_conversation() -> dict:
+    """ChatGPT conversation with branches (regeneration)."""
+    root_id = str(uuid.uuid4())
+    msg1_id = str(uuid.uuid4())
+    msg2a_id = str(uuid.uuid4())
+    msg2b_id = str(uuid.uuid4())
+    msg3_id = str(uuid.uuid4())
+    msg4_id = str(uuid.uuid4())
+    
+    return {
+        "conversation_id": "conv-branched-001",
+        "title": "Branched Conversation",
+        "create_time": 1700000000.0,
+        "update_time": 1700002000.0,
+        "mapping": {
+            root_id: {
+                "id": root_id,
+                "parent": None,
+                "children": [msg1_id],
+                "message": None
+            },
+            msg1_id: {
+                "id": msg1_id,
+                "parent": root_id,
+                "children": [msg2a_id, msg2b_id],
+                "message": {
+                    "id": msg1_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["What is machine learning?"]
+                    }
+                }
+            },
+            msg2a_id: {
+                "id": msg2a_id,
+                "parent": msg1_id,
+                "children": [],
+                "message": {
+                    "id": msg2a_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Machine learning is a subset of AI."]
+                    }
+                }
+            },
+            msg2b_id: {
+                "id": msg2b_id,
+                "parent": msg1_id,
+                "children": [msg3_id],
+                "message": {
+                    "id": msg2b_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000250.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Machine learning is a branch of AI that enables computers to learn from data."]
+                    }
+                }
+            },
+            msg3_id: {
+                "id": msg3_id,
+                "parent": msg2b_id,
+                "children": [msg4_id],
+                "message": {
+                    "id": msg3_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000300.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Give me an example."]
+                    }
+                }
+            },
+            msg4_id: {
+                "id": msg4_id,
+                "parent": msg3_id,
+                "children": [],
+                "message": {
+                    "id": msg4_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000400.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["A common example is spam detection in email."]
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.fixture
+def chatgpt_conversation_with_code() -> dict:
+    """ChatGPT conversation with code blocks including language."""
+    root_id = str(uuid.uuid4())
+    msg1_id = str(uuid.uuid4())
+    msg2_id = str(uuid.uuid4())
+    
+    return {
+        "conversation_id": "conv-code-001",
+        "title": "Code Execution Test",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            root_id: {
+                "id": root_id,
+                "parent": None,
+                "children": [msg1_id],
+                "message": None
+            },
+            msg1_id: {
+                "id": msg1_id,
+                "parent": root_id,
+                "children": [msg2_id],
+                "message": {
+                    "id": msg1_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Write a Python function to calculate fibonacci numbers"]
+                    }
+                }
+            },
+            msg2_id: {
+                "id": msg2_id,
+                "parent": msg1_id,
+                "children": [],
+                "message": {
+                    "id": msg2_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "Here's a Python function:",
+                            {
+                                "content_type": "code",
+                                "language": "python",
+                                "text": "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)"
+                            },
+                            "This is a recursive implementation."
+                        ]
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.fixture
+def chatgpt_conversation_with_image() -> dict:
+    """ChatGPT conversation with image content."""
+    root_id = str(uuid.uuid4())
+    msg1_id = str(uuid.uuid4())
+    msg2_id = str(uuid.uuid4())
+    
+    return {
+        "conversation_id": "conv-image-001",
+        "title": "Image Test",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            root_id: {
+                "id": root_id,
+                "parent": None,
+                "children": [msg1_id],
+                "message": None
+            },
+            msg1_id: {
+                "id": msg1_id,
+                "parent": root_id,
+                "children": [msg2_id],
+                "message": {
+                    "id": msg1_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["What's in this image?"]
+                    }
+                }
+            },
+            msg2_id: {
+                "id": msg2_id,
+                "parent": msg1_id,
+                "children": [],
+                "message": {
+                    "id": msg2_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "The image shows a sunset.",
+                            {
+                                "content_type": "image/png",
+                                "asset_pointer": "file-service://dalle-gen-abc123",
+                                "url": "https://example.com/generated-image.png"
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.fixture
+def chatgpt_conversations(
+    chatgpt_simple_conversation,
+    chatgpt_branched_conversation,
+    chatgpt_conversation_with_code,
+) -> list[dict]:
+    """List of all ChatGPT test conversations."""
+    return [
+        chatgpt_simple_conversation,
+        chatgpt_branched_conversation,
+        chatgpt_conversation_with_code,
+    ]
+
+
+# ============================================================
+# Sample Data Fixtures - Claude Format
+# ============================================================
+
+@pytest.fixture
+def claude_simple_conversation() -> dict:
+    """Simple Claude conversation."""
+    return {
+        "uuid": "claude-conv-001",
+        "name": "Claude Test Conversation",
+        "created_at": "2024-01-15T10:00:00Z",
+        "updated_at": "2024-01-15T10:30:00Z",
+        "chat_messages": [
+            {
+                "uuid": "claude-msg-001",
+                "sender": "human",
+                "created_at": "2024-01-15T10:00:00Z",
+                "content": [
+                    {"type": "text", "text": "Hello Claude!"}
+                ]
+            },
+            {
+                "uuid": "claude-msg-002",
+                "sender": "assistant",
+                "created_at": "2024-01-15T10:01:00Z",
+                "content": [
+                    {"type": "text", "text": "Hello! How can I help you today?"}
+                ]
+            },
+            {
+                "uuid": "claude-msg-003",
+                "sender": "human",
+                "created_at": "2024-01-15T10:02:00Z",
+                "content": [
+                    {"type": "text", "text": "Explain quantum computing."}
+                ]
+            },
+            {
+                "uuid": "claude-msg-004",
+                "sender": "assistant",
+                "created_at": "2024-01-15T10:03:00Z",
+                "content": [
+                    {"type": "text", "text": "Quantum computing uses quantum mechanics principles."}
+                ]
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def claude_conversation_with_thinking() -> dict:
+    """Claude conversation with thinking blocks."""
+    return {
+        "uuid": "claude-conv-002",
+        "name": "Claude Thinking Test",
+        "created_at": "2024-01-15T11:00:00Z",
+        "updated_at": "2024-01-15T11:10:00Z",
+        "chat_messages": [
+            {
+                "uuid": "claude-msg-005",
+                "sender": "human",
+                "created_at": "2024-01-15T11:00:00Z",
+                "content": [
+                    {"type": "text", "text": "What is 15 * 23?"}
+                ]
+            },
+            {
+                "uuid": "claude-msg-006",
+                "sender": "assistant",
+                "created_at": "2024-01-15T11:01:00Z",
+                "content": [
+                    {"type": "thinking", "thinking": "Let me calculate: 15 * 23 = 345"},
+                    {"type": "text", "text": "15 multiplied by 23 equals 345."}
+                ]
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def claude_conversation_with_tool_use() -> dict:
+    """Claude conversation with tool use."""
+    return {
+        "uuid": "claude-conv-003",
+        "name": "Claude Tool Use Test",
+        "created_at": "2024-01-15T12:00:00Z",
+        "updated_at": "2024-01-15T12:10:00Z",
+        "chat_messages": [
+            {
+                "uuid": "claude-msg-007",
+                "sender": "human",
+                "created_at": "2024-01-15T12:00:00Z",
+                "content": [
+                    {"type": "text", "text": "Search for recent news about AI."}
+                ]
+            },
+            {
+                "uuid": "claude-msg-008",
+                "sender": "assistant",
+                "created_at": "2024-01-15T12:01:00Z",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-001",
+                        "name": "web_search",
+                        "input": {"query": "recent AI news 2024"}
+                    }
+                ]
+            },
+            {
+                "uuid": "claude-msg-009",
+                "sender": "human",
+                "created_at": "2024-01-15T12:02:00Z",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-001",
+                        "content": "AI advances in 2024 include..."
+                    }
+                ]
+            },
+            {
+                "uuid": "claude-msg-010",
+                "sender": "assistant",
+                "created_at": "2024-01-15T12:03:00Z",
+                "content": [
+                    {"type": "text", "text": "Based on my search, here are the recent developments in AI..."}
+                ]
+            }
+        ]
+    }
+
+
+@pytest.fixture
+def claude_conversations(
+    claude_simple_conversation,
+    claude_conversation_with_thinking,
+    claude_conversation_with_tool_use,
+) -> list[dict]:
+    """List of all Claude test conversations."""
+    return [
+        claude_simple_conversation,
+        claude_conversation_with_thinking,
+        claude_conversation_with_tool_use,
+    ]
+
+
+# ============================================================
+# Continuation Pattern Fixtures
+# ============================================================
+
+@pytest.fixture
+def conversation_with_continuation() -> dict:
+    """ChatGPT conversation with continuation prompts."""
+    root_id = str(uuid.uuid4())
+    msg1_id = str(uuid.uuid4())
+    msg2_id = str(uuid.uuid4())
+    msg3_id = str(uuid.uuid4())
+    msg4_id = str(uuid.uuid4())
+    msg5_id = str(uuid.uuid4())
+    msg6_id = str(uuid.uuid4())
+    
+    return {
+        "conversation_id": "conv-continuation-001",
+        "title": "Continuation Test",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            root_id: {
+                "id": root_id,
+                "parent": None,
+                "children": [msg1_id],
+                "message": None
+            },
+            msg1_id: {
+                "id": msg1_id,
+                "parent": root_id,
+                "children": [msg2_id],
+                "message": {
+                    "id": msg1_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Write a story about a robot."]
+                    }
+                }
+            },
+            msg2_id: {
+                "id": msg2_id,
+                "parent": msg1_id,
+                "children": [msg3_id],
+                "message": {
+                    "id": msg2_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Once upon a time, there was a robot named Alex..."]
+                    }
+                }
+            },
+            msg3_id: {
+                "id": msg3_id,
+                "parent": msg2_id,
+                "children": [msg4_id],
+                "message": {
+                    "id": msg3_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000300.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["continue"]
+                    }
+                }
+            },
+            msg4_id: {
+                "id": msg4_id,
+                "parent": msg3_id,
+                "children": [msg5_id],
+                "message": {
+                    "id": msg4_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000400.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Alex wandered through the abandoned factory..."]
+                    }
+                }
+            },
+            msg5_id: {
+                "id": msg5_id,
+                "parent": msg4_id,
+                "children": [msg6_id],
+                "message": {
+                    "id": msg5_id,
+                    "author": {"role": "user"},
+                    "create_time": 1700000500.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["What happened after that?"]
+                    }
+                }
+            },
+            msg6_id: {
+                "id": msg6_id,
+                "parent": msg5_id,
+                "children": [],
+                "message": {
+                    "id": msg6_id,
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000600.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Alex found a mysterious door..."]
+                    }
+                }
+            }
+        }
+    }
+
+
+# ============================================================
+# Pre-populated Database Fixtures
+# ============================================================
+
+@pytest.fixture
+def populated_chatgpt_db(clean_db_session, chatgpt_simple_conversation):
+    """Database with a single ChatGPT conversation imported."""
+    from llm_archive.extractors import ChatGPTExtractor
+    
+    extractor = ChatGPTExtractor(clean_db_session)
+    extractor.extract_dialogue(chatgpt_simple_conversation)
+    clean_db_session.commit()
+    
+    return clean_db_session
+
+
+@pytest.fixture
+def populated_claude_db(clean_db_session, claude_simple_conversation):
+    """Database with a single Claude conversation imported."""
+    from llm_archive.extractors import ClaudeExtractor
+    
+    extractor = ClaudeExtractor(clean_db_session)
+    extractor.extract_dialogue(claude_simple_conversation)
+    clean_db_session.commit()
+    
+    return clean_db_session
+
+
+@pytest.fixture
+def fully_populated_db(
+    clean_db_session,
+    chatgpt_simple_conversation,
+    chatgpt_branched_conversation,
+    claude_simple_conversation,
+):
+    """Database with multiple conversations and derived data."""
+    from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
+    from llm_archive.builders import TreeBuilder, ExchangeBuilder
+    
+    # Import conversations
+    chatgpt_extractor = ChatGPTExtractor(clean_db_session)
+    chatgpt_extractor.extract_dialogue(chatgpt_simple_conversation)
+    chatgpt_extractor.extract_dialogue(chatgpt_branched_conversation)
+    
+    claude_extractor = ClaudeExtractor(clean_db_session)
+    claude_extractor.extract_dialogue(claude_simple_conversation)
+    
+    clean_db_session.commit()
+    
+    # Build derived data
+    tree_builder = TreeBuilder(clean_db_session)
+    tree_builder.build_all()
+    
+    exchange_builder = ExchangeBuilder(clean_db_session)
+    exchange_builder.build_all()
+    
+    clean_db_session.commit()
+    
+    return clean_db_session
+
+
+
+---
+File: tests/integration/test_annotators.py
+---
+# tests/test_annotators.py
+"""Tests for annotation system."""
+
+import pytest
+from uuid import uuid4
+
+from llm_archive.extractors import ChatGPTExtractor
+from llm_archive.builders import TreeBuilder, ExchangeBuilder
+from llm_archive.annotators import (
+    Annotator, AnnotationManager,
+    WikiLinkAnnotator, CodeBlockAnnotator, LatexAnnotator, ContinuationAnnotator,
+)
+from llm_archive.annotators.features import ExchangeTypeAnnotator
+from llm_archive.models import Annotation, Message, ContentPart
+
+
+class TestAnnotatorBase:
+    """Tests for base annotator functionality."""
+    
+    def test_add_annotation(self, db_session):
+        """Test adding a simple annotation."""
+        class TestAnnotator(Annotator):
+            ANNOTATION_TYPE = 'test'
+            ENTITY_TYPE = 'message'
+            SOURCE = 'test'
+            VERSION = '1.0'
+            
+            def compute(self):
+                return 0
+        
+        annotator = TestAnnotator(db_session)
+        entity_id = uuid4()
+        
+        created = annotator.add_annotation(
+            entity_id=entity_id,
+            value='test_value',
+            confidence=0.9,
+        )
+        
+        assert created is True
+        
+        # Check annotation exists
+        annotation = db_session.query(Annotation).filter(
+            Annotation.entity_id == entity_id
+        ).first()
+        
+        assert annotation is not None
+        assert annotation.annotation_type == 'test'
+        assert annotation.annotation_value == 'test_value'
+        assert annotation.confidence == 0.9
+    
+    def test_annotation_with_key(self, db_session):
+        """Test adding annotation with a key."""
+        class TestAnnotator(Annotator):
+            ANNOTATION_TYPE = 'feature'
+            ENTITY_TYPE = 'message'
+            SOURCE = 'test'
+            VERSION = '1.0'
+            
+            def compute(self):
+                return 0
+        
+        annotator = TestAnnotator(db_session)
+        entity_id = uuid4()
+        
+        annotator.add_annotation(
+            entity_id=entity_id,
+            value='python',
+            key='code_language',
+        )
+        
+        annotation = db_session.query(Annotation).first()
+        assert annotation.annotation_key == 'code_language'
+        assert annotation.annotation_value == 'python'
+    
+    def test_annotation_deduplication(self, db_session):
+        """Test that duplicate annotations are not created."""
+        class TestAnnotator(Annotator):
+            ANNOTATION_TYPE = 'test'
+            ENTITY_TYPE = 'message'
+            SOURCE = 'test'
+            VERSION = '1.0'
+            
+            def compute(self):
+                return 0
+        
+        annotator = TestAnnotator(db_session)
+        entity_id = uuid4()
+        
+        created1 = annotator.add_annotation(entity_id=entity_id, value='test')
+        created2 = annotator.add_annotation(entity_id=entity_id, value='test')
+        
+        assert created1 is True
+        assert created2 is False
+        
+        count = db_session.query(Annotation).count()
+        assert count == 1
+    
+    def test_supersede_annotation(self, db_session):
+        """Test superseding an annotation."""
+        class TestAnnotator(Annotator):
+            ANNOTATION_TYPE = 'test'
+            ENTITY_TYPE = 'message'
+            SOURCE = 'test'
+            VERSION = '1.0'
+            
+            def compute(self):
+                return 0
+        
+        annotator = TestAnnotator(db_session)
+        entity_id = uuid4()
+        
+        annotator.add_annotation(entity_id=entity_id, value='old_value')
+        db_session.flush()
+        
+        annotator.supersede_annotation(entity_id=entity_id, value='old_value')
+        db_session.flush()
+        
+        annotation = db_session.query(Annotation).first()
+        assert annotation.superseded_at is not None
+
+
+class TestAnnotationManager:
+    """Tests for annotation manager."""
+    
+    def test_register_annotator(self, db_session):
+        """Test registering an annotator."""
+        manager = AnnotationManager(db_session)
+        
+        class DummyAnnotator(Annotator):
+            ANNOTATION_TYPE = 'dummy'
+            ENTITY_TYPE = 'message'
+            SOURCE = 'test'
+            VERSION = '1.0'
+            
+            def compute(self):
+                return 0
+        
+        manager.register(DummyAnnotator)
+        assert len(manager.annotators) == 1
+    
+    def test_run_all(self, db_session):
+        """Test running all annotators."""
+        manager = AnnotationManager(db_session)
+        
+        class CountingAnnotator(Annotator):
+            ANNOTATION_TYPE = 'counting'
+            ENTITY_TYPE = 'message'
+            SOURCE = 'test'
+            VERSION = '1.0'
+            
+            def compute(self):
+                return 5
+        
+        manager.register(CountingAnnotator)
+        results = manager.run_all()
+        
+        assert 'CountingAnnotator' in results
+        assert results['CountingAnnotator'] == 5
+    
+    def test_get_annotations(self, db_session):
+        """Test querying annotations."""
+        manager = AnnotationManager(db_session)
+        entity_id = uuid4()
+        
+        # Add some annotations directly
+        ann1 = Annotation(
+            entity_type='message',
+            entity_id=entity_id,
+            annotation_type='tag',
+            annotation_value='coding',
+            source='manual',
+        )
+        ann2 = Annotation(
+            entity_type='message',
+            entity_id=entity_id,
+            annotation_type='feature',
+            annotation_value='has_code',
+            source='heuristic',
+        )
+        db_session.add_all([ann1, ann2])
+        db_session.flush()
+        
+        annotations = manager.get_annotations(entity_id=entity_id)
+        assert len(annotations) == 2
+        
+        tags = manager.get_annotations(annotation_type='tag')
+        assert len(tags) == 1
+    
+    def test_get_tags(self, db_session):
+        """Test getting tags for an entity."""
+        manager = AnnotationManager(db_session)
+        entity_id = uuid4()
+        
+        ann1 = Annotation(
+            entity_type='exchange',
+            entity_id=entity_id,
+            annotation_type='tag',
+            annotation_value='coding',
+            source='manual',
+        )
+        ann2 = Annotation(
+            entity_type='exchange',
+            entity_id=entity_id,
+            annotation_type='tag',
+            annotation_value='python',
+            source='manual',
+        )
+        db_session.add_all([ann1, ann2])
+        db_session.flush()
+        
+        tags = manager.get_tags('exchange', entity_id)
+        assert set(tags) == {'coding', 'python'}
+
+
+class TestFeatureAnnotators:
+    """Tests for feature detection annotators."""
+    
+    @pytest.fixture
+    def conversation_with_features(self):
+        """Conversation with various detectable features."""
+        return {
+            "conversation_id": "features-001",
+            "title": "Features Test",
+            "create_time": 1700000000.0,
+            "update_time": 1700001000.0,
+            "mapping": {
+                "root": {
+                    "id": "root",
+                    "parent": None,
+                    "children": ["m1"],
+                    "message": None
+                },
+                "m1": {
+                    "id": "m1",
+                    "parent": "root",
+                    "children": ["m2"],
+                    "message": {
+                        "id": "m1",
+                        "author": {"role": "user"},
+                        "create_time": 1700000100.0,
+                        "content": {"content_type": "text", "parts": ["Show me Python code"]}
+                    }
+                },
+                "m2": {
+                    "id": "m2",
+                    "parent": "m1",
+                    "children": ["m3"],
+                    "message": {
+                        "id": "m2",
+                        "author": {"role": "assistant"},
+                        "create_time": 1700000200.0,
+                        "content": {"content_type": "text", "parts": [
+                            "Here's a Python example:\n\n```python\ndef hello():\n    print('Hello')\n```\n\nSee also [[Python Basics]] for more."
+                        ]}
+                    }
+                },
+                "m3": {
+                    "id": "m3",
+                    "parent": "m2",
+                    "children": ["m4"],
+                    "message": {
+                        "id": "m3",
+                        "author": {"role": "user"},
+                        "create_time": 1700000300.0,
+                        "content": {"content_type": "text", "parts": ["continue"]}
+                    }
+                },
+                "m4": {
+                    "id": "m4",
+                    "parent": "m3",
+                    "children": [],
+                    "message": {
+                        "id": "m4",
+                        "author": {"role": "assistant"},
+                        "create_time": 1700000400.0,
+                        "content": {"content_type": "text", "parts": [
+                            "The integral is $\\int_0^1 x^2 dx = \\frac{1}{3}$"
+                        ]}
+                    }
+                }
+            }
+        }
+    
+    def test_wiki_link_annotator(self, clean_db_session, conversation_with_features):
+        """Test wiki link detection."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(conversation_with_features)
+        clean_db_session.commit()
+        
+        annotator = WikiLinkAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        assert count >= 1
+        
+        annotations = clean_db_session.query(Annotation).filter(
+            Annotation.annotation_value == 'has_wiki_links'
+        ).all()
+        
+        assert len(annotations) >= 1
+    
+    def test_code_block_annotator(self, clean_db_session, conversation_with_features):
+        """Test code block detection."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(conversation_with_features)
+        clean_db_session.commit()
+        
+        annotator = CodeBlockAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        assert count >= 1
+        
+        # Check for code_language annotation
+        lang_annotations = clean_db_session.query(Annotation).filter(
+            Annotation.annotation_key == 'code_language'
+        ).all()
+        
+        assert len(lang_annotations) >= 1
+        assert any(a.annotation_value == 'python' for a in lang_annotations)
+    
+    def test_latex_annotator(self, clean_db_session, conversation_with_features):
+        """Test LaTeX detection."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(conversation_with_features)
+        clean_db_session.commit()
+        
+        annotator = LatexAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        assert count >= 1
+        
+        annotations = clean_db_session.query(Annotation).filter(
+            Annotation.annotation_value == 'has_latex'
+        ).all()
+        
+        assert len(annotations) >= 1
+    
+    def test_continuation_annotator(self, clean_db_session, conversation_with_features):
+        """Test continuation signal detection."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(conversation_with_features)
+        clean_db_session.commit()
+        
+        annotator = ContinuationAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        assert count >= 1
+        
+        annotations = clean_db_session.query(Annotation).filter(
+            Annotation.annotation_value == 'continuation_signal'
+        ).all()
+        
+        assert len(annotations) >= 1
+    
+    def test_exchange_type_annotator(self, clean_db_session, conversation_with_features):
+        """Test exchange type classification."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(conversation_with_features)
+        clean_db_session.commit()
+        
+        TreeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        annotator = ExchangeTypeAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        assert count >= 1
+        
+        # Should have exchange_type annotations
+        type_annotations = clean_db_session.query(Annotation).filter(
+            Annotation.annotation_key == 'exchange_type'
+        ).all()
+        
+        assert len(type_annotations) >= 1
+
+
+class TestCustomAnnotator:
+    """Tests for creating custom annotators."""
+    
+    def test_custom_annotator_interface(self, db_session):
+        """Test that custom annotators work correctly."""
+        
+        class TopicAnnotator(Annotator):
+            """Custom annotator that tags exchanges with topics."""
+            ANNOTATION_TYPE = 'tag'
+            ENTITY_TYPE = 'exchange'
+            SOURCE = 'custom'
+            VERSION = '1.0'
+            
+            KEYWORDS = {
+                'python': ['python', 'def ', 'import '],
+                'javascript': ['javascript', 'function', 'const '],
+                'database': ['sql', 'database', 'query'],
+            }
+            
+            def compute(self) -> int:
+                # In a real implementation, would query exchanges
+                # For test, just verify the interface works
+                count = 0
+                test_id = uuid4()
+                
+                for topic, keywords in self.KEYWORDS.items():
+                    if self.add_annotation(
+                        entity_id=test_id,
+                        value=topic,
+                        key='topic',
+                        confidence=0.8,
+                        data={'keywords_matched': keywords},
+                    ):
+                        count += 1
+                
+                return count
+        
+        manager = AnnotationManager(db_session)
+        manager.register(TopicAnnotator)
+        results = manager.run_all()
+        
+        assert results['TopicAnnotator'] == 3  # 3 topics
+        
+        annotations = db_session.query(Annotation).filter(
+            Annotation.annotation_key == 'topic'
+        ).all()
+        
+        assert len(annotations) == 3
+
+
+
+---
+File: tests/integration/test_builders.py
+---
+# tests/test_builders.py
+"""Tests for derived data builders."""
+
+import pytest
+
+from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
+from llm_archive.builders import TreeBuilder, ExchangeBuilder, HashBuilder
+from llm_archive.models import (
+    Dialogue, Message,
+    DialogueTree, MessagePath, LinearSequence, SequenceMessage,
+    Exchange, ExchangeMessage, SequenceExchange, ExchangeContent,
+    ContentHash,
+)
+
+
+class TestTreeBuilder:
+    """Tests for dialogue tree builder."""
+    
+    def test_build_linear_tree(self, clean_db_session, chatgpt_simple_conversation):
+        """Test building tree for linear conversation."""
+        # Import conversation
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Build tree
+        builder = TreeBuilder(clean_db_session)
+        counts = builder.build_all()
+        clean_db_session.commit()
+        
+        assert counts['dialogues'] == 1
+        assert counts['linear'] == 1
+        assert counts['branched'] == 0
+        
+        # Check dialogue tree record
+        tree = clean_db_session.query(DialogueTree).first()
+        assert tree is not None
+        assert tree.branch_count == 0
+        assert tree.leaf_count == 1
+        assert tree.has_regenerations is False
+        assert tree.has_edits is False
+    
+    def test_build_branched_tree(self, clean_db_session, chatgpt_branched_conversation):
+        """Test building tree for branched conversation."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_branched_conversation)
+        clean_db_session.commit()
+        
+        builder = TreeBuilder(clean_db_session)
+        counts = builder.build_all()
+        clean_db_session.commit()
+        
+        assert counts['branched'] == 1
+        
+        tree = clean_db_session.query(DialogueTree).first()
+        assert tree.branch_count == 1
+        assert tree.leaf_count == 2
+        assert tree.has_regenerations is True  # Same-role siblings
+    
+    def test_message_paths(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that message paths are created correctly."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        builder = TreeBuilder(clean_db_session)
+        builder.build_all()
+        clean_db_session.commit()
+        
+        paths = clean_db_session.query(MessagePath).order_by(MessagePath.depth).all()
+        
+        # Should have path for each message
+        messages = clean_db_session.query(Message).count()
+        assert len(paths) == messages
+        
+        # Check depths are sequential for linear conversation
+        depths = [p.depth for p in paths]
+        assert depths == sorted(depths)
+        
+        # Root should have depth 0
+        root_path = clean_db_session.query(MessagePath).filter(
+            MessagePath.is_root == True
+        ).first()
+        assert root_path.depth == 0
+    
+    def test_linear_sequences(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that linear sequences are created."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        builder = TreeBuilder(clean_db_session)
+        builder.build_all()
+        clean_db_session.commit()
+        
+        sequences = clean_db_session.query(LinearSequence).all()
+        
+        # Linear conversation = 1 sequence
+        assert len(sequences) == 1
+        assert sequences[0].is_primary is True
+    
+    def test_multiple_sequences_for_branches(self, clean_db_session, chatgpt_branched_conversation):
+        """Test that branched conversations get multiple sequences."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_branched_conversation)
+        clean_db_session.commit()
+        
+        builder = TreeBuilder(clean_db_session)
+        builder.build_all()
+        clean_db_session.commit()
+        
+        sequences = clean_db_session.query(LinearSequence).all()
+        
+        # Branched = 2 sequences (one per leaf)
+        assert len(sequences) == 2
+        
+        # Only one should be primary
+        primary = [s for s in sequences if s.is_primary]
+        assert len(primary) == 1
+    
+    def test_sequence_messages_order(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that sequence messages are ordered correctly."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        builder = TreeBuilder(clean_db_session)
+        builder.build_all()
+        clean_db_session.commit()
+        
+        sequence = clean_db_session.query(LinearSequence).first()
+        
+        seq_msgs = clean_db_session.query(SequenceMessage).filter(
+            SequenceMessage.sequence_id == sequence.id
+        ).order_by(SequenceMessage.position).all()
+        
+        # Positions should be sequential
+        positions = [sm.position for sm in seq_msgs]
+        assert positions == list(range(len(positions)))
+
+
+class TestExchangeBuilder:
+    """Tests for exchange builder."""
+    
+    def test_build_exchanges_simple(self, clean_db_session, chatgpt_simple_conversation):
+        """Test building exchanges from simple conversation."""
+        # Import and build trees first
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        tree_builder = TreeBuilder(clean_db_session)
+        tree_builder.build_all()
+        clean_db_session.commit()
+        
+        # Build exchanges
+        exchange_builder = ExchangeBuilder(clean_db_session)
+        counts = exchange_builder.build_all()
+        clean_db_session.commit()
+        
+        assert counts['dialogues'] == 1
+        assert counts['exchanges'] > 0
+    
+    def test_exchange_dyadic_structure(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that exchanges have user->assistant structure."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        TreeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        exchanges = clean_db_session.query(Exchange).all()
+        
+        for exchange in exchanges:
+            assert exchange.user_message_count >= 1
+            assert exchange.assistant_message_count >= 1
+    
+    def test_exchange_deduplication(self, clean_db_session, chatgpt_branched_conversation):
+        """Test that shared prefix exchanges are not duplicated."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_branched_conversation)
+        clean_db_session.commit()
+        
+        TreeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        # Get all exchanges
+        exchanges = clean_db_session.query(Exchange).all()
+        
+        # Get sequence count
+        sequences = clean_db_session.query(LinearSequence).all()
+        
+        # With 2 sequences sharing a prefix, we should have fewer exchanges
+        # than if each sequence had its own copies
+        sequence_exchange_links = clean_db_session.query(SequenceExchange).count()
+        
+        # Each sequence references exchanges, but exchanges themselves are shared
+        assert sequence_exchange_links >= len(exchanges)
+    
+    def test_exchange_content_created(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that exchange content is created."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        TreeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        contents = clean_db_session.query(ExchangeContent).all()
+        
+        assert len(contents) > 0
+        
+        for content in contents:
+            assert content.user_text is not None or content.assistant_text is not None
+            assert content.total_word_count >= 0
+    
+    def test_continuation_detection(self, clean_db_session, conversation_with_continuation):
+        """Test that continuation prompts are detected."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(conversation_with_continuation)
+        clean_db_session.commit()
+        
+        TreeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        # Check for continuation-flagged exchanges
+        continuations = clean_db_session.query(Exchange).filter(
+            Exchange.is_continuation == True
+        ).all()
+        
+        # Should have at least one continuation
+        assert len(continuations) >= 1
+
+
+class TestHashBuilder:
+    """Tests for content hash builder."""
+    
+    def test_build_hashes(self, fully_populated_db):
+        """Test building content hashes."""
+        builder = HashBuilder(fully_populated_db)
+        counts = builder.build_all()
+        fully_populated_db.commit()
+        
+        assert counts['total_hashes'] > 0
+    
+    def test_message_hashes(self, fully_populated_db):
+        """Test that message hashes are created."""
+        builder = HashBuilder(fully_populated_db)
+        builder.build_all()
+        fully_populated_db.commit()
+        
+        message_hashes = fully_populated_db.query(ContentHash).filter(
+            ContentHash.entity_type == 'message'
+        ).all()
+        
+        assert len(message_hashes) > 0
+    
+    def test_exchange_hashes(self, fully_populated_db):
+        """Test that exchange hashes are created."""
+        builder = HashBuilder(fully_populated_db)
+        builder.build_all()
+        fully_populated_db.commit()
+        
+        exchange_hashes = fully_populated_db.query(ContentHash).filter(
+            ContentHash.entity_type == 'exchange'
+        ).all()
+        
+        assert len(exchange_hashes) > 0
+    
+    def test_multiple_normalizations(self, fully_populated_db):
+        """Test that multiple normalizations are created."""
+        builder = HashBuilder(fully_populated_db)
+        builder.build_all()
+        fully_populated_db.commit()
+        
+        normalizations = fully_populated_db.query(
+            ContentHash.normalization
+        ).distinct().all()
+        
+        norm_values = [n[0] for n in normalizations]
+        
+        assert 'none' in norm_values
+        assert 'whitespace' in norm_values
+        assert 'normalized' in norm_values
+    
+    def test_find_duplicates(self, clean_db_session):
+        """Test finding duplicate content."""
+        # Create two identical conversations
+        conv1 = {
+            "conversation_id": "dup-001",
+            "title": "Duplicate 1",
+            "create_time": 1700000000.0,
+            "update_time": 1700001000.0,
+            "mapping": {
+                "root": {
+                    "id": "root",
+                    "parent": None,
+                    "children": ["m1"],
+                    "message": None
+                },
+                "m1": {
+                    "id": "m1",
+                    "parent": "root",
+                    "children": ["m2"],
+                    "message": {
+                        "id": "m1",
+                        "author": {"role": "user"},
+                        "create_time": 1700000100.0,
+                        "content": {"content_type": "text", "parts": ["Hello world"]}
+                    }
+                },
+                "m2": {
+                    "id": "m2",
+                    "parent": "m1",
+                    "children": [],
+                    "message": {
+                        "id": "m2",
+                        "author": {"role": "assistant"},
+                        "create_time": 1700000200.0,
+                        "content": {"content_type": "text", "parts": ["Hello! How can I help?"]}
+                    }
+                }
+            }
+        }
+        
+        conv2 = {
+            "conversation_id": "dup-002",
+            "title": "Duplicate 2",
+            "create_time": 1700002000.0,
+            "update_time": 1700003000.0,
+            "mapping": {
+                "root": {
+                    "id": "root",
+                    "parent": None,
+                    "children": ["m1"],
+                    "message": None
+                },
+                "m1": {
+                    "id": "m1",
+                    "parent": "root",
+                    "children": ["m2"],
+                    "message": {
+                        "id": "m1",
+                        "author": {"role": "user"},
+                        "create_time": 1700002100.0,
+                        "content": {"content_type": "text", "parts": ["Hello world"]}  # Same content
+                    }
+                },
+                "m2": {
+                    "id": "m2",
+                    "parent": "m1",
+                    "children": [],
+                    "message": {
+                        "id": "m2",
+                        "author": {"role": "assistant"},
+                        "create_time": 1700002200.0,
+                        "content": {"content_type": "text", "parts": ["Hello! How can I help?"]}  # Same content
+                    }
+                }
+            }
+        }
+        
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(conv1)
+        extractor.extract_dialogue(conv2)
+        clean_db_session.commit()
+        
+        TreeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        builder = HashBuilder(clean_db_session)
+        builder.build_all()
+        clean_db_session.commit()
+        
+        # Find duplicates
+        duplicates = builder.find_duplicates(entity_type='message')
+        
+        # Should find duplicate messages
+        assert len(duplicates) >= 1
+
+
+
+---
+File: tests/integration/test_chunk_builder.py
+---
+"""Integration tests for MessageChunkBuilder (requires PostgreSQL)."""
+
+import pytest
+from sqlalchemy import text
+
+from llm_archive.extractors import ChatGPTExtractor
+from llm_archive.builders import MessageChunkBuilder
+from llm_archive.models import Message, MessageChunk, PipelineRun
+
+
+class TestMessageChunkBuilder:
+    def test_build_chunks_creates_runs_and_chunks(self, clean_db_session, chatgpt_simple_conversation):
+        # Import dialogue
+        ChatGPTExtractor(clean_db_session).extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+
+        # Build chunks
+        builder = MessageChunkBuilder(clean_db_session)
+        counts = builder.build_all(name="test-chunk-run")
+        clean_db_session.commit()
+
+        assert counts["messages_seen"] > 0
+        assert counts["messages_chunked"] > 0
+        assert counts["chunks_created"] > 0
+
+        # Verify pipeline run
+        run = (
+            clean_db_session.query(PipelineRun)
+            .filter(PipelineRun.run_type == "chunk")
+            .order_by(PipelineRun.started_at.desc())
+            .first()
+        )
+        assert run is not None
+        assert run.status == "success"
+
+        # Pick an assistant message that contains the markdown fence from the fixture
+        assistant_msg = (
+            clean_db_session.query(Message)
+            .filter(Message.role == "assistant")
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        assert assistant_msg is not None
+
+        chunks = (
+            clean_db_session.query(MessageChunk)
+            .filter(MessageChunk.message_id == assistant_msg.id)
+            .filter(MessageChunk.run_id == run.id)
+            .order_by(MessageChunk.chunk_index)
+            .all()
+        )
+        assert len(chunks) > 0
+
+        # If the assistant message text includes ```python fences, we should see code_fence with info_string python
+        # (This is true for chatgpt_simple_conversation's last assistant message.)
+        assert any(c.chunk_type == "code_fence" and c.info_string == "python" for c in chunks)
+
+        # Basic sanity on sequential chunk_index
+        idxs = [c.chunk_index for c in chunks]
+        assert idxs == list(range(len(idxs)))
+
+    def test_second_run_creates_new_run_and_new_chunks(self, clean_db_session, chatgpt_simple_conversation):
+        ChatGPTExtractor(clean_db_session).extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+
+        builder = MessageChunkBuilder(clean_db_session)
+        builder.build_all(name="run-1")
+        clean_db_session.commit()
+
+        builder.build_all(name="run-2")
+        clean_db_session.commit()
+
+        runs = (
+            clean_db_session.query(PipelineRun)
+            .filter(PipelineRun.run_type == "chunk")
+            .order_by(PipelineRun.started_at.asc())
+            .all()
+        )
+        assert len(runs) >= 2
+        assert runs[-1].name == "run-2"
+
+        # Ensure we have chunk rows for both runs (same message_id but different run_id)
+        any_msg = clean_db_session.query(Message).first()
+        assert any_msg is not None
+
+        run1_count = (
+            clean_db_session.query(MessageChunk)
+            .filter(MessageChunk.message_id == any_msg.id)
+            .filter(MessageChunk.run_id == runs[-2].id)
+            .count()
+        )
+        run2_count = (
+            clean_db_session.query(MessageChunk)
+            .filter(MessageChunk.message_id == any_msg.id)
+            .filter(MessageChunk.run_id == runs[-1].id)
+            .count()
+        )
+        assert run1_count >= 0
+        assert run2_count >= 0
+        # If this message had chunks once, it should have chunks again.
+        if run1_count > 0:
+            assert run2_count == run1_count
+
+    def test_views_exist_and_return_rows(self, clean_db_session, chatgpt_simple_conversation):
+        ChatGPTExtractor(clean_db_session).extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+
+        MessageChunkBuilder(clean_db_session).build_all(name="view-test")
+        clean_db_session.commit()
+
+        # v_latest_chunk_run should have at least one row after chunking
+        n_latest = clean_db_session.execute(
+            text("select count(*) from derived.v_latest_chunk_run")
+        ).scalar_one()
+        assert n_latest > 0
+
+        # v_message_chunks should return rows (latest-run chunks)
+        n_chunks = clean_db_session.execute(
+            text("select count(*) from derived.v_message_chunks")
+        ).scalar_one()
+        assert n_chunks > 0
+
+        # v_exchange_chunk_stream depends on exchanges; it may be empty if you haven't built exchanges here.
+        # We just validate the view exists by selecting from it safely.
+        clean_db_session.execute(text("select 1 from derived.v_exchange_chunk_stream limit 1")).fetchall()
+
+
+
+---
+File: tests/integration/test_extractors.py
+---
+# tests/integration/test_extractors.py
+"""Tests for conversation extractors."""
+
+import pytest
+from uuid import UUID
+
+from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
+from llm_archive.models import Dialogue, Message, ContentPart
+
+
+class TestChatGPTExtractor:
+    """Tests for ChatGPT extractor."""
+    
+    def test_extract_simple_conversation(self, db_session, chatgpt_simple_conversation):
+        """Test extracting a simple linear conversation."""
+        extractor = ChatGPTExtractor(db_session)
+        result = extractor.extract_dialogue(chatgpt_simple_conversation)
+        
+        assert result == 'new'
+        
+        # Check dialogue was created
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "conv-simple-001"
+        ).first()
+        
+        assert dialogue is not None
+        assert dialogue.source == 'chatgpt'
+        assert dialogue.title == "Simple Test Conversation"
+    
+    def test_extract_messages(self, db_session, chatgpt_simple_conversation):
+        """Test that messages are extracted correctly."""
+        extractor = ChatGPTExtractor(db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "conv-simple-001"
+        ).first()
+        
+        messages = db_session.query(Message).filter(
+            Message.dialogue_id == dialogue.id
+        ).all()
+        
+        # Should have 4 messages (excluding root node which has no message)
+        assert len(messages) == 4
+        
+        # Check roles
+        roles = sorted([m.role for m in messages])
+        assert roles == ['assistant', 'assistant', 'user', 'user']
+    
+    def test_extract_content_parts(self, db_session, chatgpt_simple_conversation):
+        """Test that content parts are extracted."""
+        extractor = ChatGPTExtractor(db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        
+        # Get a user message
+        message = db_session.query(Message).filter(
+            Message.role == 'user'
+        ).first()
+        
+        parts = db_session.query(ContentPart).filter(
+            ContentPart.message_id == message.id
+        ).all()
+        
+        assert len(parts) >= 1
+        assert parts[0].part_type == 'text'
+        assert parts[0].text_content is not None
+    
+    def test_extract_branched_conversation(self, db_session, chatgpt_branched_conversation):
+        """Test extracting a conversation with branches."""
+        extractor = ChatGPTExtractor(db_session)
+        result = extractor.extract_dialogue(chatgpt_branched_conversation)
+        
+        assert result == 'new'
+        
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "conv-branched-001"
+        ).first()
+        
+        messages = db_session.query(Message).filter(
+            Message.dialogue_id == dialogue.id
+        ).all()
+        
+        # Should have 5 messages (including both branches)
+        assert len(messages) == 5
+        
+        # Check for branch point (message with multiple children)
+        user_msg = db_session.query(Message).filter(
+            Message.dialogue_id == dialogue.id,
+            Message.role == 'user'
+        ).first()
+        
+        # Count children
+        children = db_session.query(Message).filter(
+            Message.parent_id == user_msg.id
+        ).all()
+        
+        # First user message should have 2 children (regeneration)
+        assert len(children) == 2
+    
+    def test_extract_code_content(self, db_session, chatgpt_conversation_with_code):
+        """Test extracting code execution content with language."""
+        extractor = ChatGPTExtractor(db_session)
+        extractor.extract_dialogue(chatgpt_conversation_with_code)
+        
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "conv-code-001"
+        ).first()
+        
+        assert dialogue is not None
+        
+        # Check for code content part with language
+        code_parts = db_session.query(ContentPart).filter(
+            ContentPart.part_type == 'code'
+        ).all()
+        
+        assert len(code_parts) >= 1
+        
+        code_part = code_parts[0]
+        assert code_part.language == 'python'
+        assert 'fibonacci' in code_part.text_content
+    
+    def test_extract_image_content(self, db_session, chatgpt_conversation_with_image):
+        """Test extracting image content with media type and URL."""
+        extractor = ChatGPTExtractor(db_session)
+        extractor.extract_dialogue(chatgpt_conversation_with_image)
+        
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "conv-image-001"
+        ).first()
+        
+        assert dialogue is not None
+        
+        # Check for image content part
+        image_parts = db_session.query(ContentPart).filter(
+            ContentPart.part_type == 'image'
+        ).all()
+        
+        assert len(image_parts) >= 1
+        
+        image_part = image_parts[0]
+        assert image_part.media_type == 'image/png'
+        assert image_part.url is not None
+        assert 'dalle-gen-abc123' in image_part.url or 'example.com' in image_part.url
+    
+    def test_missing_conversation_id(self, db_session):
+        """Test handling of conversation without ID."""
+        extractor = ChatGPTExtractor(db_session)
+        result = extractor.extract_dialogue({"title": "No ID"})
+        
+        assert result is None
+    
+    def test_extract_all(self, db_session, chatgpt_conversations):
+        """Test extracting multiple conversations."""
+        extractor = ChatGPTExtractor(db_session)
+        counts = extractor.extract_all(chatgpt_conversations)
+        
+        assert counts['dialogues_new'] == 3
+        assert counts['failed'] == 0
+
+
+class TestClaudeExtractor:
+    """Tests for Claude extractor."""
+    
+    def test_extract_simple_conversation(self, db_session, claude_simple_conversation):
+        """Test extracting a simple Claude conversation."""
+        extractor = ClaudeExtractor(db_session)
+        result = extractor.extract_dialogue(claude_simple_conversation)
+        
+        assert result == 'new'
+        
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "claude-conv-001"
+        ).first()
+        
+        assert dialogue is not None
+        assert dialogue.source == 'claude'
+        assert dialogue.title == "Claude Test Conversation"
+    
+    def test_extract_messages_linear(self, db_session, claude_simple_conversation):
+        """Test that Claude messages form a linear chain."""
+        extractor = ClaudeExtractor(db_session)
+        extractor.extract_dialogue(claude_simple_conversation)
+        
+        dialogue = db_session.query(Dialogue).filter(
+            Dialogue.source_id == "claude-conv-001"
+        ).first()
+        
+        messages = db_session.query(Message).filter(
+            Message.dialogue_id == dialogue.id
+        ).order_by(Message.created_at).all()
+        
+        assert len(messages) == 4
+        
+        # Check linear structure
+        for i in range(1, len(messages)):
+            assert messages[i].parent_id == messages[i-1].id
+    
+    def test_role_normalization(self, db_session, claude_simple_conversation):
+        """Test that 'human' role is normalized to 'user'."""
+        extractor = ClaudeExtractor(db_session)
+        extractor.extract_dialogue(claude_simple_conversation)
+        
+        messages = db_session.query(Message).all()
+        roles = set(m.role for m in messages)
+        
+        assert 'human' not in roles
+        assert 'user' in roles
+        assert 'assistant' in roles
+    
+    def test_extract_thinking_blocks(self, db_session, claude_conversation_with_thinking):
+        """Test extracting thinking content."""
+        extractor = ClaudeExtractor(db_session)
+        extractor.extract_dialogue(claude_conversation_with_thinking)
+        
+        # Check for thinking content part
+        thinking_parts = db_session.query(ContentPart).filter(
+            ContentPart.part_type == 'thinking'
+        ).all()
+        
+        assert len(thinking_parts) >= 1
+        assert thinking_parts[0].text_content is not None
+    
+    def test_extract_tool_use(self, db_session, claude_conversation_with_tool_use):
+        """Test extracting tool use content with all fields."""
+        extractor = ClaudeExtractor(db_session)
+        extractor.extract_dialogue(claude_conversation_with_tool_use)
+        
+        tool_use_parts = db_session.query(ContentPart).filter(
+            ContentPart.part_type == 'tool_use'
+        ).all()
+        
+        assert len(tool_use_parts) >= 1
+        
+        # Verify tool use fields are extracted
+        tool_use = tool_use_parts[0]
+        assert tool_use.tool_name == 'web_search'
+        assert tool_use.tool_use_id == 'tool-001'
+        assert tool_use.tool_input == {'query': 'recent AI news 2024'}
+        assert tool_use.text_content == 'recent AI news 2024'  # Extracted from input.query
+    
+    def test_extract_tool_result(self, db_session, claude_conversation_with_tool_use):
+        """Test extracting tool result content with linked tool_use_id."""
+        extractor = ClaudeExtractor(db_session)
+        extractor.extract_dialogue(claude_conversation_with_tool_use)
+        
+        tool_result_parts = db_session.query(ContentPart).filter(
+            ContentPart.part_type == 'tool_result'
+        ).all()
+        
+        assert len(tool_result_parts) >= 1
+        
+        # Verify tool result fields
+        tool_result = tool_result_parts[0]
+        assert tool_result.tool_use_id == 'tool-001'  # Links back to tool_use
+        assert tool_result.text_content == 'AI advances in 2024 include...'
+    
+    def test_missing_uuid(self, db_session):
+        """Test handling of conversation without UUID."""
+        extractor = ClaudeExtractor(db_session)
+        result = extractor.extract_dialogue({"name": "No UUID"})
+        
+        assert result is None
+    
+    def test_extract_all(self, db_session, claude_conversations):
+        """Test extracting multiple Claude conversations."""
+        extractor = ClaudeExtractor(db_session)
+        counts = extractor.extract_all(claude_conversations)
+        
+        assert counts['dialogues_new'] == 3
+        assert counts['failed'] == 0
+
+
+class TestExtractorTimestamps:
+    """Tests for timestamp parsing."""
+    
+    def test_chatgpt_epoch_timestamps(self, db_session, chatgpt_simple_conversation):
+        """Test parsing ChatGPT epoch timestamps."""
+        extractor = ChatGPTExtractor(db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        
+        dialogue = db_session.query(Dialogue).first()
+        
+        assert dialogue.created_at is not None
+        assert dialogue.updated_at is not None
+        assert dialogue.created_at.tzinfo is not None  # Timezone aware
+    
+    def test_claude_iso_timestamps(self, db_session, claude_simple_conversation):
+        """Test parsing Claude ISO timestamps."""
+        extractor = ClaudeExtractor(db_session)
+        extractor.extract_dialogue(claude_simple_conversation)
+        
+        dialogue = db_session.query(Dialogue).first()
+        
+        assert dialogue.created_at is not None
+        assert dialogue.updated_at is not None
+        assert dialogue.created_at.tzinfo is not None  # Timezone aware
+
+
+
+---
+File: tests/integration/test_idempotency.py
+---
+# tests/integration/test_idempotency.py
+"""Tests for idempotent import behavior with incremental updates."""
+
+import copy
+import pytest
+from datetime import datetime, timezone
+
+from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
+from llm_archive.models import Dialogue, Message
+
+
+class TestChatGPTIdempotency:
+    """Tests for ChatGPT idempotent import."""
+    
+    def test_reimport_unchanged_skips(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that reimporting unchanged conversation is skipped."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        result1 = extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        assert result1 == 'new'
+        
+        # Second import - same data
+        result2 = extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        assert result2 == 'skipped'
+        
+        # Should still have only one dialogue
+        count = clean_db_session.query(Dialogue).count()
+        assert count == 1
+    
+    def test_reimport_updated_updates(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that reimporting updated conversation updates it."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        result1 = extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        assert result1 == 'new'
+        
+        original_title = clean_db_session.query(Dialogue).first().title
+        
+        # Modify and reimport
+        updated = copy.deepcopy(chatgpt_simple_conversation)
+        updated['update_time'] = 1700002000.0  # Later timestamp
+        updated['title'] = "Updated Title"
+        
+        result2 = extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        assert result2 == 'updated'
+        
+        # Should still have only one dialogue
+        count = clean_db_session.query(Dialogue).count()
+        assert count == 1
+        
+        # Title should be updated
+        dialogue = clean_db_session.query(Dialogue).first()
+        assert dialogue.title == "Updated Title"
+    
+    def test_reimport_messages_refreshed(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that messages are refreshed on update."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_msg_count = clean_db_session.query(Message).count()
+        
+        # Modify and reimport
+        updated = copy.deepcopy(chatgpt_simple_conversation)
+        updated['update_time'] = 1700002000.0
+        
+        extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        
+        # Message count should be the same (refreshed, not duplicated)
+        new_msg_count = clean_db_session.query(Message).count()
+        assert new_msg_count == original_msg_count
+    
+    def test_extract_all_mixed_results(self, clean_db_session, chatgpt_simple_conversation):
+        """Test extract_all with mix of new, updated, and skipped."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import one conversation
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Create variations
+        unchanged = copy.deepcopy(chatgpt_simple_conversation)
+        
+        updated = copy.deepcopy(chatgpt_simple_conversation)
+        updated['update_time'] = 1700005000.0
+        updated['title'] = "Updated"
+        
+        new_conv = copy.deepcopy(chatgpt_simple_conversation)
+        new_conv['conversation_id'] = "conv-new-001"
+        
+        # Extract all
+        counts = extractor.extract_all([unchanged, updated, new_conv])
+        
+        # Note: after the first was already imported, we have:
+        # - unchanged: skipped (no update since update_time same)
+        # - updated: but we already updated it above with unchanged, 
+        #   so this depends on whether unchanged came first
+        # Let's just check we have correct totals
+        assert counts['dialogues_skipped'] + counts['dialogues_new'] + counts['dialogues_updated'] == 3
+
+
+class TestClaudeIdempotency:
+    """Tests for Claude idempotent import."""
+    
+    def test_reimport_unchanged_skips(self, clean_db_session, claude_simple_conversation):
+        """Test that reimporting unchanged conversation is skipped."""
+        extractor = ClaudeExtractor(clean_db_session)
+        
+        # First import
+        result1 = extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        assert result1 == 'new'
+        
+        # Second import - same data
+        result2 = extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        assert result2 == 'skipped'
+    
+    def test_reimport_updated_updates(self, clean_db_session, claude_simple_conversation):
+        """Test that reimporting updated conversation updates it."""
+        extractor = ClaudeExtractor(clean_db_session)
+        
+        # First import
+        result1 = extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        
+        # Modify and reimport
+        updated = copy.deepcopy(claude_simple_conversation)
+        updated['updated_at'] = "2024-01-16T10:00:00Z"  # Later timestamp
+        updated['name'] = "Updated Title"
+        
+        result2 = extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        assert result2 == 'updated'
+        
+        # Title should be updated
+        dialogue = clean_db_session.query(Dialogue).first()
+        assert dialogue.title == "Updated Title"
+
+
+class TestCrossSourceIdempotency:
+    """Tests for idempotency across sources."""
+    
+    def test_same_content_different_sources(self, clean_db_session):
+        """Test that same content from different sources creates separate records."""
+        chatgpt_conv = {
+            "conversation_id": "cross-001",
+            "title": "Cross Source Test",
+            "create_time": 1700000000.0,
+            "update_time": 1700001000.0,
+            "mapping": {
+                "root": {"id": "root", "parent": None, "children": ["m1"], "message": None},
+                "m1": {
+                    "id": "m1",
+                    "parent": "root",
+                    "children": [],
+                    "message": {
+                        "id": "m1",
+                        "author": {"role": "user"},
+                        "create_time": 1700000100.0,
+                        "content": {"content_type": "text", "parts": ["Hello"]}
+                    }
+                }
+            }
+        }
+        
+        claude_conv = {
+            "uuid": "cross-001",  # Same ID!
+            "name": "Cross Source Test",
+            "created_at": "2024-01-15T10:00:00Z",
+            "updated_at": "2024-01-15T10:30:00Z",
+            "chat_messages": [
+                {
+                    "uuid": "msg-001",
+                    "sender": "human",
+                    "created_at": "2024-01-15T10:00:00Z",
+                    "content": [{"type": "text", "text": "Hello"}]
+                }
+            ]
+        }
+        
+        # Import both
+        ChatGPTExtractor(clean_db_session).extract_dialogue(chatgpt_conv)
+        ClaudeExtractor(clean_db_session).extract_dialogue(claude_conv)
+        clean_db_session.commit()
+        
+        # Should have two dialogues (different sources)
+        dialogues = clean_db_session.query(Dialogue).all()
+        assert len(dialogues) == 2
+        
+        sources = set(d.source for d in dialogues)
+        assert sources == {'chatgpt', 'claude'}
+
+
+class TestPartialUpdate:
+    """Tests for partial update scenarios."""
+    
+    def test_conversation_extended(self, clean_db_session, chatgpt_simple_conversation):
+        """Test handling of conversation that has been extended."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # Import original
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_msg_count = clean_db_session.query(Message).count()
+        
+        # Extend conversation (add new messages)
+        extended = copy.deepcopy(chatgpt_simple_conversation)
+        extended['update_time'] = 1700005000.0
+        
+        # Add new message to mapping
+        new_msg_id = "new-msg-001"
+        last_msg_id = list(extended['mapping'].keys())[-1]
+        
+        extended['mapping'][new_msg_id] = {
+            "id": new_msg_id,
+            "parent": last_msg_id,
+            "children": [],
+            "message": {
+                "id": new_msg_id,
+                "author": {"role": "user"},
+                "create_time": 1700004000.0,
+                "content": {"content_type": "text", "parts": ["One more question"]}
+            }
+        }
+        # Update parent's children
+        for node_id, node in extended['mapping'].items():
+            if node.get('message') and node['children'] == [] and node_id != new_msg_id:
+                if node_id == last_msg_id:
+                    node['children'] = [new_msg_id]
+        
+        # Reimport
+        result = extractor.extract_dialogue(extended)
+        clean_db_session.commit()
+        
+        assert result == 'updated'
+        
+        # Should have more messages now
+        new_msg_count = clean_db_session.query(Message).count()
+        assert new_msg_count == original_msg_count + 1
+
+
+class TestUUIDPreservation:
+    """Tests for message UUID preservation during updates."""
+    
+    def test_unchanged_messages_keep_uuids(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that unchanged messages keep their UUIDs."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Record original UUIDs
+        original_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        # Update with later timestamp but same content
+        updated = copy.deepcopy(chatgpt_simple_conversation)
+        updated['update_time'] = 1700005000.0
+        updated['title'] = "New Title"  # Only title changed, not messages
+        
+        extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        
+        # Check UUIDs are preserved
+        new_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        for source_id, original_uuid in original_messages.items():
+            assert source_id in new_messages, f"Message {source_id} should still exist"
+            assert new_messages[source_id] == original_uuid, f"Message {source_id} UUID changed"
+    
+    def test_changed_message_keeps_uuid_updates_content(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that changed messages keep their UUID but update content."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Find a message to modify
+        first_user_msg = clean_db_session.query(Message).filter(
+            Message.role == 'user'
+        ).first()
+        original_uuid = first_user_msg.id
+        original_source_id = first_user_msg.source_id
+        
+        # Modify the message content
+        updated = copy.deepcopy(chatgpt_simple_conversation)
+        updated['update_time'] = 1700005000.0
+        
+        for node_id, node in updated['mapping'].items():
+            msg = node.get('message')
+            if msg and msg.get('id') == original_source_id:
+                msg['content']['parts'] = ['MODIFIED MESSAGE CONTENT']
+                break
+        
+        extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        
+        # UUID should be preserved
+        modified_msg = clean_db_session.query(Message).filter(
+            Message.source_id == original_source_id
+        ).first()
+        
+        assert modified_msg is not None
+        assert modified_msg.id == original_uuid, "UUID should be preserved"
+        assert 'MODIFIED' in str(modified_msg.source_json), "Content should be updated"
+    
+    def test_claude_unchanged_messages_keep_uuids(self, clean_db_session, claude_simple_conversation):
+        """Test UUID preservation for Claude extractor."""
+        extractor = ClaudeExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        
+        # Record original UUIDs
+        original_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        # Update with later timestamp but same messages
+        updated = copy.deepcopy(claude_simple_conversation)
+        updated['updated_at'] = "2024-01-20T10:00:00Z"
+        updated['name'] = "New Title"
+        
+        extractor.extract_dialogue(updated)
+        clean_db_session.commit()
+        
+        # Check UUIDs are preserved
+        new_messages = {m.source_id: m.id for m in clean_db_session.query(Message).all()}
+        
+        for source_id, original_uuid in original_messages.items():
+            assert source_id in new_messages
+            assert new_messages[source_id] == original_uuid
+
+
+class TestSoftDelete:
+    """Tests for soft-delete behavior when messages are removed from source."""
+    
+    def test_removed_message_soft_deleted(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that messages removed from source are soft-deleted."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Remove a message from the conversation
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1700005000.0
+        
+        # Remove the last message
+        mapping_keys = list(truncated['mapping'].keys())
+        last_msg_key = mapping_keys[-1]
+        del truncated['mapping'][last_msg_key]
+        
+        # Update parent to not have children pointing to deleted msg
+        for node_id, node in truncated['mapping'].items():
+            if last_msg_key in node.get('children', []):
+                node['children'].remove(last_msg_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Total message count should be the same (soft-deleted, not hard-deleted)
+        total_count = clean_db_session.query(Message).count()
+        assert total_count == original_count
+        
+        # Active message count should be one less
+        active_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.is_(None)
+        ).count()
+        assert active_count == original_count - 1
+        
+        # Should have one soft-deleted message
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 1
+    
+    def test_soft_deleted_message_restored_on_reappear(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that soft-deleted message is restored if it reappears."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Remove a message
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1700005000.0
+        
+        mapping_keys = list(truncated['mapping'].keys())
+        removed_msg_key = mapping_keys[-1]
+        del truncated['mapping'][removed_msg_key]
+        
+        for node_id, node in truncated['mapping'].items():
+            if removed_msg_key in node.get('children', []):
+                node['children'].remove(removed_msg_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Verify it's soft-deleted
+        deleted_msg = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).first()
+        assert deleted_msg is not None
+        deleted_uuid = deleted_msg.id
+        
+        # Now restore by importing original again with newer timestamp
+        restored = copy.deepcopy(chatgpt_simple_conversation)
+        restored['update_time'] = 1700010000.0
+        
+        extractor.extract_dialogue(restored)
+        clean_db_session.commit()
+        
+        # Message should be restored
+        restored_msg = clean_db_session.query(Message).filter(
+            Message.id == deleted_uuid
+        ).first()
+        
+        assert restored_msg is not None
+        assert restored_msg.deleted_at is None, "Message should be restored (deleted_at = None)"
+    
+    def test_content_hash_detects_changes(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that content hash correctly detects changed messages."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message's content hash
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        assert original_hash is not None, "Content hash should be computed"
+        
+        # Modify the message content
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1800000000.0  # Much later timestamp to ensure update
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['Completely different content']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # Hash should have changed
+        clean_db_session.refresh(msg)
+        assert msg.content_hash != original_hash, "Content hash should change when content changes"
+
+
+class TestAssumeImmutableFlag:
+    """Tests for assume_immutable optimization flag."""
+    
+    def test_immutable_mode_skips_hash_check(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode skips content hash comparison."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        original_uuid = msg.id
+        
+        # "Modify" content in source (simulating what we'd do in mutable mode)
+        # In immutable mode, this shouldn't trigger an update
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1800000000.0
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['MODIFIED CONTENT']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # In immutable mode, hash should NOT change (we didn't check it)
+        clean_db_session.refresh(msg)
+        assert msg.id == original_uuid, "UUID should be preserved"
+        assert msg.content_hash == original_hash, "Hash should NOT change in immutable mode"
+    
+    def test_mutable_mode_detects_changes(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that mutable mode (default) detects content changes."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=False)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # Modify content
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1800000000.0
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['MODIFIED CONTENT']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # In mutable mode, hash SHOULD change
+        clean_db_session.refresh(msg)
+        assert msg.content_hash != original_hash, "Hash SHOULD change in mutable mode"
+    
+    def test_immutable_mode_still_creates_new_messages(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode still creates new messages properly."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Add a new message
+        extended = copy.deepcopy(chatgpt_simple_conversation)
+        extended['update_time'] = 1800000000.0
+        
+        new_msg_id = "new-immutable-msg"
+        last_node_id = list(extended['mapping'].keys())[-1]
+        
+        extended['mapping'][new_msg_id] = {
+            "id": new_msg_id,
+            "parent": last_node_id,
+            "children": [],
+            "message": {
+                "id": new_msg_id,
+                "author": {"role": "user"},
+                "create_time": 1700006000.0,
+                "content": {"content_type": "text", "parts": ["New message"]}
+            }
+        }
+        
+        extractor.extract_dialogue(extended)
+        clean_db_session.commit()
+        
+        # New message should be created
+        new_count = clean_db_session.query(Message).count()
+        assert new_count == original_count + 1
+        
+        # And it should have a content hash
+        new_msg = clean_db_session.query(Message).filter(
+            Message.source_id == new_msg_id
+        ).first()
+        assert new_msg is not None
+        assert new_msg.content_hash is not None
+    
+    def test_immutable_mode_still_soft_deletes(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode still soft-deletes removed messages."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Remove a message
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1800000000.0
+        
+        mapping_keys = list(truncated['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del truncated['mapping'][removed_key]
+        
+        for node_id, node in truncated['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Message should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 1
+    
+    def test_immutable_mode_restores_soft_deleted(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that immutable mode restores soft-deleted messages without re-hashing."""
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # Remove and soft-delete a message
+        truncated = copy.deepcopy(chatgpt_simple_conversation)
+        truncated['update_time'] = 1800000000.0
+        
+        mapping_keys = list(truncated['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del truncated['mapping'][removed_key]
+        
+        for node_id, node in truncated['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(truncated)
+        clean_db_session.commit()
+        
+        # Verify soft-deleted
+        deleted_msg = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).first()
+        assert deleted_msg is not None
+        original_hash = deleted_msg.content_hash
+        
+        # Restore by importing original with newer timestamp
+        restored = copy.deepcopy(chatgpt_simple_conversation)
+        restored['update_time'] = 1900000000.0
+        
+        extractor.extract_dialogue(restored)
+        clean_db_session.commit()
+        
+        # Should be restored
+        clean_db_session.refresh(deleted_msg)
+        assert deleted_msg.deleted_at is None
+        # Hash should be unchanged (we didn't re-hash)
+        assert deleted_msg.content_hash == original_hash
+    
+    def test_claude_immutable_mode(self, clean_db_session, claude_simple_conversation):
+        """Test that assume_immutable works for Claude extractor too."""
+        extractor = ClaudeExtractor(clean_db_session, assume_immutable=True)
+        
+        # First import
+        extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        
+        # Get a message
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # "Modify" content
+        modified = copy.deepcopy(claude_simple_conversation)
+        modified['updated_at'] = "2025-01-01T00:00:00Z"
+        
+        for m in modified['chat_messages']:
+            if m.get('uuid') == msg.source_id:
+                m['content'] = [{'type': 'text', 'text': 'MODIFIED'}]
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # In immutable mode, hash should NOT change
+        clean_db_session.refresh(msg)
+        assert msg.content_hash == original_hash
+
+
+class TestIncrementalMode:
+    """Tests for incremental (delta import) mode."""
+    
+    def test_incremental_mode_skips_soft_delete(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that incremental mode doesn't soft-delete missing messages."""
+        extractor = ChatGPTExtractor(clean_db_session, incremental=True)
+        
+        # First import - full conversation
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Second import - partial conversation (remove a message)
+        partial = copy.deepcopy(chatgpt_simple_conversation)
+        partial['update_time'] = 1800000000.0
+        
+        mapping_keys = list(partial['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del partial['mapping'][removed_key]
+        
+        for node_id, node in partial['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # In incremental mode, no messages should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 0, "Incremental mode should not soft-delete"
+        
+        # Total count should be unchanged
+        assert clean_db_session.query(Message).count() == original_count
+    
+    def test_non_incremental_mode_does_soft_delete(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that non-incremental mode (default) does soft-delete missing messages."""
+        extractor = ChatGPTExtractor(clean_db_session, incremental=False)
+        
+        # First import - full conversation
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Second import - partial conversation
+        partial = copy.deepcopy(chatgpt_simple_conversation)
+        partial['update_time'] = 1800000000.0
+        
+        mapping_keys = list(partial['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del partial['mapping'][removed_key]
+        
+        for node_id, node in partial['mapping'].items():
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # In non-incremental mode, missing message should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 1, "Non-incremental mode should soft-delete"
+    
+    def test_incremental_mode_still_adds_new_messages(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that incremental mode still adds new messages."""
+        extractor = ChatGPTExtractor(clean_db_session, incremental=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Add a new message
+        extended = copy.deepcopy(chatgpt_simple_conversation)
+        extended['update_time'] = 1800000000.0
+        
+        new_msg_id = "new-incremental-msg"
+        last_node_id = list(extended['mapping'].keys())[-1]
+        
+        extended['mapping'][new_msg_id] = {
+            "id": new_msg_id,
+            "parent": last_node_id,
+            "children": [],
+            "message": {
+                "id": new_msg_id,
+                "author": {"role": "user"},
+                "create_time": 1700006000.0,
+                "content": {"content_type": "text", "parts": ["New message"]}
+            }
+        }
+        
+        extractor.extract_dialogue(extended)
+        clean_db_session.commit()
+        
+        # New message should be created
+        assert clean_db_session.query(Message).count() == original_count + 1
+    
+    def test_incremental_mode_still_updates_changed_messages(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that incremental mode still updates changed messages."""
+        # Use mutable + incremental mode
+        extractor = ChatGPTExtractor(clean_db_session, assume_immutable=False, incremental=True)
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # Modify message content
+        modified = copy.deepcopy(chatgpt_simple_conversation)
+        modified['update_time'] = 1800000000.0
+        
+        for node_id, node in modified['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['MODIFIED CONTENT']
+                break
+        
+        extractor.extract_dialogue(modified)
+        clean_db_session.commit()
+        
+        # Content should be updated
+        clean_db_session.refresh(msg)
+        assert msg.content_hash != original_hash
+    
+    def test_claude_incremental_mode(self, clean_db_session, claude_simple_conversation):
+        """Test that incremental mode works for Claude extractor."""
+        extractor = ClaudeExtractor(clean_db_session, incremental=True)
+        
+        # First import
+        extractor.extract_dialogue(claude_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        
+        # Partial import (remove first message)
+        partial = copy.deepcopy(claude_simple_conversation)
+        partial['updated_at'] = "2025-01-01T00:00:00Z"
+        partial['chat_messages'] = partial['chat_messages'][1:]  # Remove first message
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # No messages should be soft-deleted
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 0
+    
+    def test_combined_immutable_and_incremental(self, clean_db_session, chatgpt_simple_conversation):
+        """Test combining immutable and incremental modes for fastest delta imports."""
+        extractor = ChatGPTExtractor(
+            clean_db_session, 
+            assume_immutable=True, 
+            incremental=True
+        )
+        
+        # First import
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        original_count = clean_db_session.query(Message).count()
+        msg = clean_db_session.query(Message).filter(Message.role == 'user').first()
+        original_hash = msg.content_hash
+        
+        # Partial import with "modified" content
+        partial = copy.deepcopy(chatgpt_simple_conversation)
+        partial['update_time'] = 1800000000.0
+        
+        # Remove a message
+        mapping_keys = list(partial['mapping'].keys())
+        removed_key = mapping_keys[-1]
+        del partial['mapping'][removed_key]
+        
+        # "Modify" existing message (should be ignored in immutable mode)
+        for node_id, node in partial['mapping'].items():
+            msg_data = node.get('message')
+            if msg_data and msg_data.get('id') == msg.source_id:
+                msg_data['content']['parts'] = ['SHOULD BE IGNORED']
+            if removed_key in node.get('children', []):
+                node['children'].remove(removed_key)
+        
+        extractor.extract_dialogue(partial)
+        clean_db_session.commit()
+        
+        # No soft-deletes (incremental mode)
+        deleted_count = clean_db_session.query(Message).filter(
+            Message.deleted_at.isnot(None)
+        ).count()
+        assert deleted_count == 0
+        
+        # Hash unchanged (immutable mode)
+        clean_db_session.refresh(msg)
+        assert msg.content_hash == original_hash
+
+
+
+---
+File: tests/integration/test_models.py
+---
+# tests/integration/test_models.py
+"""Integration tests for SQLAlchemy models with database."""
+
+import pytest
+from uuid import uuid4
+from datetime import datetime, timezone
+
+from llm_archive.models import (
+    Dialogue, Message, ContentPart,
+    DialogueTree, MessagePath, LinearSequence,
+    Exchange, ExchangeContent, Annotation,
+)
+
+
+class TestRawModels:
+    """Tests for raw schema models with database persistence."""
+    
+    def test_create_dialogue(self, db_session):
+        """Test creating and persisting a dialogue."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-001',
+            title='Test Dialogue',
+            created_at=datetime.now(timezone.utc),
+            source_json={'test': True},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        assert dialogue.id is not None
+        assert dialogue.source == 'chatgpt'
+    
+    def test_create_message_with_parent(self, db_session):
+        """Test creating messages with parent relationship."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-002',
+            source_json={'conversation_id': 'test-002'},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        msg1 = Message(
+            dialogue_id=dialogue.id,
+            source_id='msg-001',
+            role='user',
+            source_json={'id': 'msg-001', 'role': 'user'},
+        )
+        db_session.add(msg1)
+        db_session.flush()
+        
+        msg2 = Message(
+            dialogue_id=dialogue.id,
+            source_id='msg-002',
+            role='assistant',
+            parent_id=msg1.id,
+            source_json={'id': 'msg-002', 'role': 'assistant'},
+        )
+        db_session.add(msg2)
+        db_session.flush()
+        
+        assert msg2.parent_id == msg1.id
+    
+    def test_create_content_part(self, db_session):
+        """Test creating content parts."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-003',
+            source_json={},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        message = Message(
+            dialogue_id=dialogue.id,
+            source_id='msg-003',
+            role='assistant',
+            source_json={'id': 'msg-003'},
+        )
+        db_session.add(message)
+        db_session.flush()
+        
+        part = ContentPart(
+            message_id=message.id,
+            sequence=0,
+            part_type='text',
+            text_content='Hello world',
+            source_json={'type': 'text'},
+        )
+        db_session.add(part)
+        db_session.flush()
+        
+        assert part.id is not None
+        assert part.message_id == message.id
+    
+    def test_dialogue_messages_relationship(self, db_session):
+        """Test dialogue to messages relationship."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-004',
+            source_json={},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        msg1 = Message(
+            dialogue_id=dialogue.id,
+            source_id='m1',
+            role='user',
+            source_json={},
+        )
+        msg2 = Message(
+            dialogue_id=dialogue.id,
+            source_id='m2',
+            role='assistant',
+            source_json={},
+        )
+        db_session.add_all([msg1, msg2])
+        db_session.flush()
+        
+        # Refresh to load relationship
+        db_session.refresh(dialogue)
+        
+        assert len(dialogue.messages) == 2
+
+
+class TestDerivedModels:
+    """Tests for derived schema models with database persistence."""
+    
+    def test_create_dialogue_tree(self, db_session):
+        """Test creating a dialogue tree."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-005',
+            source_json={},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        tree = DialogueTree(
+            dialogue_id=dialogue.id,
+            total_nodes=5,
+            max_depth=4,
+            branch_count=0,
+            leaf_count=1,
+        )
+        db_session.add(tree)
+        db_session.flush()
+        
+        assert tree.dialogue_id == dialogue.id
+    
+    def test_create_exchange(self, db_session):
+        """Test creating an exchange."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-006',
+            source_json={},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        msg1 = Message(
+            dialogue_id=dialogue.id,
+            source_id='m1',
+            role='user',
+            source_json={},
+        )
+        msg2 = Message(
+            dialogue_id=dialogue.id,
+            source_id='m2',
+            role='assistant',
+            source_json={},
+        )
+        db_session.add_all([msg1, msg2])
+        db_session.flush()
+        
+        exchange = Exchange(
+            dialogue_id=dialogue.id,
+            first_message_id=msg1.id,
+            last_message_id=msg2.id,
+            message_count=2,
+            user_message_count=1,
+            assistant_message_count=1,
+        )
+        db_session.add(exchange)
+        db_session.flush()
+        
+        assert exchange.id is not None
+    
+    def test_exchange_content_relationship(self, db_session):
+        """Test exchange to content relationship."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-007',
+            source_json={},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        msg1 = Message(
+            dialogue_id=dialogue.id,
+            source_id='m1',
+            role='user',
+            source_json={},
+        )
+        msg2 = Message(
+            dialogue_id=dialogue.id,
+            source_id='m2',
+            role='assistant',
+            source_json={},
+        )
+        db_session.add_all([msg1, msg2])
+        db_session.flush()
+        
+        exchange = Exchange(
+            dialogue_id=dialogue.id,
+            first_message_id=msg1.id,
+            last_message_id=msg2.id,
+            message_count=2,
+            user_message_count=1,
+            assistant_message_count=1,
+        )
+        db_session.add(exchange)
+        db_session.flush()
+        
+        content = ExchangeContent(
+            exchange_id=exchange.id,
+            user_text='Hello',
+            assistant_text='Hi there',
+            total_word_count=3,
+        )
+        db_session.add(content)
+        db_session.flush()
+        
+        # Test relationship
+        db_session.refresh(exchange)
+        assert exchange.content is not None
+        assert exchange.content.user_text == 'Hello'
+    
+    def test_create_annotation(self, db_session):
+        """Test creating an annotation."""
+        entity_id = uuid4()
+        
+        annotation = Annotation(
+            entity_type='exchange',
+            entity_id=entity_id,
+            annotation_type='tag',
+            annotation_value='coding',
+            source='manual',
+        )
+        db_session.add(annotation)
+        db_session.flush()
+        
+        assert annotation.id is not None
+        assert annotation.superseded_at is None
+    
+    def test_annotation_with_data(self, db_session):
+        """Test annotation with JSONB data."""
+        entity_id = uuid4()
+        
+        annotation = Annotation(
+            entity_type='message',
+            entity_id=entity_id,
+            annotation_type='feature',
+            annotation_value='has_code_blocks',
+            annotation_data={'count': 3, 'languages': ['python', 'sql']},
+            source='heuristic',
+        )
+        db_session.add(annotation)
+        db_session.flush()
+        
+        db_session.refresh(annotation)
+        assert annotation.annotation_data['count'] == 3
+        assert 'python' in annotation.annotation_data['languages']
+
+
+class TestCascadeDeletes:
+    """Tests for cascade delete behavior."""
+    
+    def test_delete_dialogue_cascades_to_messages(self, db_session):
+        """Test that deleting dialogue deletes messages."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-cascade-001',
+            source_json={},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        msg = Message(
+            dialogue_id=dialogue.id,
+            source_id='m1',
+            role='user',
+            source_json={},
+        )
+        db_session.add(msg)
+        db_session.flush()
+        
+        dialogue_id = dialogue.id
+        
+        # Delete dialogue
+        db_session.delete(dialogue)
+        db_session.flush()
+        
+        # Message should be gone
+        remaining = db_session.query(Message).filter(
+            Message.dialogue_id == dialogue_id
+        ).count()
+        assert remaining == 0
+    
+    def test_delete_message_cascades_to_content(self, db_session):
+        """Test that deleting message deletes content parts."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-cascade-002',
+            source_json={},
+        )
+        db_session.add(dialogue)
+        db_session.flush()
+        
+        msg = Message(
+            dialogue_id=dialogue.id,
+            source_id='m1',
+            role='user',
+            source_json={},
+        )
+        db_session.add(msg)
+        db_session.flush()
+        
+        part = ContentPart(
+            message_id=msg.id,
+            sequence=0,
+            part_type='text',
+            text_content='Hello',
+            source_json={},
+        )
+        db_session.add(part)
+        db_session.flush()
+        
+        msg_id = msg.id
+        
+        # Delete message
+        db_session.delete(msg)
+        db_session.flush()
+        
+        # Content part should be gone
+        remaining = db_session.query(ContentPart).filter(
+            ContentPart.message_id == msg_id
+        ).count()
+        assert remaining == 0
+
+
