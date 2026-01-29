@@ -256,3 +256,55 @@ class AnnotatorCursor(Base):
     annotations_created = Column(Integer, nullable=False, default=0)
     
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
+# Chunking and rendering
+# ============================================================
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+    __table_args__ = {"schema": "derived"}
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    run_type = Column(String, nullable=False)
+    name = Column(String)
+    params = Column(JSONB, nullable=False, server_default="{}")
+    git_sha = Column(String)
+
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    ended_at = Column(DateTime(timezone=True))
+    status = Column(String, nullable=False, server_default="running")
+    notes = Column(Text)
+
+
+class MessageChunk(Base):
+    __tablename__ = "message_chunks"
+    __table_args__ = {"schema": "derived"}
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    dialogue_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.dialogues.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String, nullable=False)
+
+    chunk_index = Column(Integer, nullable=False)
+
+    chunk_type = Column(String, nullable=False)
+    heading_level = Column(Integer)
+    heading_text = Column(Text)
+    info_string = Column(Text)
+
+    text = Column(Text, nullable=False)
+
+    start_line = Column(Integer)
+    end_line = Column(Integer)
+    start_char = Column(Integer)
+    end_char = Column(Integer)
+
+    run_id = Column(PG_UUID(as_uuid=True), ForeignKey("derived.pipeline_runs.id", ondelete="SET NULL"))
+    chunker = Column(String, nullable=False, default="markdown-it-py")
+    chunker_version = Column(String)
+    data = Column(JSONB, nullable=False, default=dict)
+
+    computed_at = Column(DateTime(timezone=True), server_default=func.now())

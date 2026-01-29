@@ -30,7 +30,10 @@ from llm_archive.models.derived import (
     ExchangeContent,
     Annotation,
     ContentHash,
+    PipelineRun, 
+    MessageChunk
 )
+
 
 __all__ = [
     # Base
@@ -63,4 +66,6 @@ __all__ = [
     "ExchangeContent",
     "Annotation",
     "ContentHash",
+    "PipelineRun",
+    "MessageChunk",
 ]
