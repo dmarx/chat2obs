@@ -139,9 +139,10 @@ class MessageChunkBuilder:
     def _parse_markdown(self, text_in: str) -> Iterable[ChunkRecord]:
         # markdown-it-py + plugins
         from markdown_it import MarkdownIt
-        from mdit_py_plugins.table import table
-
-        md = MarkdownIt("commonmark", {"html": True}).use(table)
+        #from mdit_py_plugins.table import table
+        #md = MarkdownIt("commonmark", {"html": True}).use(table)
+        
+        md = MarkdownIt("commonmark", {"html": True}).enable('table')
         tokens = md.parse(text_in)
 
         # Precompute line-start offsets for char mapping
