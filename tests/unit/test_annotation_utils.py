@@ -105,7 +105,7 @@ class TestExchangeData:
             assistant_text=None,
             user_word_count=None,
             assistant_word_count=None,
-            computed_at=None,
+            created_at=None,
         )
         
         assert data.exchange_id == ex_id
@@ -124,7 +124,7 @@ class TestExchangeData:
             assistant_text='Python is a programming language...',
             user_word_count=3,
             assistant_word_count=5,
-            computed_at=ts,
+            created_at=ts,
         )
         
         assert data.exchange_id == ex_id
@@ -132,7 +132,7 @@ class TestExchangeData:
         assert data.assistant_text == 'Python is a programming language...'
         assert data.user_word_count == 3
         assert data.assistant_word_count == 5
-        assert data.computed_at == ts
+        assert data.created_at == ts
 
 
 class TestAnnotationResultUsage:
