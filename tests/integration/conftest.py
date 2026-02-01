@@ -117,6 +117,7 @@ def clean_db_session(db_engine, setup_schemas) -> Generator[Session, None, None]
     
     # Cleanup: delete all data from tables in reverse dependency order
     cleanup_tables = [
+        "derived.annotator_cursors",
         "derived.annotations",
         "derived.content_hashes",
         "derived.exchange_content",

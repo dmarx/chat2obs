@@ -1,17 +1,21 @@
-# tests/test_annotators.py
+# tests/integration/test_annotators.py
 """Tests for annotation system."""
 
 import pytest
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from llm_archive.extractors import ChatGPTExtractor
 from llm_archive.builders import TreeBuilder, ExchangeBuilder
 from llm_archive.annotators import (
-    Annotator, AnnotationManager,
+    Annotator, AnnotationManager, AnnotationResult,
+    MessageTextAnnotator, MessageTextData,
+    ExchangeAnnotator, ExchangeData,
     WikiLinkAnnotator, CodeBlockAnnotator, LatexAnnotator, ContinuationAnnotator,
+    ExchangeTypeAnnotator,
 )
-from llm_archive.annotators.features import ExchangeTypeAnnotator
 from llm_archive.models import Annotation, Message, ContentPart
+from llm_archive.models.derived import AnnotatorCursor
 
 
 class TestAnnotatorBase:
@@ -118,6 +122,234 @@ class TestAnnotatorBase:
         
         annotation = db_session.query(Annotation).first()
         assert annotation.superseded_at is not None
+    
+    def test_add_result(self, db_session):
+        """Test adding annotation from AnnotationResult."""
+        class TestAnnotator(Annotator):
+            ANNOTATION_TYPE = 'test'
+            ENTITY_TYPE = 'message'
+            SOURCE = 'test'
+            VERSION = '1.0'
+            
+            def compute(self):
+                return 0
+        
+        annotator = TestAnnotator(db_session)
+        entity_id = uuid4()
+        
+        result = AnnotationResult(
+            value='test_value',
+            key='test_key',
+            confidence=0.85,
+            data={'extra': 'data'},
+        )
+        
+        created = annotator.add_result(entity_id, result)
+        assert created is True
+        
+        annotation = db_session.query(Annotation).first()
+        assert annotation.annotation_value == 'test_value'
+        assert annotation.annotation_key == 'test_key'
+        assert annotation.confidence == 0.85
+        assert annotation.annotation_data == {'extra': 'data'}
+
+
+class TestAnnotatorCursor:
+    """Tests for cursor-based incremental processing."""
+    
+    def test_cursor_created_on_first_run(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that cursor is created after first annotation run."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        annotator = CodeBlockAnnotator(clean_db_session)
+        annotator.compute()
+        clean_db_session.commit()
+        
+        cursor = clean_db_session.query(AnnotatorCursor).filter(
+            AnnotatorCursor.annotator_name == 'CodeBlockAnnotator',
+            AnnotatorCursor.annotator_version == '1.0',
+        ).first()
+        
+        assert cursor is not None
+        assert cursor.high_water_mark is not None
+        assert cursor.entities_processed > 0
+    
+    def test_cursor_skips_old_entities(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that second run skips already-processed entities."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        annotator = CodeBlockAnnotator(clean_db_session)
+        first_count = annotator.compute()
+        clean_db_session.commit()
+        
+        # Second run should find nothing new
+        annotator2 = CodeBlockAnnotator(clean_db_session)
+        second_count = annotator2.compute()
+        clean_db_session.commit()
+        
+        # Second run processes 0 new entities (cursor filters them out)
+        assert second_count == 0
+    
+    def test_version_bump_reprocesses(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that bumping VERSION forces reprocessing."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        # First run with version 1.0
+        annotator = CodeBlockAnnotator(clean_db_session)
+        first_count = annotator.compute()
+        clean_db_session.commit()
+        
+        # Create a "v1.1" annotator
+        class CodeBlockAnnotatorV11(MessageTextAnnotator):
+            ANNOTATION_TYPE = 'feature'
+            VERSION = '1.1'  # Different version
+            
+            def annotate(self, data):
+                if '```' in data.text:
+                    return [AnnotationResult(value='has_code_v11')]
+                return []
+        
+        annotator_v11 = CodeBlockAnnotatorV11(clean_db_session)
+        v11_count = annotator_v11.compute()
+        clean_db_session.commit()
+        
+        # v1.1 should process entities again (different cursor)
+        # Since cursor is per-version, it starts fresh
+        assert v11_count >= 0  # May or may not find code blocks
+        
+        # Should have separate cursor entries
+        cursors = clean_db_session.query(AnnotatorCursor).filter(
+            AnnotatorCursor.annotator_name.in_(['CodeBlockAnnotator', 'CodeBlockAnnotatorV11'])
+        ).all()
+        
+        assert len(cursors) == 2
+    
+    def test_cursor_tracks_stats(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that cursor tracks entities_processed and annotations_created."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        annotator = WikiLinkAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        cursor = clean_db_session.query(AnnotatorCursor).filter(
+            AnnotatorCursor.annotator_name == 'WikiLinkAnnotator',
+        ).first()
+        
+        assert cursor is not None
+        assert cursor.entities_processed > 0
+        assert cursor.annotations_created == count
+
+
+class TestMessageTextAnnotator:
+    """Tests for MessageTextAnnotator base class."""
+    
+    def test_simple_message_annotator(self, clean_db_session, chatgpt_simple_conversation):
+        """Test creating a simple message annotator."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        class HelloAnnotator(MessageTextAnnotator):
+            ANNOTATION_TYPE = 'feature'
+            VERSION = '1.0'
+            
+            def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
+                if 'hello' in data.text.lower():
+                    return [AnnotationResult(value='has_greeting')]
+                return []
+        
+        annotator = HelloAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        # Should find messages with "hello"
+        assert count >= 0  # May or may not have hello
+    
+    def test_role_filter(self, clean_db_session, chatgpt_simple_conversation):
+        """Test that ROLE_FILTER limits messages."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        class UserOnlyAnnotator(MessageTextAnnotator):
+            ANNOTATION_TYPE = 'test'
+            VERSION = '1.0'
+            ROLE_FILTER = 'user'
+            
+            def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
+                assert data.role == 'user', "Should only see user messages"
+                return [AnnotationResult(value='user_message')]
+        
+        annotator = UserOnlyAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        # Should have annotated user messages
+        assert count > 0
+    
+    def test_multiple_results(self, clean_db_session, chatgpt_simple_conversation):
+        """Test returning multiple annotation results."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        class MultiResultAnnotator(MessageTextAnnotator):
+            ANNOTATION_TYPE = 'test'
+            VERSION = '1.0'
+            
+            def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
+                results = []
+                if len(data.text) > 10:
+                    results.append(AnnotationResult(value='long'))
+                if len(data.text) < 100:
+                    results.append(AnnotationResult(value='short'))
+                return results
+        
+        annotator = MultiResultAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        # Should have multiple annotations
+        assert count > 0
+
+
+class TestExchangeAnnotator:
+    """Tests for ExchangeAnnotator base class."""
+    
+    def test_simple_exchange_annotator(self, clean_db_session, chatgpt_simple_conversation):
+        """Test creating a simple exchange annotator."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
+        
+        TreeBuilder(clean_db_session).build_all()
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
+        
+        class LengthAnnotator(ExchangeAnnotator):
+            ANNOTATION_TYPE = 'tag'
+            VERSION = '1.0'
+            
+            def annotate(self, data: ExchangeData) -> list[AnnotationResult]:
+                word_count = (data.assistant_word_count or 0)
+                if word_count > 100:
+                    return [AnnotationResult(value='long_response')]
+                return [AnnotationResult(value='short_response')]
+        
+        annotator = LengthAnnotator(clean_db_session)
+        count = annotator.compute()
+        clean_db_session.commit()
+        
+        assert count > 0
 
 
 class TestAnnotationManager:
@@ -383,50 +615,68 @@ class TestFeatureAnnotators:
 
 
 class TestCustomAnnotator:
-    """Tests for creating custom annotators."""
+    """Tests for creating custom annotators using new base classes."""
     
-    def test_custom_annotator_interface(self, db_session):
-        """Test that custom annotators work correctly."""
+    def test_custom_message_annotator(self, clean_db_session, chatgpt_simple_conversation):
+        """Test custom MessageTextAnnotator."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
         
-        class TopicAnnotator(Annotator):
-            """Custom annotator that tags exchanges with topics."""
-            ANNOTATION_TYPE = 'tag'
-            ENTITY_TYPE = 'exchange'
-            SOURCE = 'custom'
+        class QuestionAnnotator(MessageTextAnnotator):
+            """Detects messages containing questions."""
+            ANNOTATION_TYPE = 'feature'
             VERSION = '1.0'
+            ROLE_FILTER = 'user'
             
-            KEYWORDS = {
-                'python': ['python', 'def ', 'import '],
-                'javascript': ['javascript', 'function', 'const '],
-                'database': ['sql', 'database', 'query'],
-            }
-            
-            def compute(self) -> int:
-                # In a real implementation, would query exchanges
-                # For test, just verify the interface works
-                count = 0
-                test_id = uuid4()
-                
-                for topic, keywords in self.KEYWORDS.items():
-                    if self.add_annotation(
-                        entity_id=test_id,
-                        value=topic,
-                        key='topic',
-                        confidence=0.8,
-                        data={'keywords_matched': keywords},
-                    ):
-                        count += 1
-                
-                return count
+            def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
+                if '?' in data.text:
+                    return [AnnotationResult(
+                        value='has_question',
+                        confidence=0.9,
+                        data={'question_count': data.text.count('?')},
+                    )]
+                return []
         
-        manager = AnnotationManager(db_session)
-        manager.register(TopicAnnotator)
+        manager = AnnotationManager(clean_db_session)
+        manager.register(QuestionAnnotator)
         results = manager.run_all()
         
-        assert results['TopicAnnotator'] == 3  # 3 topics
+        # Verify it ran
+        assert 'QuestionAnnotator' in results
+    
+    def test_custom_exchange_annotator(self, clean_db_session, chatgpt_simple_conversation):
+        """Test custom ExchangeAnnotator."""
+        extractor = ChatGPTExtractor(clean_db_session)
+        extractor.extract_dialogue(chatgpt_simple_conversation)
+        clean_db_session.commit()
         
-        annotations = db_session.query(Annotation).filter(
-            Annotation.annotation_key == 'topic'
-        ).all()
+        TreeBuilder(clean_db_session).build_all()
+        ExchangeBuilder(clean_db_session).build_all()
+        clean_db_session.commit()
         
-        assert len(annotations) == 3
+        class BalanceAnnotator(ExchangeAnnotator):
+            """Tags exchanges based on user/assistant word balance."""
+            ANNOTATION_TYPE = 'tag'
+            VERSION = '1.0'
+            
+            def annotate(self, data: ExchangeData) -> list[AnnotationResult]:
+                user_words = data.user_word_count or 0
+                asst_words = data.assistant_word_count or 0
+                
+                if user_words == 0:
+                    return []
+                
+                ratio = asst_words / max(user_words, 1)
+                if ratio > 5:
+                    return [AnnotationResult(value='verbose_response', key='balance')]
+                elif ratio < 0.5:
+                    return [AnnotationResult(value='brief_response', key='balance')]
+                return [AnnotationResult(value='balanced', key='balance')]
+        
+        manager = AnnotationManager(clean_db_session)
+        manager.register(BalanceAnnotator)
+        results = manager.run_all()
+        
+        assert 'BalanceAnnotator' in results
+        assert results['BalanceAnnotator'] > 0

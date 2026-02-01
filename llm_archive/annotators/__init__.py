@@ -12,46 +12,72 @@ Annotation Types:
 - quality: Quality assessment
 
 Creating Custom Annotators:
--------------------------
-1. Subclass Annotator
-2. Set ANNOTATION_TYPE, ENTITY_TYPE, SOURCE
-3. Implement compute() method
-4. Use add_annotation() to persist
+--------------------------
 
-Example:
-    class MyAnnotator(Annotator):
-        ANNOTATION_TYPE = 'custom'
-        ENTITY_TYPE = 'exchange'
-        SOURCE = 'heuristic'
+For MESSAGE annotations based on text content, use MessageTextAnnotator:
+
+    class MyMessageAnnotator(MessageTextAnnotator):
+        ANNOTATION_TYPE = 'feature'
+        VERSION = '1.0'
+        ROLE_FILTER = 'assistant'  # or 'user' or None for all
+        
+        def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
+            if 'keyword' in data.text:
+                return [AnnotationResult(value='has_keyword', confidence=0.9)]
+            return []
+
+For EXCHANGE annotations, use ExchangeAnnotator:
+
+    class MyExchangeAnnotator(ExchangeAnnotator):
+        ANNOTATION_TYPE = 'tag'
         VERSION = '1.0'
         
-        def compute(self) -> int:
-            exchanges = self.session.query(Exchange).all()
-            count = 0
-            for ex in exchanges:
-                if self._my_condition(ex):
-                    if self.add_annotation(
-                        entity_id=ex.id,
-                        value='my_value',
-                        key='optional_key',
-                    ):
-                        count += 1
-            return count
+        def annotate(self, data: ExchangeData) -> list[AnnotationResult]:
+            if (data.assistant_word_count or 0) > 1000:
+                return [AnnotationResult(value='long_response', key='length')]
+            return []
+
+The base classes handle:
+- Cursor-based incremental processing (only new entities)
+- Querying and iterating over entities
+- Grouping content parts by message
+- Tracking entities and finalizing cursors
+
+Bump VERSION to reprocess all entities with new logic.
 """
 
-from llm_archive.annotators.base import Annotator, AnnotationManager
+from llm_archive.annotators.base import (
+    Annotator,
+    AnnotationManager,
+    AnnotationResult,
+    MessageTextAnnotator,
+    MessageTextData,
+    ExchangeAnnotator,
+    ExchangeData,
+)
 from llm_archive.annotators.features import (
     WikiLinkAnnotator,
     CodeBlockAnnotator,
     LatexAnnotator,
     ContinuationAnnotator,
+    ExchangeTypeAnnotator,
 )
 
 __all__ = [
+    # Base classes
     "Annotator",
     "AnnotationManager",
+    "AnnotationResult",
+    # Message annotation
+    "MessageTextAnnotator",
+    "MessageTextData",
+    # Exchange annotation
+    "ExchangeAnnotator",
+    "ExchangeData",
+    # Built-in annotators
     "WikiLinkAnnotator",
     "CodeBlockAnnotator",
     "LatexAnnotator",
     "ContinuationAnnotator",
+    "ExchangeTypeAnnotator",
 ]
