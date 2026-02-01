@@ -326,7 +326,7 @@ class ExchangeData:
     assistant_text: str | None
     user_word_count: int | None
     assistant_word_count: int | None
-    computed_at: datetime | None
+    created_at: datetime | None
 
 
 class ExchangeAnnotator(Annotator):
@@ -349,7 +349,7 @@ class ExchangeAnnotator(Annotator):
         count = 0
         
         for data in self._iter_exchanges():
-            self.track_entity(data.computed_at)
+            self.track_entity(data.created_at)
             
             results = self.annotate(data)
             for result in results:
@@ -371,7 +371,7 @@ class ExchangeAnnotator(Annotator):
         )
         
         if cursor:
-            query = query.filter(Exchange.computed_at > cursor)
+            query = query.filter(Exchange.created_at > cursor)
         
         for exchange, content in query.all():
             yield ExchangeData(
@@ -380,7 +380,7 @@ class ExchangeAnnotator(Annotator):
                 assistant_text=content.assistant_text,
                 user_word_count=content.user_word_count,
                 assistant_word_count=content.assistant_word_count,
-                computed_at=exchange.computed_at,
+                created_at=exchange.created_at,
             )
     
     @abstractmethod
