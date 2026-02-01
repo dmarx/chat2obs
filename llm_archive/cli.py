@@ -17,6 +17,7 @@ from llm_archive.annotators import (
     CodeBlockAnnotator,
     LatexAnnotator,
     ContinuationAnnotator,
+    ExchangeTypeAnnotator,
 )
 
 
@@ -180,10 +181,13 @@ class CLI:
         """Run all annotators."""
         with get_session(self.db_url) as session:
             manager = AnnotationManager(session)
+            # Message annotators
             manager.register(WikiLinkAnnotator)
             manager.register(CodeBlockAnnotator)
             manager.register(LatexAnnotator)
             manager.register(ContinuationAnnotator)
+            # Exchange annotators
+            manager.register(ExchangeTypeAnnotator)
             results = manager.run_all()
         
         return results
