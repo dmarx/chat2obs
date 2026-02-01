@@ -143,7 +143,7 @@ select
     hash_scope,
     entity_type,
     normalization,
-    array_agg(entity_id order by computed_at) as entity_ids,
+    array_agg(entity_id order by created_at) as entity_ids,
     count(*) as duplicate_count
 from derived.content_hashes
 group by hash_sha256, hash_scope, entity_type, normalization
