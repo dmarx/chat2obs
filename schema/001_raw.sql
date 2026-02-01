@@ -39,11 +39,16 @@ create table raw.dialogues (
     source_id           text not null,
     
     title               text,
-    created_at          timestamptz,
-    updated_at          timestamptz,
+    
+    -- Source timestamps (from archive)
+    source_created_at   timestamptz,
+    source_updated_at   timestamptz,
     
     source_json         jsonb not null,
-    imported_at         timestamptz default now(),
+    
+    -- DB timestamps
+    created_at          timestamptz default now(),
+    updated_at          timestamptz default now(),
     
     unique (source, source_id)
 );
@@ -64,14 +69,20 @@ create table raw.messages (
     role                text not null,
     author_id           text,
     author_name         text,
-    created_at          timestamptz,
-    updated_at          timestamptz,
+    
+    -- Source timestamps (from archive)
+    source_created_at   timestamptz,
+    source_updated_at   timestamptz,
     
     -- Change tracking
     content_hash        text,               -- hash of content for change detection
     deleted_at          timestamptz,        -- soft delete (removed from source)
     
     source_json         jsonb not null,
+    
+    -- DB timestamps
+    created_at          timestamptz default now(),
+    updated_at          timestamptz default now(),
     
     unique (dialogue_id, source_id)
 );

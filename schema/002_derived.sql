@@ -26,7 +26,7 @@ create table derived.dialogue_trees (
     has_regenerations       boolean not null default false,
     has_edits               boolean not null default false,
     
-    computed_at             timestamptz default now()
+    created_at             timestamptz default now()
 );
 
 -- ============================================================
@@ -47,7 +47,7 @@ create table derived.message_paths (
     
     is_on_primary_path      boolean not null,
     
-    computed_at             timestamptz default now()
+    created_at             timestamptz default now()
 );
 
 -- ============================================================
@@ -66,7 +66,7 @@ create table derived.linear_sequences (
     branched_at_message_id  uuid references raw.messages,
     branched_at_depth       int,
     
-    computed_at             timestamptz default now(),
+    created_at             timestamptz default now(),
     
     unique (dialogue_id, leaf_message_id)
 );
@@ -108,7 +108,7 @@ create table derived.exchanges (
     started_at              timestamptz,
     ended_at                timestamptz,
     
-    computed_at             timestamptz default now(),
+    created_at             timestamptz default now(),
     
     -- An exchange is uniquely identified by its message range
     unique (dialogue_id, first_message_id, last_message_id)
@@ -155,7 +155,7 @@ create table derived.exchange_content (
     assistant_word_count    int,
     total_word_count        int,
     
-    computed_at             timestamptz default now()
+    created_at             timestamptz default now()
 );
 
 -- ============================================================
@@ -207,7 +207,7 @@ create table derived.content_hashes (
     
     normalization           text not null default 'none',
     
-    computed_at             timestamptz default now(),
+    created_at             timestamptz default now(),
     
     unique (entity_type, entity_id, hash_scope, normalization)
 );

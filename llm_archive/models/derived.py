@@ -34,7 +34,7 @@ class DialogueTree(Base):
     has_regenerations = Column(Boolean, nullable=False, default=False)
     has_edits = Column(Boolean, nullable=False, default=False)
     
-    computed_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class MessagePath(Base):
@@ -55,7 +55,7 @@ class MessagePath(Base):
     
     is_on_primary_path = Column(Boolean, nullable=False)
     
-    computed_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ============================================================
@@ -78,7 +78,7 @@ class LinearSequence(Base):
     branched_at_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
     branched_at_depth = Column(Integer)
     
-    computed_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     sequence_messages = relationship("SequenceMessage", back_populates="sequence", cascade="all, delete-orphan")
     sequence_exchanges = relationship("SequenceExchange", back_populates="sequence", cascade="all, delete-orphan")
@@ -122,7 +122,7 @@ class Exchange(Base):
     started_at = Column(DateTime(timezone=True))
     ended_at = Column(DateTime(timezone=True))
     
-    computed_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     exchange_messages = relationship("ExchangeMessage", back_populates="exchange", cascade="all, delete-orphan")
     content = relationship("ExchangeContent", back_populates="exchange", uselist=False, cascade="all, delete-orphan")
@@ -173,7 +173,7 @@ class ExchangeContent(Base):
     assistant_word_count = Column(Integer)
     total_word_count = Column(Integer)
     
-    computed_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     exchange = relationship("Exchange", back_populates="content")
 
@@ -226,7 +226,7 @@ class ContentHash(Base):
     
     normalization = Column(String, nullable=False, default='none')
     
-    computed_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 # ============================================================

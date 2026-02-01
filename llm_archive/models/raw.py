@@ -42,11 +42,16 @@ class Dialogue(Base):
     source_id = Column(String, nullable=False)
     
     title = Column(String)
-    created_at = Column(DateTime(timezone=True))
-    updated_at = Column(DateTime(timezone=True))
+    
+    # Source timestamps (from archive)
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
     
     source_json = Column(JSONB, nullable=False)
-    imported_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
     
     source_rel = relationship("Source", back_populates="dialogues")
     messages = relationship("Message", back_populates="dialogue", cascade="all, delete-orphan")
@@ -66,14 +71,20 @@ class Message(Base):
     role = Column(String, nullable=False)
     author_id = Column(String)
     author_name = Column(String)
-    created_at = Column(DateTime(timezone=True))
-    updated_at = Column(DateTime(timezone=True))
+    
+    # Source timestamps (from archive)
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
     
     # Change tracking
     content_hash = Column(String)  # hash of content for change detection
     deleted_at = Column(DateTime(timezone=True))  # soft delete (removed from source)
     
     source_json = Column(JSONB, nullable=False)
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
     
     dialogue = relationship("Dialogue", back_populates="messages")
     parent = relationship("Message", remote_side=[id], backref="children")
