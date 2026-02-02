@@ -169,7 +169,7 @@ class TestAnnotatorCursor:
         
         cursor = clean_db_session.query(AnnotatorCursor).filter(
             AnnotatorCursor.annotator_name == 'CodeBlockAnnotator',
-            AnnotatorCursor.annotator_version == '1.0',
+            AnnotatorCursor.annotator_version == CodeBlockAnnotator.VERSION, #'1.1',
         ).first()
         
         assert cursor is not None

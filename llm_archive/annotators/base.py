@@ -43,11 +43,19 @@ class Annotator(ABC):
     - Only entities created after the cursor are processed
     - Bump VERSION to force reprocessing all entities
     
+    Strategy System:
+    - ANNOTATION_KEY: Primary annotation key this annotator targets
+    - PRIORITY: Execution order (higher = runs first, 0-100)
+    - Multiple annotators can target the same key with different strategies
+    - Lower-priority annotators are skipped if key is already satisfied
+    
     Subclass and implement:
     - ANNOTATION_TYPE: Type of annotation ('tag', 'title', 'feature', etc.)
     - ENTITY_TYPE: Target entity type ('message', 'exchange', 'dialogue')
     - SOURCE: Provenance ('heuristic', 'model', 'manual')
     - VERSION: Version string - bump this to reprocess all entities
+    - ANNOTATION_KEY: (optional) Primary key this annotator produces
+    - PRIORITY: (optional) Execution priority, default 50
     - compute(): Main logic to generate annotations
     """
     
@@ -56,6 +64,10 @@ class Annotator(ABC):
     ENTITY_TYPE: str = None
     SOURCE: str = 'heuristic'
     VERSION: str = '1.0'
+    
+    # Strategy system - optional
+    ANNOTATION_KEY: str | None = None  # Primary annotation key (e.g., 'code', 'latex')
+    PRIORITY: int = 50  # Higher runs first (0-100 scale)
     
     def __init__(self, session: Session):
         self.session = session
@@ -398,11 +410,237 @@ class ExchangeAnnotator(Annotator):
 
 
 # ============================================================
+# Exchange Platform Annotator
+# ============================================================
+
+@dataclass
+class ExchangePlatformData:
+    """Data passed to platform feature annotation logic."""
+    exchange_id: UUID
+    dialogue_id: UUID
+    message_ids: list[UUID]
+    user_message_ids: list[UUID]
+    assistant_message_ids: list[UUID]
+    created_at: datetime | None
+
+
+class ExchangePlatformAnnotator(Annotator):
+    """
+    Base class for annotating exchanges based on platform features.
+    
+    Provides access to message IDs for querying platform feature tables:
+    - ChatGPTSearchGroup (web search)
+    - ChatGPTCodeExecution (code execution)
+    - ChatGPTCanvasDoc (canvas operations)
+    - ChatGPTMessageMeta (gizmo usage)
+    - Attachment (file attachments)
+    
+    Subclass and implement:
+    - annotate(data: ExchangePlatformData) -> list[AnnotationResult]
+    """
+    
+    ENTITY_TYPE = 'exchange'
+    
+    def compute(self) -> int:
+        """Run annotation over all exchanges."""
+        count = 0
+        
+        for data in self._iter_exchanges():
+            self.track_entity(data.created_at)
+            
+            results = self.annotate(data)
+            for result in results:
+                if self.add_result(data.exchange_id, result):
+                    count += 1
+        
+        self.finalize_cursor()
+        return count
+    
+    def _iter_exchanges(self) -> Iterator[ExchangePlatformData]:
+        """Iterate over exchanges with message IDs."""
+        from llm_archive.models import Exchange, ExchangeMessage, Message
+        
+        cursor = self.get_cursor()
+        
+        query = self.session.query(Exchange)
+        if cursor:
+            query = query.filter(Exchange.created_at > cursor)
+        
+        for exchange in query.all():
+            # Get all message IDs for this exchange
+            message_data = (
+                self.session.query(ExchangeMessage.message_id, Message.role)
+                .join(Message, ExchangeMessage.message_id == Message.id)
+                .filter(ExchangeMessage.exchange_id == exchange.id)
+                .order_by(ExchangeMessage.position)
+                .all()
+            )
+            
+            all_ids = [row[0] for row in message_data]
+            user_ids = [row[0] for row in message_data if row[1] == 'user']
+            assistant_ids = [row[0] for row in message_data if row[1] == 'assistant']
+            
+            yield ExchangePlatformData(
+                exchange_id=exchange.id,
+                dialogue_id=exchange.dialogue_id,
+                message_ids=all_ids,
+                user_message_ids=user_ids,
+                assistant_message_ids=assistant_ids,
+                created_at=exchange.created_at,
+            )
+    
+    @abstractmethod
+    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+        """
+        Analyze exchange platform features and return annotations.
+        
+        Args:
+            data: Exchange data including message IDs for platform queries
+            
+        Returns:
+            List of AnnotationResult objects (empty list if no match)
+        """
+        pass
+
+
+# ============================================================
+# Dialogue Annotator
+# ============================================================
+
+@dataclass
+class DialogueData:
+    """Data passed to dialogue annotation logic."""
+    dialogue_id: UUID
+    source: str
+    title: str | None
+    exchange_count: int
+    message_count: int
+    user_message_count: int
+    assistant_message_count: int
+    user_texts: list[str]
+    assistant_texts: list[str]
+    user_word_counts: list[int]
+    assistant_word_counts: list[int]
+    created_at: datetime | None
+    first_user_text: str | None = None
+    first_assistant_text: str | None = None
+
+
+class DialogueAnnotator(Annotator):
+    """
+    Base class for annotating dialogues with aggregate statistics.
+    
+    Handles:
+    - Querying Dialogue with related exchanges and content
+    - Computing aggregate statistics across the dialogue
+    - Cursor filtering
+    - Entity iteration
+    
+    Subclass and implement:
+    - annotate(data: DialogueData) -> list[AnnotationResult]
+    """
+    
+    ENTITY_TYPE = 'dialogue'
+    
+    def compute(self) -> int:
+        """Run annotation over all dialogues."""
+        count = 0
+        
+        for data in self._iter_dialogues():
+            self.track_entity(data.created_at)
+            
+            results = self.annotate(data)
+            for result in results:
+                if self.add_result(data.dialogue_id, result):
+                    count += 1
+        
+        self.finalize_cursor()
+        return count
+    
+    def _iter_dialogues(self) -> Iterator[DialogueData]:
+        """Iterate over dialogues with aggregate content."""
+        from llm_archive.models import Dialogue, Exchange, ExchangeContent
+        
+        cursor = self.get_cursor()
+        
+        # Get dialogues
+        query = self.session.query(Dialogue)
+        if cursor:
+            query = query.filter(Dialogue.created_at > cursor)
+        
+        for dialogue in query.all():
+            # Get exchange content for this dialogue
+            exchange_content = (
+                self.session.query(Exchange, ExchangeContent)
+                .join(ExchangeContent)
+                .filter(Exchange.dialogue_id == dialogue.id)
+                .order_by(Exchange.started_at)
+                .all()
+            )
+            
+            user_texts = []
+            assistant_texts = []
+            user_word_counts = []
+            assistant_word_counts = []
+            user_message_count = 0
+            assistant_message_count = 0
+            
+            for exchange, content in exchange_content:
+                if content.user_text:
+                    user_texts.append(content.user_text)
+                if content.assistant_text:
+                    assistant_texts.append(content.assistant_text)
+                if content.user_word_count:
+                    user_word_counts.append(content.user_word_count)
+                if content.assistant_word_count:
+                    assistant_word_counts.append(content.assistant_word_count)
+                user_message_count += exchange.user_message_count
+                assistant_message_count += exchange.assistant_message_count
+            
+            yield DialogueData(
+                dialogue_id=dialogue.id,
+                source=dialogue.source,
+                title=dialogue.title,
+                exchange_count=len(exchange_content),
+                message_count=user_message_count + assistant_message_count,
+                user_message_count=user_message_count,
+                assistant_message_count=assistant_message_count,
+                user_texts=user_texts,
+                assistant_texts=assistant_texts,
+                user_word_counts=user_word_counts,
+                assistant_word_counts=assistant_word_counts,
+                created_at=dialogue.created_at,
+                first_user_text=user_texts[0] if user_texts else None,
+                first_assistant_text=assistant_texts[0] if assistant_texts else None,
+            )
+    
+    @abstractmethod
+    def annotate(self, data: DialogueData) -> list[AnnotationResult]:
+        """
+        Analyze dialogue and return annotations to create.
+        
+        Args:
+            data: Dialogue data including texts and aggregate stats
+            
+        Returns:
+            List of AnnotationResult objects (empty list if no match)
+        """
+        pass
+
+
+# ============================================================
 # Annotation Manager
 # ============================================================
 
 class AnnotationManager:
-    """Manages annotation operations and annotator execution."""
+    """
+    Manages annotation operations and annotator execution.
+    
+    Supports the strategy system:
+    - Annotators with the same ANNOTATION_KEY are alternative strategies
+    - Higher PRIORITY annotators run first
+    - Annotators can check has_annotation_key() to skip redundant work
+    """
     
     def __init__(self, session: Session):
         self.session = session
@@ -413,11 +651,16 @@ class AnnotationManager:
         annotator = annotator_class(self.session)
         self.annotators.append(annotator)
     
+    def _sorted_annotators(self) -> list[Annotator]:
+        """Return annotators sorted by priority (descending)."""
+        return sorted(self.annotators, key=lambda a: a.PRIORITY, reverse=True)
+    
     def run_all(self) -> dict[str, int]:
-        """Run all registered annotators."""
+        """Run all registered annotators in priority order."""
         results = {}
         
-        for annotator in self.annotators:
+        # Run in priority order (highest first)
+        for annotator in self._sorted_annotators():
             name = annotator.__class__.__name__
             try:
                 count = annotator.compute()
@@ -431,11 +674,55 @@ class AnnotationManager:
         self.session.commit()
         return results
     
+    def has_annotation_key(
+        self,
+        entity_type: str,
+        entity_id: UUID,
+        annotation_key: str,
+    ) -> bool:
+        """
+        Check if an annotation with the given key exists for an entity.
+        
+        Useful for lower-priority annotators to skip redundant work.
+        """
+        from llm_archive.models import Annotation
+        
+        exists = (
+            self.session.query(Annotation)
+            .filter(Annotation.entity_type == entity_type)
+            .filter(Annotation.entity_id == entity_id)
+            .filter(Annotation.annotation_key == annotation_key)
+            .filter(Annotation.superseded_at.is_(None))
+            .first()
+        ) is not None
+        
+        return exists
+    
+    def get_strategy_info(self) -> dict[str, list[tuple[str, int]]]:
+        """
+        Get information about registered strategies.
+        
+        Returns dict mapping annotation_key to list of (annotator_name, priority).
+        """
+        strategies = {}
+        for annotator in self.annotators:
+            key = annotator.ANNOTATION_KEY or '<none>'
+            if key not in strategies:
+                strategies[key] = []
+            strategies[key].append((annotator.name, annotator.PRIORITY))
+        
+        # Sort each list by priority descending
+        for key in strategies:
+            strategies[key].sort(key=lambda x: x[1], reverse=True)
+        
+        return strategies
+    
     def get_annotations(
         self,
         entity_type: str | None = None,
         entity_id: UUID | None = None,
         annotation_type: str | None = None,
+        annotation_key: str | None = None,
         active_only: bool = True,
     ) -> list[Annotation]:
         """Query annotations with filters."""
@@ -447,6 +734,8 @@ class AnnotationManager:
             query = query.filter(Annotation.entity_id == entity_id)
         if annotation_type:
             query = query.filter(Annotation.annotation_type == annotation_type)
+        if annotation_key:
+            query = query.filter(Annotation.annotation_key == annotation_key)
         if active_only:
             query = query.filter(Annotation.superseded_at.is_(None))
         
