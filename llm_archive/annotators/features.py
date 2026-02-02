@@ -14,9 +14,11 @@ from llm_archive.annotators.base import (
     MessageTextAnnotator,
     ExchangeAnnotator,
     DialogueAnnotator,
+    ExchangePlatformAnnotator,
     MessageTextData,
     ExchangeData,
     DialogueData,
+    ExchangePlatformData,
     AnnotationResult,
 )
 
@@ -687,5 +689,283 @@ class CodingAssistanceAnnotator(DialogueAnnotator):
                     'moderate_indicators': moderate_count,
                 },
             )]
+        
+        return []
+
+
+# ============================================================
+# Platform Feature Annotators
+# ============================================================
+
+
+class WebSearchAnnotator(ExchangePlatformAnnotator):
+    """Detect web search usage in exchange."""
+    
+    ANNOTATION_TYPE = 'feature'
+    VERSION = '1.0'
+    
+    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+        from llm_archive.models.raw import ChatGPTSearchGroup
+        
+        # Check for search groups on any message in this exchange
+        search_count = (
+            self.session.query(ChatGPTSearchGroup)
+            .filter(ChatGPTSearchGroup.message_id.in_(data.message_ids))
+            .count()
+        )
+        
+        if search_count > 0:
+            return [AnnotationResult(
+                value='has_web_search',
+                confidence=1.0,
+                data={'search_group_count': search_count},
+            )]
+        return []
+
+
+class CodeExecutionAnnotator(ExchangePlatformAnnotator):
+    """Detect code execution (Jupyter/Python) in exchange."""
+    
+    ANNOTATION_TYPE = 'feature'
+    VERSION = '1.0'
+    
+    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+        from llm_archive.models.raw import ChatGPTCodeExecution
+        
+        # Check for code executions on any message in this exchange
+        executions = (
+            self.session.query(ChatGPTCodeExecution)
+            .filter(ChatGPTCodeExecution.message_id.in_(data.message_ids))
+            .all()
+        )
+        
+        if executions:
+            successful = sum(1 for e in executions if e.status == 'success')
+            failed = sum(1 for e in executions if e.exception_name)
+            
+            return [AnnotationResult(
+                value='has_code_execution',
+                confidence=1.0,
+                data={
+                    'execution_count': len(executions),
+                    'successful': successful,
+                    'failed': failed,
+                },
+            )]
+        return []
+
+
+class CanvasAnnotator(ExchangePlatformAnnotator):
+    """Detect canvas/document operations in exchange."""
+    
+    ANNOTATION_TYPE = 'feature'
+    VERSION = '1.0'
+    
+    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+        from llm_archive.models.raw import ChatGPTCanvasDoc
+        
+        # Check for canvas docs on any message in this exchange
+        canvas_docs = (
+            self.session.query(ChatGPTCanvasDoc)
+            .filter(ChatGPTCanvasDoc.message_id.in_(data.message_ids))
+            .all()
+        )
+        
+        if canvas_docs:
+            doc_types = list(set(d.textdoc_type for d in canvas_docs if d.textdoc_type))
+            
+            return [AnnotationResult(
+                value='has_canvas_operations',
+                confidence=1.0,
+                data={
+                    'doc_count': len(canvas_docs),
+                    'doc_types': doc_types,
+                },
+            )]
+        return []
+
+
+class GizmoAnnotator(ExchangePlatformAnnotator):
+    """Detect GPT/Gizmo usage in exchange."""
+    
+    ANNOTATION_TYPE = 'feature'
+    VERSION = '1.0'
+    
+    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+        from llm_archive.models.raw import ChatGPTMessageMeta
+        
+        # Check for gizmo usage on any message in this exchange
+        gizmo_metas = (
+            self.session.query(ChatGPTMessageMeta)
+            .filter(ChatGPTMessageMeta.message_id.in_(data.message_ids))
+            .filter(ChatGPTMessageMeta.gizmo_id.isnot(None))
+            .all()
+        )
+        
+        if gizmo_metas:
+            gizmo_ids = list(set(m.gizmo_id for m in gizmo_metas))
+            
+            results = [AnnotationResult(
+                value='has_gizmo_usage',
+                confidence=1.0,
+                data={
+                    'gizmo_count': len(gizmo_ids),
+                    'gizmo_ids': gizmo_ids,
+                },
+            )]
+            
+            # Also add individual gizmo annotations for filtering
+            for gizmo_id in gizmo_ids:
+                results.append(AnnotationResult(
+                    value=gizmo_id,
+                    key='gizmo',
+                    confidence=1.0,
+                ))
+            
+            return results
+        return []
+
+
+class AttachmentAnnotator(ExchangePlatformAnnotator):
+    """Detect file attachments in user messages."""
+    
+    ANNOTATION_TYPE = 'feature'
+    VERSION = '1.0'
+    
+    # Code-related file extensions
+    CODE_EXTENSIONS = [
+        '.py', '.js', '.ts', '.java', '.cpp', '.c', '.h', '.go', '.rs',
+        '.jsx', '.tsx', '.sql', '.sh', '.rb', '.php', '.swift', '.kt',
+    ]
+    
+    # Code-related MIME types
+    CODE_MIMES = [
+        'text/x-python', 'text/x-java', 'application/javascript',
+        'text/x-script', 'text/x-c', 'text/x-c++',
+    ]
+    
+    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+        from llm_archive.models.raw import Attachment
+        
+        # Check for attachments on user messages
+        attachments = (
+            self.session.query(Attachment)
+            .filter(Attachment.message_id.in_(data.user_message_ids))
+            .all()
+        )
+        
+        if not attachments:
+            return []
+        
+        results = []
+        code_attachments = []
+        
+        for att in attachments:
+            name = (att.file_name or '').lower()
+            mime = (att.file_type or '').lower()
+            
+            is_code = (
+                any(name.endswith(ext) for ext in self.CODE_EXTENSIONS) or
+                any(m in mime for m in self.CODE_MIMES)
+            )
+            
+            if is_code:
+                code_attachments.append(name)
+        
+        # Basic attachment annotation
+        results.append(AnnotationResult(
+            value='has_attachments',
+            confidence=1.0,
+            data={
+                'count': len(attachments),
+                'file_types': list(set(a.file_type for a in attachments if a.file_type)),
+            },
+        ))
+        
+        # Code-specific attachment annotation
+        if code_attachments:
+            results.append(AnnotationResult(
+                value='has_code_attachments',
+                confidence=1.0,
+                data={
+                    'count': len(code_attachments),
+                    'files': code_attachments[:10],  # Limit to 10
+                },
+            ))
+        
+        return results
+
+
+class TitleExtractionAnnotator(ExchangeAnnotator):
+    """Extract proposed title from assistant responses."""
+    
+    ANNOTATION_TYPE = 'metadata'
+    VERSION = '1.0'
+    
+    def annotate(self, data: ExchangeData) -> list[AnnotationResult]:
+        if not data.assistant_text:
+            return []
+        
+        title = self._extract_title(data.assistant_text)
+        if title:
+            return [AnnotationResult(
+                value=title,
+                key='proposed_title',
+                confidence=0.8,
+            )]
+        return []
+    
+    def _extract_title(self, text: str) -> str | None:
+        """Extract title from first line of assistant response."""
+        lines = text.strip().split('\n')
+        if not lines:
+            return None
+        
+        first_line = lines[0].strip()
+        
+        # Markdown header: # Title
+        if first_line.startswith('#'):
+            title = first_line.lstrip('#').strip()
+            if title:
+                return title
+        
+        # Bold header: **Title**
+        if first_line.startswith('**') and first_line.endswith('**'):
+            title = first_line.strip('*').strip()
+            if title:
+                return title
+        
+        return None
+
+
+class QuoteElaborateAnnotator(MessageTextAnnotator):
+    """Detect quote+elaborate continuation pattern in user messages."""
+    
+    ANNOTATION_TYPE = 'feature'
+    VERSION = '1.0'
+    ROLE_FILTER = 'user'
+    
+    ELABORATE_KEYWORDS = ['elaborate', 'continue', 'expand', 'more', 'explain']
+    
+    def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
+        text = data.text.strip()
+        
+        if not text.startswith('>'):
+            return []
+        
+        lines = text.split('\n')
+        if len(lines) < 2:
+            return []
+        
+        # Check if last non-empty line is an elaborate keyword
+        last_line = lines[-1].strip().lower()
+        
+        for keyword in self.ELABORATE_KEYWORDS:
+            if last_line == keyword or last_line.startswith(keyword + ' '):
+                return [AnnotationResult(
+                    value='quote_elaborate',
+                    confidence=1.0,
+                    data={'keyword': keyword},
+                )]
         
         return []

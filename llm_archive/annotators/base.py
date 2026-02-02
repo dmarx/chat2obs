@@ -398,6 +398,100 @@ class ExchangeAnnotator(Annotator):
 
 
 # ============================================================
+# Exchange Platform Annotator
+# ============================================================
+
+@dataclass
+class ExchangePlatformData:
+    """Data passed to platform feature annotation logic."""
+    exchange_id: UUID
+    dialogue_id: UUID
+    message_ids: list[UUID]
+    user_message_ids: list[UUID]
+    assistant_message_ids: list[UUID]
+    created_at: datetime | None
+
+
+class ExchangePlatformAnnotator(Annotator):
+    """
+    Base class for annotating exchanges based on platform features.
+    
+    Provides access to message IDs for querying platform feature tables:
+    - ChatGPTSearchGroup (web search)
+    - ChatGPTCodeExecution (code execution)
+    - ChatGPTCanvasDoc (canvas operations)
+    - ChatGPTMessageMeta (gizmo usage)
+    - Attachment (file attachments)
+    
+    Subclass and implement:
+    - annotate(data: ExchangePlatformData) -> list[AnnotationResult]
+    """
+    
+    ENTITY_TYPE = 'exchange'
+    
+    def compute(self) -> int:
+        """Run annotation over all exchanges."""
+        count = 0
+        
+        for data in self._iter_exchanges():
+            self.track_entity(data.created_at)
+            
+            results = self.annotate(data)
+            for result in results:
+                if self.add_result(data.exchange_id, result):
+                    count += 1
+        
+        self.finalize_cursor()
+        return count
+    
+    def _iter_exchanges(self) -> Iterator[ExchangePlatformData]:
+        """Iterate over exchanges with message IDs."""
+        from llm_archive.models import Exchange, ExchangeMessage, Message
+        
+        cursor = self.get_cursor()
+        
+        query = self.session.query(Exchange)
+        if cursor:
+            query = query.filter(Exchange.created_at > cursor)
+        
+        for exchange in query.all():
+            # Get all message IDs for this exchange
+            message_data = (
+                self.session.query(ExchangeMessage.message_id, Message.role)
+                .join(Message, ExchangeMessage.message_id == Message.id)
+                .filter(ExchangeMessage.exchange_id == exchange.id)
+                .order_by(ExchangeMessage.position)
+                .all()
+            )
+            
+            all_ids = [row[0] for row in message_data]
+            user_ids = [row[0] for row in message_data if row[1] == 'user']
+            assistant_ids = [row[0] for row in message_data if row[1] == 'assistant']
+            
+            yield ExchangePlatformData(
+                exchange_id=exchange.id,
+                dialogue_id=exchange.dialogue_id,
+                message_ids=all_ids,
+                user_message_ids=user_ids,
+                assistant_message_ids=assistant_ids,
+                created_at=exchange.created_at,
+            )
+    
+    @abstractmethod
+    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+        """
+        Analyze exchange platform features and return annotations.
+        
+        Args:
+            data: Exchange data including message IDs for platform queries
+            
+        Returns:
+            List of AnnotationResult objects (empty list if no match)
+        """
+        pass
+
+
+# ============================================================
 # Dialogue Annotator
 # ============================================================
 
