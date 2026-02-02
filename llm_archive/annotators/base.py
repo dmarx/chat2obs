@@ -398,6 +398,131 @@ class ExchangeAnnotator(Annotator):
 
 
 # ============================================================
+# Dialogue Annotator
+# ============================================================
+
+@dataclass
+class DialogueData:
+    """Data passed to dialogue annotation logic."""
+    dialogue_id: UUID
+    source: str
+    title: str | None
+    exchange_count: int
+    message_count: int
+    user_message_count: int
+    assistant_message_count: int
+    user_texts: list[str]
+    assistant_texts: list[str]
+    user_word_counts: list[int]
+    assistant_word_counts: list[int]
+    created_at: datetime | None
+    first_user_text: str | None = None
+    first_assistant_text: str | None = None
+
+
+class DialogueAnnotator(Annotator):
+    """
+    Base class for annotating dialogues with aggregate statistics.
+    
+    Handles:
+    - Querying Dialogue with related exchanges and content
+    - Computing aggregate statistics across the dialogue
+    - Cursor filtering
+    - Entity iteration
+    
+    Subclass and implement:
+    - annotate(data: DialogueData) -> list[AnnotationResult]
+    """
+    
+    ENTITY_TYPE = 'dialogue'
+    
+    def compute(self) -> int:
+        """Run annotation over all dialogues."""
+        count = 0
+        
+        for data in self._iter_dialogues():
+            self.track_entity(data.created_at)
+            
+            results = self.annotate(data)
+            for result in results:
+                if self.add_result(data.dialogue_id, result):
+                    count += 1
+        
+        self.finalize_cursor()
+        return count
+    
+    def _iter_dialogues(self) -> Iterator[DialogueData]:
+        """Iterate over dialogues with aggregate content."""
+        from llm_archive.models import Dialogue, Exchange, ExchangeContent
+        
+        cursor = self.get_cursor()
+        
+        # Get dialogues
+        query = self.session.query(Dialogue)
+        if cursor:
+            query = query.filter(Dialogue.created_at > cursor)
+        
+        for dialogue in query.all():
+            # Get exchange content for this dialogue
+            exchange_content = (
+                self.session.query(Exchange, ExchangeContent)
+                .join(ExchangeContent)
+                .filter(Exchange.dialogue_id == dialogue.id)
+                .order_by(Exchange.started_at)
+                .all()
+            )
+            
+            user_texts = []
+            assistant_texts = []
+            user_word_counts = []
+            assistant_word_counts = []
+            user_message_count = 0
+            assistant_message_count = 0
+            
+            for exchange, content in exchange_content:
+                if content.user_text:
+                    user_texts.append(content.user_text)
+                if content.assistant_text:
+                    assistant_texts.append(content.assistant_text)
+                if content.user_word_count:
+                    user_word_counts.append(content.user_word_count)
+                if content.assistant_word_count:
+                    assistant_word_counts.append(content.assistant_word_count)
+                user_message_count += exchange.user_message_count
+                assistant_message_count += exchange.assistant_message_count
+            
+            yield DialogueData(
+                dialogue_id=dialogue.id,
+                source=dialogue.source,
+                title=dialogue.title,
+                exchange_count=len(exchange_content),
+                message_count=user_message_count + assistant_message_count,
+                user_message_count=user_message_count,
+                assistant_message_count=assistant_message_count,
+                user_texts=user_texts,
+                assistant_texts=assistant_texts,
+                user_word_counts=user_word_counts,
+                assistant_word_counts=assistant_word_counts,
+                created_at=dialogue.created_at,
+                first_user_text=user_texts[0] if user_texts else None,
+                first_assistant_text=assistant_texts[0] if assistant_texts else None,
+            )
+    
+    @abstractmethod
+    def annotate(self, data: DialogueData) -> list[AnnotationResult]:
+        """
+        Analyze dialogue and return annotations to create.
+        
+        Args:
+            data: Dialogue data including texts and aggregate stats
+            
+        Returns:
+            List of AnnotationResult objects (empty list if no match)
+        """
+        pass
+
+
+# ============================================================
 # Annotation Manager
 # ============================================================
 
