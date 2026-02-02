@@ -43,11 +43,19 @@ class Annotator(ABC):
     - Only entities created after the cursor are processed
     - Bump VERSION to force reprocessing all entities
     
+    Strategy System:
+    - ANNOTATION_KEY: Primary annotation key this annotator targets
+    - PRIORITY: Execution order (higher = runs first, 0-100)
+    - Multiple annotators can target the same key with different strategies
+    - Lower-priority annotators are skipped if key is already satisfied
+    
     Subclass and implement:
     - ANNOTATION_TYPE: Type of annotation ('tag', 'title', 'feature', etc.)
     - ENTITY_TYPE: Target entity type ('message', 'exchange', 'dialogue')
     - SOURCE: Provenance ('heuristic', 'model', 'manual')
     - VERSION: Version string - bump this to reprocess all entities
+    - ANNOTATION_KEY: (optional) Primary key this annotator produces
+    - PRIORITY: (optional) Execution priority, default 50
     - compute(): Main logic to generate annotations
     """
     
@@ -56,6 +64,10 @@ class Annotator(ABC):
     ENTITY_TYPE: str = None
     SOURCE: str = 'heuristic'
     VERSION: str = '1.0'
+    
+    # Strategy system - optional
+    ANNOTATION_KEY: str | None = None  # Primary annotation key (e.g., 'code', 'latex')
+    PRIORITY: int = 50  # Higher runs first (0-100 scale)
     
     def __init__(self, session: Session):
         self.session = session
@@ -621,7 +633,14 @@ class DialogueAnnotator(Annotator):
 # ============================================================
 
 class AnnotationManager:
-    """Manages annotation operations and annotator execution."""
+    """
+    Manages annotation operations and annotator execution.
+    
+    Supports the strategy system:
+    - Annotators with the same ANNOTATION_KEY are alternative strategies
+    - Higher PRIORITY annotators run first
+    - Annotators can check has_annotation_key() to skip redundant work
+    """
     
     def __init__(self, session: Session):
         self.session = session
@@ -632,11 +651,16 @@ class AnnotationManager:
         annotator = annotator_class(self.session)
         self.annotators.append(annotator)
     
+    def _sorted_annotators(self) -> list[Annotator]:
+        """Return annotators sorted by priority (descending)."""
+        return sorted(self.annotators, key=lambda a: a.PRIORITY, reverse=True)
+    
     def run_all(self) -> dict[str, int]:
-        """Run all registered annotators."""
+        """Run all registered annotators in priority order."""
         results = {}
         
-        for annotator in self.annotators:
+        # Run in priority order (highest first)
+        for annotator in self._sorted_annotators():
             name = annotator.__class__.__name__
             try:
                 count = annotator.compute()
@@ -650,11 +674,55 @@ class AnnotationManager:
         self.session.commit()
         return results
     
+    def has_annotation_key(
+        self,
+        entity_type: str,
+        entity_id: UUID,
+        annotation_key: str,
+    ) -> bool:
+        """
+        Check if an annotation with the given key exists for an entity.
+        
+        Useful for lower-priority annotators to skip redundant work.
+        """
+        from llm_archive.models import Annotation
+        
+        exists = (
+            self.session.query(Annotation)
+            .filter(Annotation.entity_type == entity_type)
+            .filter(Annotation.entity_id == entity_id)
+            .filter(Annotation.annotation_key == annotation_key)
+            .filter(Annotation.superseded_at.is_(None))
+            .first()
+        ) is not None
+        
+        return exists
+    
+    def get_strategy_info(self) -> dict[str, list[tuple[str, int]]]:
+        """
+        Get information about registered strategies.
+        
+        Returns dict mapping annotation_key to list of (annotator_name, priority).
+        """
+        strategies = {}
+        for annotator in self.annotators:
+            key = annotator.ANNOTATION_KEY or '<none>'
+            if key not in strategies:
+                strategies[key] = []
+            strategies[key].append((annotator.name, annotator.PRIORITY))
+        
+        # Sort each list by priority descending
+        for key in strategies:
+            strategies[key].sort(key=lambda x: x[1], reverse=True)
+        
+        return strategies
+    
     def get_annotations(
         self,
         entity_type: str | None = None,
         entity_id: UUID | None = None,
         annotation_type: str | None = None,
+        annotation_key: str | None = None,
         active_only: bool = True,
     ) -> list[Annotation]:
         """Query annotations with filters."""
@@ -666,6 +734,8 @@ class AnnotationManager:
             query = query.filter(Annotation.entity_id == entity_id)
         if annotation_type:
             query = query.filter(Annotation.annotation_type == annotation_type)
+        if annotation_key:
+            query = query.filter(Annotation.annotation_key == annotation_key)
         if active_only:
             query = query.filter(Annotation.superseded_at.is_(None))
         
