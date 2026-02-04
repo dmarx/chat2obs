@@ -256,3 +256,54 @@ class AnnotatorCursor(Base):
     annotations_created = Column(Integer, nullable=False, default=0)
     
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+
+# ----------------------------------------------------------------------
+# Prompt-Response Pairs (unique by response)
+# ----------------------------------------------------------------------
+
+class PromptResponse(Base):
+    """
+    Direct prompt-response association without tree dependency.
+    
+    Each record pairs a user prompt with one of its responses.
+    A prompt can have multiple responses (regenerations).
+    Each response appears in exactly one record.
+    """
+    __tablename__ = "prompt_responses"
+    __table_args__ = {"schema": "derived"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    dialogue_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.dialogues.id", ondelete="CASCADE"), nullable=False)
+    
+    prompt_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
+    response_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
+    
+    prompt_position = Column(Integer, nullable=False)
+    response_position = Column(Integer, nullable=False)
+    
+    prompt_role = Column(String, nullable=False)
+    response_role = Column(String, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    content = relationship("PromptResponseContent", back_populates="prompt_response", uselist=False, cascade="all, delete-orphan")
+
+
+class PromptResponseContent(Base):
+    """Denormalized text content for prompt-response pairs."""
+    __tablename__ = "prompt_response_content"
+    __table_args__ = {"schema": "derived"}
+    
+    prompt_response_id = Column(PG_UUID(as_uuid=True), ForeignKey("derived.prompt_responses.id", ondelete="CASCADE"), primary_key=True)
+    
+    prompt_text = Column(Text)
+    response_text = Column(Text)
+    
+    prompt_word_count = Column(Integer)
+    response_word_count = Column(Integer)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    prompt_response = relationship("PromptResponse", back_populates="content")
