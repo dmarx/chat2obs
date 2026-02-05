@@ -4,7 +4,7 @@
 import pytest
 from uuid import uuid4
 
-from llm_archive.annotations import (
+from llm_archive.annotations.core import (
     EntityType,
     ValueType,
     AnnotationResult,
