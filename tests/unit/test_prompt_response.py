@@ -320,8 +320,8 @@ class TestNaiveTitleAnnotator:
         annotator = NaiveTitleAnnotator.__new__(NaiveTitleAnnotator)
         results = annotator.annotate(data)
         
-        # First line is whitespace, so no title extracted
-        assert len(results) == 0
+        # .strip() is called on the document,so the title should be extracted.
+        assert len(results) == 1
     
     def test_strips_title_whitespace(self, pr_id):
         """Should strip whitespace from extracted title."""
