@@ -30,6 +30,8 @@ from llm_archive.models.derived import (
     ExchangeContent,
     Annotation,
     ContentHash,
+    PromptResponse,
+    PromptResponseContent,
 )
 
 __all__ = [
@@ -63,4 +65,6 @@ __all__ = [
     "ExchangeContent",
     "Annotation",
     "ContentHash",
+    "PromptResponse",
+    "PromptResponseContent",
 ]

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -17,6 +18,7 @@ from llm_archive.models import (
 from llm_archive.extractors.base import (
     BaseExtractor, parse_timestamp, normalize_role, safe_get, compute_content_hash
 )
+from llm_archive.annotations.core import AnnotationWriter, EntityType
 
 
 class ChatGPTExtractor(BaseExtractor):
@@ -31,6 +33,7 @@ class ChatGPTExtractor(BaseExtractor):
         incremental: bool = False,
     ):
         super().__init__(session, assume_immutable=assume_immutable, incremental=incremental)
+        self.annotation_writer = AnnotationWriter(session)
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
         """
@@ -206,6 +209,7 @@ class ChatGPTExtractor(BaseExtractor):
         # Delete related data before re-extracting
         self._delete_message_content(message.id)
         self._delete_message_metadata(message.id)
+        self._delete_message_annotations(message.id)
         
         # Re-extract related data
         self._extract_content_parts(message.id, msg_data)
@@ -220,6 +224,15 @@ class ChatGPTExtractor(BaseExtractor):
         self.session.query(Attachment).filter(
             Attachment.message_id == message_id
         ).delete()
+    
+    def _delete_message_annotations(self, message_id: UUID):
+        """Delete annotations for a message (for re-extraction)."""
+        # Delete from all message annotation tables
+        for value_type in ['flag', 'string', 'numeric', 'json']:
+            self.session.execute(
+                text(f"DELETE FROM derived.message_annotations_{value_type} WHERE entity_id = :id"),
+                {'id': message_id}
+            )
     
     def _create_message(self, dialogue_id: UUID, msg_data: dict[str, Any], content_hash: str) -> UUID | None:
         """Create a new message."""
@@ -424,16 +437,55 @@ class ChatGPTExtractor(BaseExtractor):
             self.session.add(attachment)
     
     def _extract_chatgpt_meta(self, message_id: UUID, msg_data: dict[str, Any]):
-        """Extract ChatGPT-specific metadata."""
+        """
+        Extract ChatGPT-specific metadata and write annotations.
+        
+        Writes:
+        - gizmo_id as message string annotation
+        - has_gizmo as message flag annotation
+        - model_slug as message string annotation
+        
+        Also creates ChatGPTMessageMeta record for backwards compatibility.
+        """
         metadata = msg_data.get('metadata', {})
         
-        # Message metadata
+        # Write gizmo_id as message annotation (if present)
+        gizmo_id = metadata.get('gizmo_id')
+        if gizmo_id:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='gizmo_id',
+                value=gizmo_id,
+                source='ingestion',
+                source_version='chatgpt_extractor_1.0',
+            )
+            # Also write a flag for "has gizmo" for easier filtering
+            self.annotation_writer.write_flag(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='has_gizmo',
+                source='ingestion',
+            )
+        
+        # Write model_slug as annotation (useful for filtering by model)
+        model_slug = metadata.get('model_slug')
+        if model_slug:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='model_slug',
+                value=model_slug,
+                source='ingestion',
+            )
+        
+        # Create ChatGPTMessageMeta record (backwards compatibility)
         meta = ChatGPTMessageMeta(
             message_id=message_id,
-            model_slug=metadata.get('model_slug'),
+            model_slug=model_slug,
             status=msg_data.get('status'),
             end_turn=msg_data.get('end_turn'),
-            gizmo_id=metadata.get('gizmo_id'),
+            gizmo_id=gizmo_id,
             source_json=metadata,
         )
         self.session.add(meta)
@@ -533,16 +585,184 @@ class ChatGPTExtractor(BaseExtractor):
         self.session.add(generation)
     
     def _extract_canvas_doc(self, message_id: UUID, canvas: dict[str, Any]):
-        """Extract canvas document data."""
+        """
+        Extract canvas document as content_part + annotations.
+        
+        Creates:
+        - content_part with part_type='canvas' containing the canvas content
+        - String annotation for canvas title
+        - String annotation for textdoc_id (for version tracking)
+        - Numeric annotation for version number
+        - ChatGPTCanvasDoc record for backwards compatibility
+        """
+        textdoc_id = canvas.get('textdoc_id')
+        version = canvas.get('version')
+        title = canvas.get('title')
+        
+        # Get canvas content (may be in different fields depending on export format)
+        canvas_content = canvas.get('content') or canvas.get('textdoc_content')
+        
+        # Get current max sequence for this message
+        max_seq_result = self.session.execute(
+            text("""
+                SELECT COALESCE(MAX(sequence), -1) 
+                FROM raw.content_parts 
+                WHERE message_id = :msg_id
+            """),
+            {'msg_id': message_id}
+        )
+        max_seq = max_seq_result.scalar() or -1
+        
+        # Create content_part for canvas
+        content_part = ContentPart(
+            message_id=message_id,
+            sequence=max_seq + 1,
+            part_type='canvas',
+            text_content=canvas_content,
+            source_json=canvas,
+        )
+        self.session.add(content_part)
+        self.session.flush()
+        
+        # Write canvas title as content_part annotation
+        if title:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='title',
+                value=title,
+                source='ingestion',
+                reason='canvas_metadata',
+            )
+        
+        # Write textdoc_id for version tracking
+        if textdoc_id:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='textdoc_id',
+                value=textdoc_id,
+                source='ingestion',
+            )
+        
+        # Write version number
+        if version is not None:
+            self.annotation_writer.write_numeric(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='canvas_version',
+                value=version,
+                source='ingestion',
+            )
+        
+        # Write document type
+        textdoc_type = canvas.get('textdoc_type')
+        if textdoc_type:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='textdoc_type',
+                value=textdoc_type,
+                source='ingestion',
+            )
+        
+        # Create ChatGPTCanvasDoc record for backwards compatibility
         doc = ChatGPTCanvasDoc(
             message_id=message_id,
-            textdoc_id=canvas.get('textdoc_id'),
-            textdoc_type=canvas.get('textdoc_type'),
-            version=canvas.get('version'),
-            title=canvas.get('title'),
+            textdoc_id=textdoc_id,
+            textdoc_type=textdoc_type,
+            version=version,
+            title=title,
             from_version=canvas.get('from_version'),
             content_length=canvas.get('textdoc_content_length'),
             has_user_edit=canvas.get('has_user_edit'),
             source_json=canvas,
         )
         self.session.add(doc)
+
+
+# ============================================================
+# Post-extraction utilities
+# ============================================================
+
+def mark_latest_canvas_versions(session: Session) -> int:
+    """
+    Mark the latest version of each canvas document.
+    
+    Run this after extraction is complete. For each textdoc_id,
+    finds the content_part with the highest version number and
+    marks it with 'is_latest_canvas_version' flag.
+    
+    Returns:
+        Count of canvas documents marked as latest.
+    
+    Usage:
+        extractor.extract_all(data)
+        session.commit()
+        mark_latest_canvas_versions(session)
+    """
+    writer = AnnotationWriter(session)
+    
+    # Find latest version for each textdoc_id
+    latest_versions = session.execute(
+        text("""
+            WITH canvas_versions AS (
+                SELECT 
+                    cp.id as content_part_id,
+                    s.annotation_value as textdoc_id,
+                    n.annotation_value as version_num,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.annotation_value 
+                        ORDER BY n.annotation_value DESC
+                    ) as rn
+                FROM raw.content_parts cp
+                JOIN derived.content_part_annotations_string s 
+                    ON s.entity_id = cp.id AND s.annotation_key = 'textdoc_id'
+                JOIN derived.content_part_annotations_numeric n
+                    ON n.entity_id = cp.id AND n.annotation_key = 'canvas_version'
+            )
+            SELECT content_part_id, textdoc_id
+            FROM canvas_versions
+            WHERE rn = 1
+        """)
+    )
+    
+    count = 0
+    for row in latest_versions:
+        writer.write_flag(
+            entity_type=EntityType.CONTENT_PART,
+            entity_id=row.content_part_id,
+            key='is_latest_canvas_version',
+            source='ingestion',
+            reason='highest_version_number',
+        )
+        count += 1
+    
+    session.commit()
+    return count
+
+
+def find_wiki_gizmo_messages(session: Session, gizmo_id: str) -> list[UUID]:
+    """
+    Find all message IDs that used a specific gizmo.
+    
+    Useful for identifying likely wiki article candidates
+    if you know which gizmo was used to generate them.
+    
+    Args:
+        session: Database session
+        gizmo_id: The gizmo ID to search for (e.g., 'g-xxxxx')
+        
+    Returns:
+        List of message UUIDs
+    """
+    result = session.execute(
+        text("""
+            SELECT entity_id 
+            FROM derived.message_annotations_string 
+            WHERE annotation_key = 'gizmo_id' 
+              AND annotation_value = :gizmo_id
+        """),
+        {'gizmo_id': gizmo_id}
+    )
+    return [row[0] for row in result]

@@ -10,7 +10,7 @@ from loguru import logger
 from llm_archive.config import DATABASE_URL
 from llm_archive.db import get_session, init_schema, reset_schema
 from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
-from llm_archive.builders import TreeBuilder, ExchangeBuilder, HashBuilder
+from llm_archive.builders import TreeBuilder, ExchangeBuilder, HashBuilder, PromptResponseBuilder
 from llm_archive.annotators import (
     AnnotationManager,
     WikiLinkAnnotator,
@@ -18,6 +18,8 @@ from llm_archive.annotators import (
     LatexAnnotator,
     ContinuationAnnotator,
     ExchangeTypeAnnotator,
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
 )
 
 
@@ -165,12 +167,21 @@ class CLI:
         
         return counts
     
+
+    def build_prompt_responses(self):
+        """Build prompt-response pairs (no tree dependency)."""
+        with get_session(self.db_url) as session:
+            builder = PromptResponseBuilder(session)
+            counts = builder.build_all()
+        return counts
+
     def build_all(self):
         """Build all derived structures."""
         results = {}
         results['trees'] = self.build_trees()
         results['exchanges'] = self.build_exchanges()
         results['hashes'] = self.build_hashes()
+        results['prompt-responses'] = self.build_prompt_responses()
         return results
     
     # ================================================================
@@ -188,6 +199,9 @@ class CLI:
             manager.register(ContinuationAnnotator)
             # Exchange annotators
             manager.register(ExchangeTypeAnnotator)
+            # Prompt-response annotators
+            manager.register(WikiCandidateAnnotator)
+            manager.register(NaiveTitleAnnotator)
             results = manager.run_all()
         
         return results

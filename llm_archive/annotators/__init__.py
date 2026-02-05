@@ -155,6 +155,13 @@ from llm_archive.annotators.chatgpt import (
     ChatGPTDalleAnnotator,
 )
 
+from llm_archive.annotators.prompt_response import (
+    PromptResponseAnnotator,
+    PromptResponseData,
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
+)
+
 __all__ = [
     # Base classes
     "Annotator",
@@ -200,4 +207,9 @@ __all__ = [
     "ChatGPTGizmoAnnotator",
     "ChatGPTAttachmentAnnotator",
     "ChatGPTDalleAnnotator",
+    # Prompt-response annotators
+    "PromptResponseAnnotator",
+    "PromptResponseData",
+    "WikiCandidateAnnotator",
+    "NaiveTitleAnnotator",
 ]
