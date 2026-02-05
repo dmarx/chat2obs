@@ -99,62 +99,6 @@ Priority Guidelines:
 Bump VERSION to reprocess all entities with new logic.
 """
 
-from llm_archive.annotators.base import (
-    # Base classes
-    Annotator,
-    AnnotationManager,
-    AnnotationResult,
-    # Message annotation
-    MessageTextAnnotator,
-    MessageTextData,
-    # Exchange annotation  
-    ExchangeAnnotator,
-    ExchangeData,
-    ExchangePlatformAnnotator,
-    ExchangePlatformData,
-    # Dialogue annotation
-    DialogueAnnotator,
-    DialogueData,
-)
-
-from llm_archive.annotators.message import (
-    # Code detection (priority order)
-    CodeBlockAnnotator,
-    ScriptHeaderAnnotator,
-    CodeStructureAnnotator,
-    FunctionDefinitionAnnotator,
-    ImportStatementAnnotator,
-    CodeKeywordDensityAnnotator,
-    # Other message features
-    WikiLinkAnnotator,
-    LatexAnnotator,
-    ContinuationAnnotator,
-    QuoteElaborateAnnotator,
-)
-
-from llm_archive.annotators.exchange import (
-    ExchangeTypeAnnotator,
-    CodeEvidenceAnnotator,
-    TitleExtractionAnnotator,
-)
-
-from llm_archive.annotators.dialogue import (
-    DialogueLengthAnnotator,
-    PromptStatsAnnotator,
-    FirstExchangeAnnotator,
-    InteractionPatternAnnotator,
-    CodingAssistanceAnnotator,
-)
-
-from llm_archive.annotators.chatgpt import (
-    ChatGPTWebSearchAnnotator,
-    ChatGPTCodeExecutionAnnotator,
-    ChatGPTCanvasAnnotator,
-    ChatGPTGizmoAnnotator,
-    ChatGPTAttachmentAnnotator,
-    ChatGPTDalleAnnotator,
-)
-
 from llm_archive.annotators.prompt_response import (
     PromptResponseAnnotator,
     PromptResponseData,
@@ -163,50 +107,7 @@ from llm_archive.annotators.prompt_response import (
 )
 
 __all__ = [
-    # Base classes
-    "Annotator",
-    "AnnotationManager",
-    "AnnotationResult",
-    # Message annotation base
-    "MessageTextAnnotator",
-    "MessageTextData",
-    # Exchange annotation base
-    "ExchangeAnnotator",
-    "ExchangeData",
-    "ExchangePlatformAnnotator",
-    "ExchangePlatformData",
-    # Dialogue annotation base
-    "DialogueAnnotator",
-    "DialogueData",
-    # Message annotators - Code detection
-    "CodeBlockAnnotator",
-    "ScriptHeaderAnnotator",
-    "CodeStructureAnnotator",
-    "FunctionDefinitionAnnotator",
-    "ImportStatementAnnotator",
-    "CodeKeywordDensityAnnotator",
-    # Message annotators - Other features
-    "WikiLinkAnnotator",
-    "LatexAnnotator",
-    "ContinuationAnnotator",
-    "QuoteElaborateAnnotator",
-    # Exchange annotators
-    "ExchangeTypeAnnotator",
-    "CodeEvidenceAnnotator",
-    "TitleExtractionAnnotator",
-    # Dialogue annotators
-    "DialogueLengthAnnotator",
-    "PromptStatsAnnotator",
-    "FirstExchangeAnnotator",
-    "InteractionPatternAnnotator",
-    "CodingAssistanceAnnotator",
-    # ChatGPT-specific annotators
-    "ChatGPTWebSearchAnnotator",
-    "ChatGPTCodeExecutionAnnotator",
-    "ChatGPTCanvasAnnotator",
-    "ChatGPTGizmoAnnotator",
-    "ChatGPTAttachmentAnnotator",
-    "ChatGPTDalleAnnotator",
+
     # Prompt-response annotators
     "PromptResponseAnnotator",
     "PromptResponseData",
