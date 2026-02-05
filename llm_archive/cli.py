@@ -10,14 +10,9 @@ from loguru import logger
 from llm_archive.config import DATABASE_URL
 from llm_archive.db import get_session, init_schema, reset_schema
 from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
-from llm_archive.builders import TreeBuilder, ExchangeBuilder, HashBuilder, PromptResponseBuilder
+from llm_archive.builders import PromptResponseBuilder
 from llm_archive.annotators import (
     AnnotationManager,
-    WikiLinkAnnotator,
-    CodeBlockAnnotator,
-    LatexAnnotator,
-    ContinuationAnnotator,
-    ExchangeTypeAnnotator,
     WikiCandidateAnnotator,
     NaiveTitleAnnotator,
 )
@@ -143,30 +138,6 @@ class CLI:
     # Build Derived Structures
     # ================================================================
     
-    def build_trees(self):
-        """Build dialogue tree analysis."""
-        with get_session(self.db_url) as session:
-            builder = TreeBuilder(session)
-            counts = builder.build_all()
-        
-        return counts
-    
-    def build_exchanges(self):
-        """Build exchanges from dialogue trees."""
-        with get_session(self.db_url) as session:
-            builder = ExchangeBuilder(session)
-            counts = builder.build_all()
-        
-        return counts
-    
-    def build_hashes(self):
-        """Build content hashes for deduplication."""
-        with get_session(self.db_url) as session:
-            builder = HashBuilder(session)
-            counts = builder.build_all()
-        
-        return counts
-    
 
     def build_prompt_responses(self):
         """Build prompt-response pairs (no tree dependency)."""
@@ -178,9 +149,6 @@ class CLI:
     def build_all(self):
         """Build all derived structures."""
         results = {}
-        results['trees'] = self.build_trees()
-        results['exchanges'] = self.build_exchanges()
-        results['hashes'] = self.build_hashes()
         results['prompt-responses'] = self.build_prompt_responses()
         return results
     
@@ -193,12 +161,13 @@ class CLI:
         with get_session(self.db_url) as session:
             manager = AnnotationManager(session)
             # Message annotators
-            manager.register(WikiLinkAnnotator)
-            manager.register(CodeBlockAnnotator)
-            manager.register(LatexAnnotator)
-            manager.register(ContinuationAnnotator)
-            # Exchange annotators
-            manager.register(ExchangeTypeAnnotator)
+            # manager.register(WikiLinkAnnotator)
+            # manager.register(CodeBlockAnnotator)
+            # manager.register(LatexAnnotator)
+            # manager.register(ContinuationAnnotator)
+            # # Exchange annotators
+            # manager.register(ExchangeTypeAnnotator)
+            
             # Prompt-response annotators
             manager.register(WikiCandidateAnnotator)
             manager.register(NaiveTitleAnnotator)
@@ -209,29 +178,6 @@ class CLI:
     # ================================================================
     # Analysis
     # ================================================================
-    
-    def find_duplicates(
-        self,
-        entity_type: str = 'exchange',
-        scope: str = 'assistant',
-    ):
-        """Find duplicate content."""
-        with get_session(self.db_url) as session:
-            builder = HashBuilder(session)
-            duplicates = builder.find_duplicates(
-                entity_type=entity_type,
-                scope=scope,
-            )
-        
-        logger.info(f"Found {len(duplicates)} duplicate groups")
-        
-        for dup in duplicates[:10]:
-            print(f"\nHash: {dup['hash'][:16]}...")
-            print(f"  Type: {dup['entity_type']}, Scope: {dup['scope']}")
-            print(f"  Count: {dup['count']}")
-            print(f"  IDs: {[str(i)[:8] for i in dup['entity_ids'][:5]]}")
-        
-        return duplicates
     
     def stats(self):
         """Show database statistics."""
@@ -259,46 +205,10 @@ class CLI:
             ).fetchall()
             stats['by_source'] = {s: c for s, c in sources}
             
-            # Derived counts
-            stats['dialogue_trees'] = session.execute(
-                text("SELECT COUNT(*) FROM derived.dialogue_trees")
-            ).scalar()
-            
-            stats['linear_sequences'] = session.execute(
-                text("SELECT COUNT(*) FROM derived.linear_sequences")
-            ).scalar()
-            
-            stats['exchanges'] = session.execute(
-                text("SELECT COUNT(*) FROM derived.exchanges")
-            ).scalar()
-            
             stats['annotations'] = session.execute(
                 text("SELECT COUNT(*) FROM derived.annotations WHERE superseded_at IS NULL")
             ).scalar()
             
-            stats['content_hashes'] = session.execute(
-                text("SELECT COUNT(*) FROM derived.content_hashes")
-            ).scalar()
-            
-            # Tree stats
-            tree_stats = session.execute(
-                text("""
-                    SELECT 
-                        COUNT(*) as total,
-                        SUM(CASE WHEN is_linear THEN 1 ELSE 0 END) as linear,
-                        SUM(CASE WHEN has_regenerations THEN 1 ELSE 0 END) as with_regenerations,
-                        SUM(CASE WHEN has_edits THEN 1 ELSE 0 END) as with_edits
-                    FROM derived.dialogue_trees
-                """)
-            ).fetchone()
-            
-            if tree_stats:
-                stats['tree_analysis'] = {
-                    'total': tree_stats[0],
-                    'linear': tree_stats[1],
-                    'with_regenerations': tree_stats[2],
-                    'with_edits': tree_stats[3],
-                }
         
         # Print nicely
         print("\n=== LLM Archive Statistics ===\n")
@@ -309,19 +219,7 @@ class CLI:
         print(f"  By Source: {stats['by_source']}")
         
         print("\nDerived Data:")
-        print(f"  Dialogue Trees: {stats['dialogue_trees']}")
-        print(f"  Linear Sequences: {stats['linear_sequences']}")
-        print(f"  Exchanges: {stats['exchanges']}")
         print(f"  Annotations: {stats['annotations']}")
-        print(f"  Content Hashes: {stats['content_hashes']}")
-        
-        if stats.get('tree_analysis'):
-            ta = stats['tree_analysis']
-            print("\nTree Analysis:")
-            print(f"  Total: {ta['total']}")
-            print(f"  Linear: {ta['linear']}")
-            print(f"  With Regenerations: {ta['with_regenerations']}")
-            print(f"  With Edits: {ta['with_edits']}")
         
         return stats
     
