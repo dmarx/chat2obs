@@ -456,7 +456,8 @@ class ChatGPTExtractor(BaseExtractor):
         # Canvas documents
         canvas = metadata.get('canvas')
         if canvas:
-            self._extract_canvas_doc(message_id, canvas)
+            #self._extract_canvas_doc(message_id, canvas)
+            self._extract_canvas_doc_with_content(message_id, canvas)
     
     def _extract_search_group(self, message_id: UUID, group_data: dict[str, Any]):
         """Extract a search result group and its entries."""
