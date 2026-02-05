@@ -18,7 +18,7 @@ from llm_archive.models import (
 from llm_archive.extractors.base import (
     BaseExtractor, parse_timestamp, normalize_role, safe_get, compute_content_hash
 )
-from llm_archive.annotations import AnnotationWriter, EntityType
+from llm_archive.annotations.core import AnnotationWriter, EntityType
 
 
 class ChatGPTExtractor(BaseExtractor):
