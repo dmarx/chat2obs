@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -17,6 +18,9 @@ from llm_archive.models import (
 from llm_archive.extractors.base import (
     BaseExtractor, parse_timestamp, normalize_role, safe_get, compute_content_hash
 )
+from llm_archive.annotations.core import AnnotationWriter, EntityType, ValueType
+
+
 
 
 class ChatGPTExtractor(BaseExtractor):
@@ -31,6 +35,7 @@ class ChatGPTExtractor(BaseExtractor):
         incremental: bool = False,
     ):
         super().__init__(session, assume_immutable=assume_immutable, incremental=incremental)
+        self.annotation_writer = AnnotationWriter(session)
     
     def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
         """
@@ -546,3 +551,261 @@ class ChatGPTExtractor(BaseExtractor):
             source_json=canvas,
         )
         self.session.add(doc)
+
+
+########################################################################################################
+
+    
+    def _extract_chatgpt_meta_with_annotations(
+        self, 
+        message_id: UUID, 
+        msg_data: dict[str, Any]
+    ):
+        """
+        Extract ChatGPT-specific metadata WITH annotation writing.
+        
+        Replace the existing _extract_chatgpt_meta method.
+        """
+        metadata = msg_data.get('metadata', {})
+        
+        # Write gizmo_id as message annotation (if present)
+        gizmo_id = metadata.get('gizmo_id')
+        if gizmo_id:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='gizmo_id',
+                value=gizmo_id,
+                source='ingestion',
+                source_version='chatgpt_extractor_1.0',
+            )
+            # Also write a flag for "has gizmo" for easier filtering
+            self.annotation_writer.write_flag(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='has_gizmo',
+                source='ingestion',
+            )
+        
+        # Write model_slug as annotation (useful for filtering by model)
+        model_slug = metadata.get('model_slug')
+        if model_slug:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='model_slug',
+                value=model_slug,
+                source='ingestion',
+            )
+        
+        # Continue with existing ChatGPTMessageMeta extraction
+        # (can keep this for backwards compatibility, or remove if fully migrating)
+        from llm_archive.models import ChatGPTMessageMeta
+        meta = ChatGPTMessageMeta(
+            message_id=message_id,
+            model_slug=model_slug,
+            status=msg_data.get('status'),
+            end_turn=msg_data.get('end_turn'),
+            gizmo_id=gizmo_id,
+            source_json=metadata,
+        )
+        self.session.add(meta)
+        
+        # Search result groups
+        search_groups = metadata.get('search_result_groups', [])
+        for group_data in search_groups:
+            self._extract_search_group(message_id, group_data)
+        
+        # Code executions
+        agg_result = metadata.get('aggregate_result')
+        if agg_result:
+            self._extract_code_execution(message_id, agg_result)
+        
+        # Canvas documents - now with content_part integration
+        canvas = metadata.get('canvas')
+        if canvas:
+            self._extract_canvas_doc_with_content(message_id, canvas)
+
+    
+    def _extract_canvas_doc_with_content(
+        self, 
+        message_id: UUID, 
+        canvas: dict[str, Any]
+    ):
+        """
+        Extract canvas document as content_part + annotations.
+        
+        Creates:
+        - content_part with part_type='canvas' containing the canvas content
+        - String annotation for canvas title
+        - String annotation for textdoc_id (for version tracking)
+        - Numeric annotation for version number
+        
+        Replace the existing _extract_canvas_doc method.
+        """
+        from llm_archive.models import ContentPart, ChatGPTCanvasDoc
+        
+        textdoc_id = canvas.get('textdoc_id')
+        version = canvas.get('version')
+        title = canvas.get('title')
+        
+        # 1. Create content_part with canvas content
+        # Note: The actual canvas content might be in a different location
+        # in the export - adjust based on actual data structure
+        canvas_content = canvas.get('content') or canvas.get('textdoc_content')
+        
+        # Get current part_index for this message
+        max_index = self.session.execute(
+            text("""
+                SELECT COALESCE(MAX(part_index), -1) 
+                FROM raw.content_parts 
+                WHERE message_id = :msg_id
+            """),
+            {'msg_id': message_id}
+        ).scalar()
+        
+        content_part = ContentPart(
+            message_id=message_id,
+            part_index=(max_index or -1) + 1,
+            part_type='canvas',
+            text_content=canvas_content,
+            source_json=canvas,
+        )
+        self.session.add(content_part)
+        self.session.flush()
+        
+        # 2. Write canvas title as content_part annotation
+        if title:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='title',
+                value=title,
+                source='ingestion',
+                reason='canvas_metadata',
+            )
+        
+        # 3. Write textdoc_id for version tracking
+        if textdoc_id:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='textdoc_id',
+                value=textdoc_id,
+                source='ingestion',
+            )
+        
+        # 4. Write version number
+        if version is not None:
+            self.annotation_writer.write_numeric(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='canvas_version',
+                value=version,
+                source='ingestion',
+            )
+        
+        # 5. Write document type
+        textdoc_type = canvas.get('textdoc_type')
+        if textdoc_type:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='textdoc_type',
+                value=textdoc_type,
+                source='ingestion',
+            )
+        
+        # Also keep the ChatGPTCanvasDoc record for backwards compatibility
+        doc = ChatGPTCanvasDoc(
+            message_id=message_id,
+            textdoc_id=textdoc_id,
+            textdoc_type=textdoc_type,
+            version=version,
+            title=title,
+            from_version=canvas.get('from_version'),
+            content_length=canvas.get('textdoc_content_length'),
+            has_user_edit=canvas.get('has_user_edit'),
+            source_json=canvas,
+        )
+        self.session.add(doc)
+
+
+###################################################################
+
+
+def mark_latest_canvas_versions(session: Session):
+    """
+    Mark the latest version of each canvas document.
+    
+    Run this after extraction is complete. For each textdoc_id,
+    finds the content_part with the highest version number and
+    marks it with 'is_latest_canvas_version' flag.
+    
+    Usage:
+        extractor.extract_all(data)
+        mark_latest_canvas_versions(session)
+    """
+    writer = AnnotationWriter(session)
+    
+    # Find latest version for each textdoc_id
+    latest_versions = session.execute(
+        text("""
+            WITH canvas_versions AS (
+                SELECT 
+                    cp.id as content_part_id,
+                    s.annotation_value as textdoc_id,
+                    n.annotation_value as version_num,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.annotation_value 
+                        ORDER BY n.annotation_value DESC
+                    ) as rn
+                FROM raw.content_parts cp
+                JOIN derived.content_part_annotations_string s 
+                    ON s.entity_id = cp.id AND s.annotation_key = 'textdoc_id'
+                JOIN derived.content_part_annotations_numeric n
+                    ON n.entity_id = cp.id AND n.annotation_key = 'canvas_version'
+            )
+            SELECT content_part_id, textdoc_id
+            FROM canvas_versions
+            WHERE rn = 1
+        """)
+    )
+    
+    count = 0
+    for row in latest_versions:
+        writer.write_flag(
+            entity_type=EntityType.CONTENT_PART,
+            entity_id=row.content_part_id,
+            key='is_latest_canvas_version',
+            source='ingestion',
+            reason='highest_version_number',
+        )
+        count += 1
+    
+    session.commit()
+    return count
+
+
+# ============================================================
+# ADDITION 5: Helper to find wiki candidates by gizmo
+# ============================================================
+
+def find_wiki_gizmo_messages(session: Session, gizmo_id: str) -> list[UUID]:
+    """
+    Find all message IDs that used a specific gizmo.
+    
+    Useful for identifying likely wiki article candidates
+    if you know which gizmo was used to generate them.
+    """
+    result = session.execute(
+        text("""
+            SELECT entity_id 
+            FROM derived.message_annotations_string 
+            WHERE annotation_key = 'gizmo_id' 
+              AND annotation_value = :gizmo_id
+        """),
+        {'gizmo_id': gizmo_id}
+    )
+    return [row[0] for row in result]
+
