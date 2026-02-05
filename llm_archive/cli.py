@@ -12,7 +12,6 @@ from llm_archive.db import get_session, init_schema, reset_schema
 from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
 from llm_archive.builders import PromptResponseBuilder
 from llm_archive.annotators import (
-    AnnotationManager,
     WikiCandidateAnnotator,
     NaiveTitleAnnotator,
 )
@@ -158,8 +157,9 @@ class CLI:
     
     def annotate(self):
         """Run all annotators."""
+        results = {}
         with get_session(self.db_url) as session:
-            manager = AnnotationManager(session)
+            #manager = AnnotationManager(session)
             # Message annotators
             # manager.register(WikiLinkAnnotator)
             # manager.register(CodeBlockAnnotator)
@@ -169,9 +169,11 @@ class CLI:
             # manager.register(ExchangeTypeAnnotator)
             
             # Prompt-response annotators
-            manager.register(WikiCandidateAnnotator)
-            manager.register(NaiveTitleAnnotator)
-            results = manager.run_all()
+            #manager.register(WikiCandidateAnnotator)
+            #manager.register(NaiveTitleAnnotator)
+            #results = manager.run_all()
+            results['wiki candidates'] = WikiCandidateAnnotator(session).compute()
+            results['naive titles'] = NaiveTitleAnnotator(session).compute()
         
         return results
     
