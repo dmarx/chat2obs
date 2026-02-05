@@ -39,7 +39,3 @@ class PromptResponse(Base):
     response_role = Column(String, nullable=False)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    content = relationship("PromptResponseContent", back_populates="prompt_response", uselist=False, cascade="all, delete-orphan")
-
-
