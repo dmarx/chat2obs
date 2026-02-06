@@ -166,14 +166,15 @@ class CodeBlockAnnotator(ContentPartAnnotator):
     PART_TYPE_FILTER = 'text'
     ROLE_FILTER = 'assistant'
     
-    # Pattern to match code blocks with optional language
-    CODE_BLOCK_PATTERN = re.compile(r'```(\w*)\n?')
+    # Pattern to match complete code blocks: ```lang\n...content...```
+    # Captures the optional language specifier
+    CODE_BLOCK_PATTERN = re.compile(r'```(\w*)\n?[\s\S]*?```')
     
     def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
         if not data.text_content:
             return []
         
-        # Find all code blocks
+        # Find all complete code blocks
         matches = list(self.CODE_BLOCK_PATTERN.finditer(data.text_content))
         
         if not matches:
