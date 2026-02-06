@@ -253,7 +253,7 @@ class AnnotationWriter:
                 INSERT INTO {table} 
                     (entity_id, annotation_key, annotation_value, confidence, reason, source, source_version)
                 VALUES 
-                    (:entity_id, :key, :value::jsonb, :confidence, :reason, :source, :source_version)
+                    (:entity_id, :key, CAST(:value AS jsonb), :confidence, :reason, :source, :source_version)
                 ON CONFLICT (entity_id, annotation_key) DO UPDATE SET
                     annotation_value = EXCLUDED.annotation_value,
                     confidence = EXCLUDED.confidence,
