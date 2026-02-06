@@ -103,53 +103,82 @@ def db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
     connection.close()
 
 
+# Cleanup tables in reverse dependency order
+CLEANUP_TABLES = [
+    # Annotation tables (new typed tables)
+    "derived.prompt_response_annotations_json",
+    "derived.prompt_response_annotations_numeric",
+    "derived.prompt_response_annotations_string",
+    "derived.prompt_response_annotations_flag",
+    "derived.content_part_annotations_json",
+    "derived.content_part_annotations_numeric",
+    "derived.content_part_annotations_string",
+    "derived.content_part_annotations_flag",
+    "derived.message_annotations_json",
+    "derived.message_annotations_numeric",
+    "derived.message_annotations_string",
+    "derived.message_annotations_flag",
+    "derived.dialogue_annotations_json",
+    "derived.dialogue_annotations_numeric",
+    "derived.dialogue_annotations_string",
+    "derived.dialogue_annotations_flag",
+    # Prompt-response tables
+    "derived.prompt_response_content",
+    "derived.prompt_responses",
+    # Legacy derived tables (may not exist)
+    "derived.annotator_cursors",
+    "derived.annotations",
+    "derived.content_hashes",
+    "derived.exchange_content",
+    "derived.exchange_messages",
+    "derived.sequence_exchanges",
+    "derived.exchanges",
+    "derived.sequence_messages",
+    "derived.linear_sequences",
+    "derived.message_paths",
+    "derived.dialogue_trees",
+    # Raw tables
+    "raw.chatgpt_canvas_docs",
+    "raw.chatgpt_dalle_generations",
+    "raw.chatgpt_code_outputs",
+    "raw.chatgpt_code_executions",
+    "raw.chatgpt_search_entries",
+    "raw.chatgpt_search_groups",
+    "raw.chatgpt_message_meta",
+    "raw.claude_message_meta",
+    "raw.citations",
+    "raw.attachments",
+    "raw.content_parts",
+    "raw.messages",
+    "raw.dialogues",
+]
+
+
 @pytest.fixture
 def clean_db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
     """
     Create a database session that commits changes.
     Use when you need data to persist across operations within the test.
-    Cleans up data at the end.
+    Cleans up data BEFORE and AFTER each test for isolation.
     """
     SessionLocal = sessionmaker(bind=db_engine)
     session = SessionLocal()
     
+    def do_cleanup():
+        for table in CLEANUP_TABLES:
+            try:
+                session.execute(text(f"DELETE FROM {table}"))
+            except Exception:
+                pass  # Table might not exist
+        session.commit()
+    
+    # Clean BEFORE test for isolation
+    do_cleanup()
+    
     yield session
     
-    # Cleanup: delete all data from tables in reverse dependency order
-    cleanup_tables = [
-        "derived.annotator_cursors",
-        "derived.annotations",
-        "derived.content_hashes",
-        "derived.exchange_content",
-        "derived.exchange_messages",
-        "derived.sequence_exchanges",
-        "derived.exchanges",
-        "derived.sequence_messages",
-        "derived.linear_sequences",
-        "derived.message_paths",
-        "derived.dialogue_trees",
-        "raw.chatgpt_canvas_docs",
-        "raw.chatgpt_dalle_generations",
-        "raw.chatgpt_code_outputs",
-        "raw.chatgpt_code_executions",
-        "raw.chatgpt_search_entries",
-        "raw.chatgpt_search_groups",
-        "raw.chatgpt_message_meta",
-        "raw.claude_message_meta",
-        "raw.citations",
-        "raw.attachments",
-        "raw.content_parts",
-        "raw.messages",
-        "raw.dialogues",
-    ]
-    
-    for table in cleanup_tables:
-        try:
-            session.execute(text(f"DELETE FROM {table}"))
-        except Exception:
-            pass  # Table might not exist
-    
-    session.commit()
+    # Clean AFTER test
+    do_cleanup()
     session.close()
 
 
@@ -764,7 +793,7 @@ def fully_populated_db(
 ):
     """Database with multiple conversations and derived data."""
     from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
-    from llm_archive.builders import TreeBuilder, ExchangeBuilder
+    from llm_archive.builders.prompt_response import PromptResponseBuilder
     
     # Import conversations
     chatgpt_extractor = ChatGPTExtractor(clean_db_session)
@@ -776,12 +805,9 @@ def fully_populated_db(
     
     clean_db_session.commit()
     
-    # Build derived data
-    tree_builder = TreeBuilder(clean_db_session)
-    tree_builder.build_all()
-    
-    exchange_builder = ExchangeBuilder(clean_db_session)
-    exchange_builder.build_all()
+    # Build derived data (using new prompt_response builder)
+    pr_builder = PromptResponseBuilder(clean_db_session)
+    pr_builder.build_all()
     
     clean_db_session.commit()
     
