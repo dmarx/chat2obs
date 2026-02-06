@@ -24,7 +24,7 @@ class TestPromptResponseBuilderBasic:
         builder = PromptResponseBuilder(clean_db_session)
         stats = builder.build_all()
         
-        assert stats['prompt_responses_created'] > 0
+        assert stats['prompt_responses'] > 0
         
         # Verify records exist
         prs = clean_db_session.query(PromptResponse).all()
@@ -81,7 +81,7 @@ class TestPromptResponseBuilderClaude:
         builder = PromptResponseBuilder(clean_db_session)
         stats = builder.build_all()
         
-        assert stats['prompt_responses_created'] > 0
+        assert stats['prompt_responses'] > 0
     
     def test_linear_chain_pairing(self, clean_db_session, claude_simple_conversation):
         """Test that linear chains are paired correctly."""
@@ -112,7 +112,7 @@ class TestPromptResponseBuilderBranched:
         stats = builder.build_all()
         
         # Should handle branches without error
-        assert stats['prompt_responses_created'] > 0
+        assert stats['prompt_responses'] > 0
     
     def test_uses_parent_id_for_pairing(self, clean_db_session, chatgpt_branched_conversation):
         """Test that parent_id is used to find the correct prompt."""
@@ -149,11 +149,11 @@ class TestPromptResponseBuilderIdempotency:
         
         # Build first time
         stats1 = builder.build_all()
-        first_count = stats1['prompt_responses_created']
+        first_count = stats1['prompt_responses']
         
         # Build again
         stats2 = builder.build_all()
-        second_count = stats2['prompt_responses_created']
+        second_count = stats2['prompt_responses']
         
         # Should have same count (cleared and rebuilt)
         assert first_count == second_count
@@ -262,7 +262,7 @@ class TestPromptResponseBuilderEdgeCases:
         builder = PromptResponseBuilder(clean_db_session)
         stats = builder.build_all()
         
-        assert stats['prompt_responses_created'] == 0
+        assert stats['prompt_responses'] == 0
     
     def test_handles_user_only_dialogue(self, clean_db_session):
         """Test handling of dialogue with only user messages."""
@@ -293,4 +293,4 @@ class TestPromptResponseBuilderEdgeCases:
         stats = builder.build_all()
         
         # No assistant responses means no prompt-response pairs
-        assert stats['prompt_responses_created'] == 0
+        assert stats['prompt_responses'] == 0
