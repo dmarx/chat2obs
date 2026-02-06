@@ -397,3 +397,196 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                 return title, 'bold_header_with_suffix'
         
         return None, None
+
+
+# ============================================================
+# Code Detection
+# ============================================================
+
+import re
+
+
+class HasCodeAnnotator(PromptResponseAnnotator):
+    """
+    Detect if prompt-response pair involves code.
+    
+    Aggregates evidence from multiple sources:
+    - Code blocks (```)
+    - Script headers (shebang, #include)
+    - Function definitions
+    - Import statements
+    
+    Produces:
+    - has_code FLAG
+    - code_evidence STRING (multi-value)
+    """
+    
+    ANNOTATION_KEY = 'has_code'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 55
+    VERSION = '1.0'
+    
+    SKIP_IF_FLAGS = ['has_code']  # Skip if already annotated
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if data.response_role != 'assistant':
+            return []
+        
+        if not data.response_text:
+            return []
+        
+        results = []
+        evidence_types = set()
+        
+        # Check for code blocks
+        if '```' in data.response_text:
+            evidence_types.add('code_block')
+        
+        # Check for script headers
+        if re.search(r'^#!\s*/(?:usr/)?bin/', data.response_text, re.MULTILINE):
+            evidence_types.add('shebang')
+        if re.search(r'^#include\s*[<"]', data.response_text, re.MULTILINE):
+            evidence_types.add('c_include')
+        
+        # Check for function definitions
+        if re.search(r'\bdef\s+\w+\s*\(', data.response_text):
+            evidence_types.add('python_function')
+        if re.search(r'function\s+\w+\s*\(', data.response_text):
+            evidence_types.add('js_function')
+        if re.search(r'const\s+\w+\s*=\s*\([^)]*\)\s*=>', data.response_text):
+            evidence_types.add('arrow_function')
+        
+        # Check for import statements
+        if re.search(r'^(?:import|from)\s+\w+', data.response_text, re.MULTILINE):
+            evidence_types.add('python_import')
+        if re.search(r'^(?:const|let|var)\s+.*=\s*require\s*\(', data.response_text, re.MULTILINE):
+            evidence_types.add('js_require')
+        
+        if not evidence_types:
+            return []
+        
+        # Main flag with confidence based on evidence strength
+        strong_evidence = {'code_block', 'shebang', 'c_include'}
+        is_strong = bool(evidence_types & strong_evidence)
+        
+        results.append(AnnotationResult(
+            key='has_code',
+            value_type=ValueType.FLAG,
+            confidence=0.95 if is_strong else 0.75,
+            reason=','.join(sorted(evidence_types)),
+        ))
+        
+        # Evidence type annotations (multi-value)
+        for evidence in evidence_types:
+            results.append(AnnotationResult(
+                key='code_evidence',
+                value=evidence,
+                value_type=ValueType.STRING,
+            ))
+        
+        return results
+
+
+# ============================================================
+# LaTeX Detection
+# ============================================================
+
+class HasLatexAnnotator(PromptResponseAnnotator):
+    """
+    Detect if prompt-response pair contains LaTeX/math notation.
+    
+    Produces:
+    - has_latex FLAG
+    - latex_type STRING (multi-value: 'display', 'inline', 'commands')
+    """
+    
+    ANNOTATION_KEY = 'has_latex'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 54
+    VERSION = '1.0'
+    
+    SKIP_IF_FLAGS = ['has_latex']
+    
+    # Patterns
+    DISPLAY_MATH = re.compile(r'\$\$.+?\$\$|\\\[.+?\\\]', re.DOTALL)
+    INLINE_MATH = re.compile(r'(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$)')
+    LATEX_COMMANDS = re.compile(
+        r'\\(?:frac|sum|int|prod|lim|sqrt|begin|end|alpha|beta|gamma|'
+        r'delta|epsilon|theta|lambda|sigma|omega|pi|infty|partial|nabla|'
+        r'mathbb|mathcal|mathbf|mathrm|text|left|right|cdot|times|div)'
+    )
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if data.response_role != 'assistant':
+            return []
+        
+        if not data.response_text:
+            return []
+        
+        results = []
+        latex_types = set()
+        
+        if self.DISPLAY_MATH.search(data.response_text):
+            latex_types.add('display')
+        
+        if self.INLINE_MATH.search(data.response_text):
+            latex_types.add('inline')
+        
+        if self.LATEX_COMMANDS.search(data.response_text):
+            latex_types.add('commands')
+        
+        if not latex_types:
+            return []
+        
+        # Main flag
+        results.append(AnnotationResult(
+            key='has_latex',
+            value_type=ValueType.FLAG,
+            confidence=0.95 if 'display' in latex_types else 0.8,
+            reason='latex_detected',
+        ))
+        
+        # Type annotations
+        for latex_type in latex_types:
+            results.append(AnnotationResult(
+                key='latex_type',
+                value=latex_type,
+                value_type=ValueType.STRING,
+            ))
+        
+        return results
+
+
+# ============================================================
+# Annotator Registry
+# ============================================================
+
+PROMPT_RESPONSE_ANNOTATORS = [
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
+    HasCodeAnnotator,
+    HasLatexAnnotator,
+]
+
+
+def run_prompt_response_annotators(session: Session) -> dict[str, int]:
+    """
+    Run all prompt-response annotators in priority order.
+    
+    Returns dict mapping annotator name to annotation count.
+    """
+    # Sort by priority (descending)
+    sorted_annotators = sorted(
+        PROMPT_RESPONSE_ANNOTATORS,
+        key=lambda cls: cls.PRIORITY,
+        reverse=True,
+    )
+    
+    results = {}
+    for annotator_cls in sorted_annotators:
+        annotator = annotator_cls(session)
+        count = annotator.compute()
+        results[annotator_cls.__name__] = count
+    
+    session.commit()
+    return results
