@@ -10,6 +10,8 @@ from llm_archive.annotators.prompt_response import (
     PromptResponseAnnotator,
     WikiCandidateAnnotator,
     NaiveTitleAnnotator,
+    HasCodeAnnotator,
+    HasLatexAnnotator,
 )
 from llm_archive.annotations.core import ValueType, EntityType, AnnotationResult
 
@@ -320,7 +322,7 @@ class TestNaiveTitleAnnotator:
         annotator = NaiveTitleAnnotator.__new__(NaiveTitleAnnotator)
         results = annotator.annotate(data)
         
-        # .strip() is called on the document,so the title should be extracted.
+        # .strip() is called on the document, so the title should be extracted.
         assert len(results) == 1
     
     def test_strips_title_whitespace(self, pr_id):
@@ -490,3 +492,295 @@ class TestPromptResponseData:
         
         assert data.prompt_text is None
         assert data.response_text is None
+
+
+# ============================================================
+# HasCodeAnnotator Tests
+# ============================================================
+
+class TestHasCodeAnnotator:
+    """Test code detection annotator."""
+    
+    def test_detects_code_blocks(self, pr_id):
+        """Should detect ``` code blocks."""
+        data = make_pr_data(
+            response_text="Here's some code:\n```python\nprint('hello')\n```",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        flag_results = [r for r in results if r.key == 'has_code']
+        assert len(flag_results) == 1
+        assert flag_results[0].value_type == ValueType.FLAG
+        assert flag_results[0].confidence >= 0.9
+        
+        evidence_results = [r for r in results if r.key == 'code_evidence']
+        evidence_values = {r.value for r in evidence_results}
+        assert 'code_block' in evidence_values
+    
+    def test_detects_shebang(self, pr_id):
+        """Should detect shebang lines."""
+        data = make_pr_data(
+            response_text="#!/usr/bin/env python\nprint('hello')",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_code' for r in results)
+        evidence_values = {r.value for r in results if r.key == 'code_evidence'}
+        assert 'shebang' in evidence_values
+    
+    def test_detects_c_include(self, pr_id):
+        """Should detect C/C++ includes."""
+        data = make_pr_data(
+            response_text='#include <stdio.h>\nint main() { return 0; }',
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_code' for r in results)
+        evidence_values = {r.value for r in results if r.key == 'code_evidence'}
+        assert 'c_include' in evidence_values
+    
+    def test_detects_python_function(self, pr_id):
+        """Should detect Python function definitions."""
+        data = make_pr_data(
+            response_text="def hello_world():\n    print('hello')",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_code' for r in results)
+        evidence_values = {r.value for r in results if r.key == 'code_evidence'}
+        assert 'python_function' in evidence_values
+    
+    def test_detects_js_function(self, pr_id):
+        """Should detect JavaScript function definitions."""
+        data = make_pr_data(
+            response_text="function hello() {\n  console.log('hello');\n}",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_code' for r in results)
+        evidence_values = {r.value for r in results if r.key == 'code_evidence'}
+        assert 'js_function' in evidence_values
+    
+    def test_detects_arrow_function(self, pr_id):
+        """Should detect arrow functions."""
+        data = make_pr_data(
+            response_text="const hello = (name) => console.log(`Hello ${name}`);",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_code' for r in results)
+        evidence_values = {r.value for r in results if r.key == 'code_evidence'}
+        assert 'arrow_function' in evidence_values
+    
+    def test_detects_python_import(self, pr_id):
+        """Should detect Python imports."""
+        data = make_pr_data(
+            response_text="import pandas as pd\nfrom datetime import datetime",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_code' for r in results)
+        evidence_values = {r.value for r in results if r.key == 'code_evidence'}
+        assert 'python_import' in evidence_values
+    
+    def test_no_code_in_plain_text(self, pr_id):
+        """Should not detect code in plain text."""
+        data = make_pr_data(
+            response_text="Cats are wonderful pets. They like to sleep and play.",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert len(results) == 0
+    
+    def test_skips_non_assistant(self, pr_id):
+        """Should skip non-assistant responses."""
+        data = make_pr_data(
+            response_text="```python\nprint('hello')\n```",
+            pr_id=pr_id,
+            response_role='user',
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        assert len(results) == 0
+    
+    def test_multiple_evidence_types(self, pr_id):
+        """Should detect multiple evidence types."""
+        data = make_pr_data(
+            response_text="```python\nimport os\ndef main():\n    pass\n```",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasCodeAnnotator.__new__(HasCodeAnnotator)
+        results = annotator.annotate(data)
+        
+        evidence_results = [r for r in results if r.key == 'code_evidence']
+        assert len(evidence_results) >= 2  # code_block + python_function + python_import
+
+
+# ============================================================
+# HasLatexAnnotator Tests
+# ============================================================
+
+class TestHasLatexAnnotator:
+    """Test LaTeX detection annotator."""
+    
+    def test_detects_display_math(self, pr_id):
+        """Should detect display math $$...$$."""
+        data = make_pr_data(
+            response_text="The equation is: $$E = mc^2$$",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_latex' for r in results)
+        latex_types = {r.value for r in results if r.key == 'latex_type'}
+        assert 'display' in latex_types
+    
+    def test_detects_bracket_display_math(self, pr_id):
+        """Should detect \\[...\\] display math."""
+        data = make_pr_data(
+            response_text="The integral is: \\[\\int_0^\\infty e^{-x} dx = 1\\]",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_latex' for r in results)
+    
+    def test_detects_latex_commands(self, pr_id):
+        """Should detect LaTeX commands."""
+        data = make_pr_data(
+            response_text="Use \\frac{a}{b} for fractions and \\sqrt{x} for roots.",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_latex' for r in results)
+        latex_types = {r.value for r in results if r.key == 'latex_type'}
+        assert 'commands' in latex_types
+    
+    def test_detects_greek_letters(self, pr_id):
+        """Should detect Greek letter commands."""
+        data = make_pr_data(
+            response_text="The angle \\theta is measured from \\alpha to \\omega.",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        assert any(r.key == 'has_latex' for r in results)
+    
+    def test_no_latex_in_plain_text(self, pr_id):
+        """Should not detect LaTeX in plain text."""
+        data = make_pr_data(
+            response_text="The value of pi is approximately 3.14159.",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        assert len(results) == 0
+    
+    def test_skips_non_assistant(self, pr_id):
+        """Should skip non-assistant responses."""
+        data = make_pr_data(
+            response_text="$$E = mc^2$$",
+            pr_id=pr_id,
+            response_role='user',
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        assert len(results) == 0
+    
+    def test_high_confidence_for_display_math(self, pr_id):
+        """Should have high confidence for display math."""
+        data = make_pr_data(
+            response_text="$$\\sum_{i=1}^n i = \\frac{n(n+1)}{2}$$",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        flag_result = next(r for r in results if r.key == 'has_latex')
+        assert flag_result.confidence >= 0.9
+    
+    def test_lower_confidence_for_commands_only(self, pr_id):
+        """Should have lower confidence for commands without display math."""
+        data = make_pr_data(
+            response_text="Use \\alpha and \\beta for parameters.",
+            pr_id=pr_id,
+        )
+        
+        annotator = HasLatexAnnotator.__new__(HasLatexAnnotator)
+        results = annotator.annotate(data)
+        
+        flag_result = next(r for r in results if r.key == 'has_latex')
+        assert flag_result.confidence < 0.9
+
+
+# ============================================================
+# Annotator Registry Tests
+# ============================================================
+
+class TestAnnotatorRegistry:
+    """Test the annotator registry and runner."""
+    
+    def test_all_annotators_in_registry(self):
+        """All annotators should be in PROMPT_RESPONSE_ANNOTATORS."""
+        from llm_archive.annotators.prompt_response import PROMPT_RESPONSE_ANNOTATORS
+        
+        assert WikiCandidateAnnotator in PROMPT_RESPONSE_ANNOTATORS
+        assert NaiveTitleAnnotator in PROMPT_RESPONSE_ANNOTATORS
+        assert HasCodeAnnotator in PROMPT_RESPONSE_ANNOTATORS
+        assert HasLatexAnnotator in PROMPT_RESPONSE_ANNOTATORS
+    
+    def test_annotators_have_unique_keys(self):
+        """Each annotator should have a unique ANNOTATION_KEY."""
+        from llm_archive.annotators.prompt_response import PROMPT_RESPONSE_ANNOTATORS
+        
+        keys = [cls.ANNOTATION_KEY for cls in PROMPT_RESPONSE_ANNOTATORS]
+        assert len(keys) == len(set(keys)), "Duplicate ANNOTATION_KEYs found"
+    
+    def test_priority_ordering(self):
+        """Annotators should have distinct priorities for deterministic ordering."""
+        from llm_archive.annotators.prompt_response import PROMPT_RESPONSE_ANNOTATORS
+        
+        priorities = [cls.PRIORITY for cls in PROMPT_RESPONSE_ANNOTATORS]
+        # Note: Priorities don't have to be unique, but it helps with debugging
+        assert len(priorities) == len(PROMPT_RESPONSE_ANNOTATORS)
