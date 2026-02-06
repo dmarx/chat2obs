@@ -159,19 +159,6 @@ class CLI:
         """Run all annotators."""
         results = {}
         with get_session(self.db_url) as session:
-            #manager = AnnotationManager(session)
-            # Message annotators
-            # manager.register(WikiLinkAnnotator)
-            # manager.register(CodeBlockAnnotator)
-            # manager.register(LatexAnnotator)
-            # manager.register(ContinuationAnnotator)
-            # # Exchange annotators
-            # manager.register(ExchangeTypeAnnotator)
-            
-            # Prompt-response annotators
-            #manager.register(WikiCandidateAnnotator)
-            #manager.register(NaiveTitleAnnotator)
-            #results = manager.run_all()
             results['wiki candidates'] = WikiCandidateAnnotator(session).compute()
             results['naive titles'] = NaiveTitleAnnotator(session).compute()
         
