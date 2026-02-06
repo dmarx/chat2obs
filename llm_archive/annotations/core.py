@@ -62,6 +62,32 @@ class AnnotationResult:
     reason: str | None = None
     source: str = 'heuristic'
     source_version: str | None = None
+    
+    def __eq__(self, other: object) -> bool:
+        """Equality check - compares key, value, and value_type."""
+        if not isinstance(other, AnnotationResult):
+            return NotImplemented
+        return (
+            self.key == other.key 
+            and self.value == other.value 
+            and self.value_type == other.value_type
+        )
+    
+    def __hash__(self) -> int:
+        """Hash based on key, value, and value_type."""
+        # Convert value to a hashable form if it's a dict/list
+        value_hash = self.value
+        if isinstance(self.value, dict):
+            value_hash = tuple(sorted(self.value.items()))
+        elif isinstance(self.value, list):
+            value_hash = tuple(self.value)
+        return hash((self.key, value_hash, self.value_type))
+    
+    def __repr__(self) -> str:
+        """Compact string representation."""
+        if self.value_type == ValueType.FLAG:
+            return f"AnnotationResult({self.key!r}, FLAG)"
+        return f"AnnotationResult({self.key!r}, {self.value!r}, {self.value_type.value})"
 
 
 # ============================================================
