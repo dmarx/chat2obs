@@ -233,12 +233,21 @@ class TestPromptResponseBuilderEdgeCases:
         extractor.extract_dialogue(conversation)
         clean_db_session.commit()
         
+        # Get the dialogue we just created
+        dialogue = clean_db_session.query(Dialogue).filter(
+            Dialogue.source_id == 'conv-system'
+        ).one()
+        
         builder = PromptResponseBuilder(clean_db_session)
-        stats = builder.build_all()
+        stats = builder.build_for_dialogue(dialogue.id)
         
         # Should create one prompt-response (user -> assistant)
         # System message should not be part of a pair
-        prs = clean_db_session.query(PromptResponse).all()
+        assert stats['prompt_responses'] == 1
+        
+        prs = clean_db_session.query(PromptResponse).filter(
+            PromptResponse.dialogue_id == dialogue.id
+        ).all()
         assert len(prs) == 1
         
         pr = prs[0]
@@ -259,8 +268,13 @@ class TestPromptResponseBuilderEdgeCases:
         extractor.extract_dialogue(conversation)
         clean_db_session.commit()
         
+        # Get the dialogue we just created
+        dialogue = clean_db_session.query(Dialogue).filter(
+            Dialogue.source_id == 'conv-empty'
+        ).one()
+        
         builder = PromptResponseBuilder(clean_db_session)
-        stats = builder.build_all()
+        stats = builder.build_for_dialogue(dialogue.id)
         
         assert stats['prompt_responses'] == 0
     
@@ -289,8 +303,13 @@ class TestPromptResponseBuilderEdgeCases:
         extractor.extract_dialogue(conversation)
         clean_db_session.commit()
         
+        # Get the dialogue we just created
+        dialogue = clean_db_session.query(Dialogue).filter(
+            Dialogue.source_id == 'conv-user-only'
+        ).one()
+        
         builder = PromptResponseBuilder(clean_db_session)
-        stats = builder.build_all()
+        stats = builder.build_for_dialogue(dialogue.id)
         
         # No assistant responses means no prompt-response pairs
         assert stats['prompt_responses'] == 0
