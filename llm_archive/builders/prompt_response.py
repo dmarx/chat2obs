@@ -180,13 +180,13 @@ class PromptResponseBuilder:
                     COALESCE(array_length(regexp_split_to_array(response_content.text_content, '\\s+'), 1), 0)
                 FROM derived.prompt_responses pr
                 LEFT JOIN LATERAL (
-                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.part_index) as text_content
+                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.sequence) as text_content
                     FROM raw.content_parts cp
                     WHERE cp.message_id = pr.prompt_message_id
                       AND cp.part_type = 'text'
                 ) prompt_content ON true
                 LEFT JOIN LATERAL (
-                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.part_index) as text_content
+                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.sequence) as text_content
                     FROM raw.content_parts cp
                     WHERE cp.message_id = pr.response_message_id
                       AND cp.part_type = 'text'
