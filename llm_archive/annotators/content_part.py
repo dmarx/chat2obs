@@ -16,7 +16,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from llm_archive.annotations import (
+from llm_archive.annotations.core import (
     AnnotationWriter,
     AnnotationReader,
     AnnotationResult,
