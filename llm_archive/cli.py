@@ -148,7 +148,7 @@ class CLI:
     def build_all(self):
         """Build all derived structures."""
         results = {}
-        results['prompt_responses_created'] = self.build_prompt_responses()
+        results['prompt-responses'] = self.build_prompt_responses()
         return results
     
     # ================================================================
