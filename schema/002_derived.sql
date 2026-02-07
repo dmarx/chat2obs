@@ -8,28 +8,6 @@
 create schema if not exists derived;
 
 -- ============================================================
--- derived.dialogue_trees
--- ============================================================
-
-create table derived.dialogue_trees (
-    dialogue_id             uuid primary key references raw.dialogues on delete cascade,
-    
-    total_nodes             int not null,
-    max_depth               int not null,
-    branch_count            int not null,
-    leaf_count              int not null,
-    
-    primary_leaf_id         uuid references raw.messages,
-    primary_path_length     int,
-    
-    is_linear               boolean generated always as (branch_count = 0) stored,
-    has_regenerations       boolean not null default false,
-    has_edits               boolean not null default false,
-    
-    created_at             timestamptz default now()
-);
-
--- ============================================================
 -- derived.message_paths
 -- ============================================================
 
