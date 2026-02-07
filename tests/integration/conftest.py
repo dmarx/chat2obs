@@ -169,7 +169,7 @@ def chatgpt_simple_conversation() -> dict:
 
 @pytest.fixture
 def chatgpt_branched_conversation() -> dict:
-    """ChatGPT conversation with ONE user message that has 2 assistant children (regeneration)."""
+    """ChatGPT conversation: 1 user message with 2 assistant responses that each have continuation messages."""
     return {
         "conversation_id": "conv-branched-001",
         "title": "Branched Test Conversation",
@@ -179,14 +179,14 @@ def chatgpt_branched_conversation() -> dict:
             "root": {
                 "id": "root",
                 "parent": None,
-                "children": ["node-user1"],
+                "children": ["user1"],
                 "message": None,
             },
-            # THE ONLY USER MESSAGE - has 2 children (regenerations)
-            "node-user1": {
-                "id": "node-user1",
+            # THE ONLY USER MESSAGE - has 2 assistant children (regenerations)
+            "user1": {
+                "id": "user1",
                 "parent": "root",
-                "children": ["node-assistant1a", "node-assistant1b"],  # 2 CHILDREN
+                "children": ["asst1a", "asst1b"],  # BRANCH POINT
                 "message": {
                     "id": "msg-user1",
                     "author": {"role": "user"},
@@ -197,13 +197,13 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
-            # First assistant response (regeneration #1)
-            "node-assistant1a": {
-                "id": "node-assistant1a",
-                "parent": "node-user1",
-                "children": [],
+            # First branch
+            "asst1a": {
+                "id": "asst1a",
+                "parent": "user1",
+                "children": ["asst2a"],
                 "message": {
-                    "id": "msg-assistant1a",
+                    "id": "msg-asst1a",
                     "author": {"role": "assistant"},
                     "create_time": 1700000200.0,
                     "content": {
@@ -212,13 +212,27 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
-            # Second assistant response (regeneration #2)
-            "node-assistant1b": {
-                "id": "node-assistant1b",
-                "parent": "node-user1",
-                "children": ["node-user2"],
+            "asst2a": {
+                "id": "asst2a",
+                "parent": "asst1a",
+                "children": [],
                 "message": {
-                    "id": "msg-assistant1b",
+                    "id": "msg-asst2a",
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000300.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["There was a brave knight..."]
+                    }
+                }
+            },
+            # Second branch  
+            "asst1b": {
+                "id": "asst1b",
+                "parent": "user1",
+                "children": ["asst2b"],
+                "message": {
+                    "id": "msg-asst1b",
                     "author": {"role": "assistant"},
                     "create_time": 1700000250.0,
                     "content": {
@@ -227,33 +241,17 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
-            # Second user message (continuation)
-            "node-user2": {
-                "id": "node-user2",
-                "parent": "node-assistant1b",
-                "children": ["node-assistant2"],
-                "message": {
-                    "id": "msg-user2",
-                    "author": {"role": "user"},
-                    "create_time": 1700000300.0,
-                    "content": {
-                        "content_type": "text",
-                        "parts": ["Continue"]
-                    }
-                }
-            },
-            # Third assistant message
-            "node-assistant2": {
-                "id": "node-assistant2",
-                "parent": "node-user2",
+            "asst2b": {
+                "id": "asst2b",
+                "parent": "asst1b",
                 "children": [],
                 "message": {
-                    "id": "msg-assistant2",
+                    "id": "msg-asst2b",
                     "author": {"role": "assistant"},
-                    "create_time": 1700000400.0,
+                    "create_time": 1700000350.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["There lived a brave knight..."]
+                        "parts": ["A spaceship landed..."]
                     }
                 }
             }
