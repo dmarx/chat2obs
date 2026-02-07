@@ -5,15 +5,50 @@ Ingest, normalize, and analyze LLM conversation exports for downstream processin
 ## Features
 
 - **Multi-source ingestion**: ChatGPT and Claude exports
-- **Tree analysis**: Full dialogue tree preservation with branch classification
-- **Exchange grouping**: Logical interaction units with continuation detection
+- **Prompt-response pairing**: Direct user→assistant associations
+- **Typed annotation system**: Flag, string, numeric, and JSON annotations
 - **Content hashing**: Deduplication preparation
-- **Polymorphic labeling**: Flexible annotation system
+- **Incremental processing**: Efficient re-annotation with cursor tracking
+
+## Project Structure
+
+```
+llm_archive/
+├── models/
+│   ├── raw.py          # Raw schema models
+│   └── derived.py      # Derived schema models
+├── extractors/
+│   ├── base.py         # Base extractor class
+│   ├── chatgpt.py      # ChatGPT extractor
+│   └── claude.py       # Claude extractor
+├── builders/
+│   └── prompt_response.py  # Prompt-response builder
+├── annotations/
+│   └── core.py         # AnnotationWriter/Reader
+├── annotators/
+│   └── prompt_response.py  # Prompt-response annotators
+├── cli.py              # Command-line interface
+└── config.py           # Environment configuration
+```
+
+## Additional Documentation
+
+See the `docs/` folder for detailed documentation:
+
+- [Architecture](docs/architecture.md) - System design and data flow
+- [Schema](docs/schema.md) - Database schema details
+- [Models](docs/models.md) - SQLAlchemy ORM models
+- [Extractors](docs/extractors.md) - Platform-specific extraction
+- [Builders](docs/builders.md) - Derived data construction
+- [Annotators](docs/annotators.md) - Annotation system
+- [CLI Reference](docs/cli.md) - Command-line interface
+- [Testing](docs/testing.md) - Testing strategy
+
 
 ## Requirements
 
 - Python 3.11+
-- Docker (for PostgreSQL)
+- Docker (for PostgreSQL with pgvector)
 
 ## Installation
 
@@ -102,24 +137,24 @@ uv run llm-archive import_all \
 ### Build Derived Structures
 
 ```bash
-# Build tree analysis
-uv run llm-archive build_trees
+# Build prompt-response pairs
+uv run llm-archive build_prompt_responses
 
-# Build exchanges
-uv run llm-archive build_exchanges
-
-# Build content hashes
-uv run llm-archive build_hashes
-
-# Build all
-uv run llm-archive build_all
+# Build for specific dialogue
+uv run llm-archive build_prompt_responses --dialogue_id=<uuid>
 ```
 
 ### Annotations
 
 ```bash
-# Run all annotators
+# Run all registered annotators
 uv run llm-archive annotate
+
+# Run specific annotator
+uv run llm-archive annotate WikiCandidateAnnotator
+
+# Clear and re-run
+uv run llm-archive annotate --clear
 ```
 
 ### Analysis
@@ -128,15 +163,18 @@ uv run llm-archive annotate
 # Show statistics
 uv run llm-archive stats
 
-# Find duplicates
-uv run llm-archive find_duplicates --entity_type=exchange --scope=assistant
+# Query annotated content
+uv run llm-archive query_annotations \
+    --entity_type=prompt_response \
+    --annotation_key=exchange_type \
+    --annotation_value=wiki_article
 ```
 
 ### Full Pipeline
 
 ```bash
 # Run everything
-uv run llm-archive run \
+uv run llm-archive pipeline \
     --chatgpt_path=/path/to/chatgpt.json \
     --claude_path=/path/to/claude.json \
     --init_db
@@ -148,7 +186,7 @@ Re-importing the same export files is safe:
 - Dialogues are identified by their source ID
 - If `updated_at` timestamp is newer, dialogue is updated
 - If unchanged, dialogue is skipped
-- Messages are replaced when a dialogue is updated
+- Messages use content hashing for change detection
 
 ## Schema
 
@@ -167,118 +205,57 @@ Source of truth from imports:
 
 ### Derived Layer (`derived.*`)
 
-Computed/analyzed structures:
+Computed structures that can be rebuilt:
 
-- `derived.dialogue_trees` - Tree analysis per dialogue
-- `derived.message_paths` - Materialized paths for each message
-- `derived.linear_sequences` - Root-to-leaf paths
-- `derived.sequence_messages` - Sequence membership
-- `derived.exchanges` - Logical interaction units (built from tree, deduplicated)
-- `derived.exchange_messages` - Exchange membership
-- `derived.sequence_exchanges` - Links sequences to exchanges (many-to-many)
-- `derived.exchange_content` - Aggregated content with hashes
-- `derived.annotations` - Polymorphic entity annotations
-- `derived.content_hashes` - Multi-scope content hashes
+- `derived.prompt_responses` - User prompt → assistant response pairs
+- `derived.prompt_response_content` - Denormalized text content
+- `derived.{entity}_annotations_{type}` - Typed annotation tables
+  - Entity types: `content_part`, `message`, `prompt_response`, `dialogue`
+  - Value types: `flag`, `string`, `numeric`, `json`
+- `derived.annotator_cursors` - Incremental processing state
 
-## Data Model
+## Annotation System
 
-```
-raw.dialogues
-    └── raw.messages (tree structure via parent_id)
-            ├── raw.content_parts
-            │       └── raw.citations
-            └── raw.attachments
-
-derived.dialogue_trees (1:1 with dialogues)
-    └── derived.linear_sequences (one per leaf)
-            ├── derived.sequence_messages
-            └── derived.sequence_exchanges → derived.exchanges (many-to-many)
-                                                    ├── derived.exchange_messages
-                                                    └── derived.exchange_content
-
-derived.annotations (polymorphic, references any entity)
-derived.content_hashes (multi-scope hashes)
-```
-
-### Exchange Deduplication
-
-Exchanges are built from the tree and identified by `(dialogue_id, first_message_id, last_message_id)`. When a conversation branches, the shared prefix produces the same exchanges, which are reused rather than duplicated. Each linear sequence references its exchanges via the `sequence_exchanges` join table.
-
-## Annotation Types
-
-| Entity | Type | Key | Example Values |
-|--------|------|-----|----------------|
-| message | feature | - | has_wiki_links, has_code_blocks, has_latex |
-| message | feature | code_language | python, javascript, sql |
-| message | feature | continuation_signal | continue, elaborate, quote_elaborate |
-| exchange | tag | exchange_type | coding, wiki_article, qa, discussion |
-| exchange | title | - | (generated title for wiki export) |
-| dialogue | tag | category | coding, research, writing |
-
-## Custom Annotators
-
-Create custom annotators by subclassing `Annotator`:
+The annotation system supports multiple detection strategies for the same concept:
 
 ```python
-from llm_archive.annotators import Annotator
-from llm_archive.models import Exchange, ExchangeContent
+from llm_archive.annotators.prompt_response import PromptResponseAnnotator
+from llm_archive.annotations.core import AnnotationResult, ValueType
 
-class MyAnnotator(Annotator):
-    ANNOTATION_TYPE = 'tag'       # 'tag', 'title', 'feature', etc.
-    ENTITY_TYPE = 'exchange'      # 'message', 'exchange', 'dialogue'
-    SOURCE = 'heuristic'          # 'heuristic', 'model', 'manual'
+class MyAnnotator(PromptResponseAnnotator):
+    ANNOTATION_KEY = 'my_classification'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 50  # Higher runs first
     VERSION = '1.0'
+    SOURCE = 'heuristic'
     
-    def compute(self) -> int:
-        exchanges = (
-            self.session.query(Exchange, ExchangeContent)
-            .join(ExchangeContent)
-            .all()
-        )
-        
-        count = 0
-        for exchange, content in exchanges:
-            if self._matches_criteria(content):
-                if self.add_annotation(
-                    entity_id=exchange.id,
-                    value='my_tag_value',
-                    key='optional_namespace',
-                    confidence=0.9,
-                    data={'extra': 'info'},
-                ):
-                    count += 1
-        return count
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if self._matches_criteria(data):
+            return [AnnotationResult(
+                key=self.ANNOTATION_KEY,
+                value='my_tag_value',
+                confidence=0.9,
+            )]
+        return []
 ```
 
 Register and run:
 
 ```python
-from llm_archive.annotators import AnnotationManager
+from llm_archive.cli import AnnotationManager
 
 manager = AnnotationManager(session)
 manager.register(MyAnnotator)
 results = manager.run_all()
 ```
 
-## Tree Analysis
-
-For branched dialogues (ChatGPT), the system:
-
-1. Preserves full tree structure in `raw.messages.parent_id`
-2. Computes materialized paths in `derived.message_paths`
-3. Creates `derived.linear_sequences` for each leaf (root-to-leaf path)
-4. Classifies branches as `regeneration` (same role) or `edit` (different role)
-5. Selects primary path (longest, then most recent)
-
-For linear dialogues (Claude), produces degenerate trees with `branch_count=0`.
-
 ## Pipeline
 
 ```
-Import → Tree Analysis → Exchange Building → Annotating → Hashing
-                                                   ↓
-                                            [Future: Article extraction,
-                                             Knowledge graph, Wiki export]
+Import → Prompt-Response Building → Annotation → Analysis
+                                         ↓
+                                  [Future: Export,
+                                   Knowledge graph]
 ```
 
 ## Testing
@@ -300,39 +277,32 @@ export TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/llm_arch
 uv pip install -e ".[dev]"
 
 # Run all tests
-uv run pytest
+pytest
+
+# Run only unit tests (no database required)
+pytest tests/unit/
+
+# Run integration tests
+pytest tests/integration/
 
 # Run with coverage
-uv run pytest --cov=llm_archive --cov-report=html
+pytest --cov=llm_archive --cov-report=html
 
-# Run specific test file
-uv run pytest tests/test_extractors.py
-
-# Run specific test
-uv run pytest tests/test_extractors.py::TestChatGPTExtractor::test_extract_simple_conversation
-
-# Run in parallel (faster)
-uv run pytest -n auto
+# View coverage report
+open htmlcov/index.html
 ```
 
-### Test Structure
+### Test Organization
 
 ```
 tests/
-├── conftest.py           # Shared fixtures
-├── test_extractors.py    # ChatGPT/Claude extraction tests
-├── test_builders.py      # Tree/Exchange/Hash builder tests
-├── test_annotators.py    # Annotation system tests
-└── test_idempotency.py   # Re-import behavior tests
+├── unit/               # Fast tests, no database
+│   ├── test_annotations.py
+│   └── test_utils.py
+├── integration/        # Tests requiring database
+│   ├── conftest.py     # Shared fixtures
+│   ├── test_extractors.py
+│   ├── test_prompt_response_builder.py
+│   └── test_annotations.py
+└── conftest.py         # Root configuration
 ```
-
-### Key Fixtures
-
-| Fixture | Scope | Description |
-|---------|-------|-------------|
-| `db_session` | function | Session with transaction rollback |
-| `clean_db_session` | function | Session that commits (with cleanup) |
-| `chatgpt_simple_conversation` | function | Linear ChatGPT conversation |
-| `chatgpt_branched_conversation` | function | Branched ChatGPT conversation |
-| `claude_simple_conversation` | function | Simple Claude conversation |
-| `fully_populated_db` | function | DB with conversations + derived data |

@@ -1,9 +1,9 @@
-# docs/architecture.md
+<!-- docs/architecture.md -->
 # LLM Archive: System Architecture
 
 ## Overview
 
-LLM Archive is a system for importing, normalizing, analyzing, and annotating conversation data from multiple LLM platforms (ChatGPT, Claude, and future sources). It transforms heterogeneous export formats into a unified data model that supports both tree-structured and linear conversation representations.
+LLM Archive is a system for importing, normalizing, analyzing, and annotating conversation data from multiple LLM platforms (ChatGPT, Claude, and future sources). It transforms heterogeneous export formats into a unified data model optimized for annotation and downstream processing.
 
 ## Design Philosophy
 
@@ -13,16 +13,16 @@ LLM Archive is a system for importing, normalizing, analyzing, and annotating co
 2. **Schema Separation**: Clear distinction between raw (immutable imports) and derived (computed analysis)
 3. **Incremental Processing**: All analysis is cursor-based to support efficient updates
 4. **Platform Abstraction**: Common abstractions with platform-specific extensions
-5. **Annotation Strategy Pattern**: Multiple detection strategies can target the same semantic concept
+5. **Typed Annotations**: Separate tables per annotation type for query performance
 
 ### Key Architectural Decisions
 
 | Decision | Rationale |
 |----------|-----------|
 | Two-schema design (raw/derived) | Preserves original data while enabling computed views |
-| Tree-native message structure | ChatGPT exports are trees; linearization is derived |
-| Exchange as fundamental unit | User-assistant pairs are the atomic interaction unit |
-| Polymorphic annotations | Single table serves all entity types with provenance |
+| Tree-native message structure | ChatGPT exports are trees; maintain in raw layer |
+| Prompt-response as fundamental unit | Simpler than exchange model, no tree dependency |
+| Typed annotation tables | Better query performance than polymorphic table |
 | Cursor-based incremental processing | Efficient re-annotation without full reprocessing |
 
 ## System Architecture
@@ -62,69 +62,40 @@ flowchart TB
     end
 
     subgraph Builders["Builder Layer"]
-        TreeBuilder["TreeBuilder"]
-        ExchangeBuilder["ExchangeBuilder"]
-        HashBuilder["HashBuilder"]
+        PRBuilder["PromptResponseBuilder"]
     end
 
     subgraph DerivedSchema["derived.* Schema"]
-        Trees["dialogue_trees"]
-        Paths["message_paths"]
-        Sequences["linear_sequences"]
-        Exchanges["exchanges"]
-        ExchangeContent["exchange_content"]
-        Annotations["annotations"]
-        Hashes["content_hashes"]
+        PRs["prompt_responses"]
+        PRContent["prompt_response_content"]
+        
+        subgraph Annotations["Typed Annotations"]
+            AnnFlag["*_annotations_flag"]
+            AnnString["*_annotations_string"]
+            AnnNumeric["*_annotations_numeric"]
+            AnnJSON["*_annotations_json"]
+        end
+        
         Cursors["annotator_cursors"]
     end
 
-    subgraph Annotators["Annotation Layer"]
-        Manager["AnnotationManager"]
-        
-        subgraph Strategies["Strategy Groups"]
-            MsgAnnotators["Message Annotators"]
-            ExchAnnotators["Exchange Annotators"]
-            DlgAnnotators["Dialogue Annotators"]
-            PlatformAnnotators["Platform Annotators"]
-        end
+    subgraph AnnotationSystem["Annotation System"]
+        AnnotationWriter["AnnotationWriter"]
+        AnnotationReader["AnnotationReader"]
+        Annotators["Annotators"]
     end
 
-    ChatGPT --> ChatGPTExtractor
-    Claude --> ClaudeExtractor
-    Future --> BaseExtractor
-
-    ChatGPTExtractor --> Dialogues
-    ClaudeExtractor --> Dialogues
-    ChatGPTExtractor --> CGPTMeta
-    ClaudeExtractor --> ClaudeMeta
-    
-    Dialogues --> TreeBuilder
-    Messages --> TreeBuilder
-    
-    TreeBuilder --> Trees
-    TreeBuilder --> Paths
-    TreeBuilder --> Sequences
-    
-    Trees --> ExchangeBuilder
-    Paths --> ExchangeBuilder
-    
-    ExchangeBuilder --> Exchanges
-    ExchangeBuilder --> ExchangeContent
-    
-    ExchangeContent --> HashBuilder
-    HashBuilder --> Hashes
-    
-    Exchanges --> Annotators
-    Dialogues --> Annotators
-    Messages --> Annotators
-    
-    Annotators --> Annotations
-    Annotators --> Cursors
+    Sources --> Extractors
+    Extractors --> RawSchema
+    RawSchema --> Builders
+    Builders --> DerivedSchema
+    DerivedSchema --> AnnotationSystem
+    AnnotationSystem --> DerivedSchema
 ```
 
 ## Data Flow
 
-### Import Pipeline
+### Import Flow
 
 ```mermaid
 sequenceDiagram
@@ -136,7 +107,7 @@ sequenceDiagram
     participant DerivedDB as derived.* Tables
     participant Annotator
 
-    User->>CLI: import [source] [file]
+    User->>CLI: import_chatgpt [file]
     CLI->>Extractor: extract(file_path)
     
     loop For each conversation
@@ -148,22 +119,20 @@ sequenceDiagram
         end
     end
     
-    CLI->>Builder: build_trees()
+    CLI->>Builder: build_prompt_responses()
     Builder->>RawDB: Query messages
-    Builder->>DerivedDB: Insert dialogue_trees
-    Builder->>DerivedDB: Insert message_paths
-    Builder->>DerivedDB: Insert linear_sequences
-    
-    CLI->>Builder: build_exchanges()
-    Builder->>DerivedDB: Query trees/paths
-    Builder->>DerivedDB: Insert exchanges
-    Builder->>DerivedDB: Insert exchange_content
+    loop For each dialogue
+        Builder->>DerivedDB: Insert prompt_responses
+        Builder->>DerivedDB: Insert prompt_response_content
+    end
     
     CLI->>Annotator: run_all()
     loop For each annotator (by priority)
         Annotator->>DerivedDB: Check cursor
         Annotator->>DerivedDB: Query entities > cursor
-        Annotator->>DerivedDB: Insert annotations
+        loop For each entity
+            Annotator->>DerivedDB: Insert annotations
+        end
         Annotator->>DerivedDB: Update cursor
     end
     
@@ -195,8 +164,9 @@ sequenceDiagram
         end
     end
     
-    CLI->>Builder: build (incremental)
-    Builder->>DerivedDB: Process only new/changed dialogues
+    CLI->>Builder: build_for_dialogue(new/updated)
+    Builder->>DerivedDB: Clear existing records
+    Builder->>DerivedDB: Rebuild prompt-responses
     
     CLI->>Annotator: run_all()
     Annotator->>DerivedDB: Get cursor (high_water_mark)
@@ -222,21 +192,18 @@ Compute derived structures from raw data:
 
 | Component | Responsibility |
 |-----------|---------------|
-| `TreeBuilder` | Analyze tree topology, compute paths, identify primary sequences |
-| `ExchangeBuilder` | Segment conversations into user-assistant exchange pairs |
-| `HashBuilder` | Compute content hashes for deduplication and change detection |
+| `PromptResponseBuilder` | Create user→assistant pairs using parent_id with sequential fallback |
 
-### Annotators
+### Annotations
 
 Apply labels, tags, and metadata to entities:
 
 | Component | Responsibility |
 |-----------|---------------|
-| `AnnotationManager` | Coordinate annotator execution, strategy resolution |
-| `MessageTextAnnotator` | Base class for message content analysis |
-| `ExchangeAnnotator` | Base class for exchange-level analysis |
-| `DialogueAnnotator` | Base class for dialogue-level aggregate analysis |
-| `ExchangePlatformAnnotator` | Base class for platform feature queries |
+| `AnnotationWriter` | Insert annotations into typed tables |
+| `AnnotationReader` | Query annotations from typed tables |
+| `PromptResponseAnnotator` | Base class for annotating prompt-response pairs |
+| Example annotators | `WikiCandidateAnnotator`, `NaiveTitleAnnotator` |
 
 ## Deployment Architecture
 
@@ -281,22 +248,30 @@ services:
 1. Create extractor class extending `BaseExtractor`
 2. Add source entry to `raw.sources` table
 3. Create platform extension tables if needed
-4. Implement message tree/linearization logic
+4. Implement message parent-child linking logic
 
 ### Adding a New Annotator
 
-1. Choose base class based on entity type
-2. Define `ANNOTATION_KEY` for strategy grouping
-3. Set `PRIORITY` relative to existing strategies
-4. Implement `annotate()` method
-5. Register with `AnnotationManager`
+1. Extend `PromptResponseAnnotator` base class
+2. Define `ANNOTATION_KEY` for grouping
+3. Set `PRIORITY` relative to existing annotators
+4. Choose `VALUE_TYPE` (flag, string, numeric, json)
+5. Implement `annotate()` method returning `AnnotationResult` list
+6. Register with CLI
 
 ### Adding a New Derived Structure
 
-1. Design schema in `002_derived.sql`
+1. Design schema in new SQL file (e.g., `schema/009_*.sql`)
 2. Create SQLAlchemy model in `models/derived.py`
 3. Create builder class in `builders/`
 4. Integrate with CLI pipeline
+
+### Adding a New Entity Type for Annotations
+
+1. Add entity type to `EntityType` enum in `annotations/core.py`
+2. Create annotation tables in schema (4 tables per entity type)
+3. Update `AnnotationWriter`/`AnnotationReader` table templates
+4. Create base annotator class for the entity type
 
 ## Performance Considerations
 
@@ -304,18 +279,18 @@ services:
 
 - Raw tables: Indexed on `dialogue_id`, `parent_id`, `created_at`
 - Derived tables: Indexed on foreign keys and filtered columns
-- Annotations: Partial indexes on `superseded_at IS NULL`
+- Annotation tables: Indexed on `entity_id`, `annotation_key`, and `annotation_value`
 
 ### Batch Processing
 
 - Extractors use batch inserts (1000 messages/batch)
-- Builders process dialogues in batches
-- Annotators track cursors to avoid re-processing
+- Builders process dialogues individually with periodic commits
+- Annotators use cursor-based incremental processing
 
 ### Memory Management
 
-- Tree analysis uses iterative algorithms (not recursive)
-- Content aggregation streams results
+- Builders iterate dialogues without loading all into memory
+- Content aggregation uses database-side text concatenation
 - Large dialogues processed incrementally
 
 ## Security Considerations
@@ -325,6 +300,37 @@ services:
 - Source JSON preserved for audit trail
 - No PII-specific handling (user responsibility)
 
+## Annotation System Architecture
+
+### Typed Annotation Tables
+
+Each entity type has 4 annotation tables:
+
+```
+derived.{entity}_annotations_flag      # Boolean presence
+derived.{entity}_annotations_string    # Text values
+derived.{entity}_annotations_numeric   # Numeric values
+derived.{entity}_annotations_json      # JSONB values
+```
+
+### Annotation Workflow
+
+1. **Annotator Registration**: Annotators are ordered by priority
+2. **Cursor Check**: Each annotator checks its high-water mark
+3. **Entity Query**: Query entities created after cursor
+4. **Annotation Logic**: Run detection/classification logic
+5. **Result Writing**: Write results to appropriate typed table
+6. **Cursor Update**: Update high-water mark for next run
+
+### Priority System
+
+| Priority Range | Use Case | Example |
+|----------------|----------|---------|
+| 90-100 | Platform ground truth | ChatGPT metadata flags |
+| 70-89 | Explicit syntax detection | Code block detection |
+| 40-69 | Statistical/ML models | Semantic classification |
+| 1-39 | Heuristics | Keyword matching |
+
 ## Related Documentation
 
 - [Schema Design](schema.md) - Database schema details
@@ -333,3 +339,4 @@ services:
 - [Builders](builders.md) - Derived data construction
 - [Annotators](annotators.md) - Annotation system
 - [CLI Reference](cli.md) - Command-line interface
+- [Testing](testing.md) - Testing strategy

@@ -1,4 +1,4 @@
-# docs/cli.md
+<!-- docs/cli.md -->
 # Command-Line Interface
 
 ## Overview
@@ -11,8 +11,8 @@ The CLI provides the primary interface for importing data, building derived stru
 # Install package with CLI
 pip install -e .
 
-# Or run directly
-python -m llm_archive.cli <command>
+# Or run directly with uv
+uv run llm-archive <command>
 ```
 
 ## Configuration
@@ -54,128 +54,126 @@ logging:
 
 ### Database Management
 
-#### `init-db`
+#### `init`
 
 Initialize database with schemas:
 
 ```bash
-# Create schemas and tables
-llm-archive init-db
+# Create schemas and tables from schema/ directory
+llm-archive init --schema_dir=schema
 
 # With custom connection
-llm-archive init-db --database-url "postgresql://..."
+llm-archive init --database_url="postgresql://..." --schema_dir=schema
 ```
 
 ```mermaid
 flowchart LR
-    InitDB["init-db"] --> CreateRaw["CREATE SCHEMA raw"]
-    InitDB --> CreateDerived["CREATE SCHEMA derived"]
+    Init["init"] --> CreateRaw["CREATE SCHEMA raw"]
+    Init --> CreateDerived["CREATE SCHEMA derived"]
     CreateRaw --> RawTables["Create raw.* tables"]
     CreateDerived --> DerivedTables["Create derived.* tables"]
     RawTables --> InsertSources["INSERT sources"]
 ```
 
-#### `reset-db`
+#### `reset`
 
 Reset database (destructive):
 
 ```bash
 # Drop and recreate all schemas
-llm-archive reset-db --confirm
+llm-archive reset --confirm
 
 # Reset only derived schema
-llm-archive reset-db --schema derived --confirm
+llm-archive reset --schema=derived --confirm
 ```
 
 ### Data Import
 
-#### `import`
+#### `import_chatgpt`
 
-Import conversations from export files:
+Import ChatGPT conversation export:
 
 ```bash
-# Import ChatGPT export
-llm-archive import chatgpt conversations.json
-
-# Import Claude export
-llm-archive import claude claude_export.json
+# Basic import
+llm-archive import_chatgpt /path/to/conversations.json
 
 # Incremental import (update only changed)
-llm-archive import chatgpt conversations.json --mode incremental
+llm-archive import_chatgpt /path/to/conversations.json --incremental
 
 # With batch size
-llm-archive import chatgpt conversations.json --batch-size 500
+llm-archive import_chatgpt /path/to/conversations.json --batch_size=500
 ```
 
 **Arguments:**
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `source` | Platform: `chatgpt`, `claude` | Required |
-| `file` | Path to export file | Required |
-| `--mode` | `full` or `incremental` | `full` |
-| `--batch-size` | Messages per batch | 1000 |
+| `file` | Path to conversations.json | Required |
+| `--incremental` | Only update changed dialogues | False |
+| `--batch_size` | Messages per batch | 1000 |
 
-```mermaid
-flowchart TD
-    Import["import chatgpt file.json"] --> Read["Read JSON"]
-    Read --> Loop["For each conversation"]
-    
-    Loop --> Extract["Extract dialogue"]
-    Extract --> ExtractMsgs["Extract messages"]
-    ExtractMsgs --> ExtractParts["Extract content parts"]
-    ExtractParts --> ExtractMeta["Extract platform features"]
-    ExtractMeta --> Insert["INSERT to raw.*"]
-    
-    Insert --> Batch{"Batch full?"}
-    Batch -->|Yes| Commit["COMMIT"]
-    Batch -->|No| Loop
-    Commit --> Loop
-    
-    Loop --> Done["Complete"]
+#### `import_claude`
+
+Import Claude conversation export:
+
+```bash
+# Basic import
+llm-archive import_claude /path/to/claude_export.json
+
+# Incremental import
+llm-archive import_claude /path/to/claude_export.json --incremental
+```
+
+#### `import_all`
+
+Import from multiple sources:
+
+```bash
+llm-archive import_all \
+    --chatgpt_path=/path/to/chatgpt.json \
+    --claude_path=/path/to/claude.json \
+    --incremental
 ```
 
 ### Building Derived Data
 
-#### `build`
+#### `build_prompt_responses`
 
-Build derived structures from raw data:
+Build prompt-response pairs from imported messages:
 
 ```bash
-# Build all derived structures
-llm-archive build all
+# Build all dialogues
+llm-archive build_prompt_responses
 
-# Build specific structures
-llm-archive build trees
-llm-archive build exchanges
-llm-archive build hashes
+# Build specific dialogue
+llm-archive build_prompt_responses --dialogue_id="uuid-here"
 
-# Build for single dialogue
-llm-archive build all --dialogue-id "uuid-here"
-
-# Incremental build (new dialogues only)
-llm-archive build all --incremental
+# Rebuild (clears existing first)
+llm-archive build_prompt_responses --rebuild
 ```
 
-**Subcommands:**
+**Arguments:**
 
-| Command | Builds |
-|---------|--------|
-| `all` | Trees, sequences, exchanges, hashes |
-| `trees` | dialogue_trees, message_paths, linear_sequences |
-| `exchanges` | exchanges, exchange_messages, exchange_content |
-| `hashes` | content_hashes |
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--dialogue_id` | Build for specific dialogue only | None (all) |
+| `--rebuild` | Clear and rebuild | False |
+| `--batch_size` | Dialogues per commit | 100 |
 
 ```mermaid
 flowchart LR
-    Build["build all"] --> Trees["TreeBuilder"]
-    Trees --> TreeTables["dialogue_trees<br/>message_paths<br/>linear_sequences"]
+    Build["build_prompt_responses"] --> Clear["Clear existing<br/>(if rebuild)"]
+    Clear --> Iterate["Iterate dialogues"]
     
-    TreeTables --> Exchanges["ExchangeBuilder"]
-    Exchanges --> ExchangeTables["exchanges<br/>exchange_messages<br/>exchange_content"]
+    Iterate --> Process["Process each dialogue"]
+    Process --> Pair["Create prompt-response<br/>pairs"]
+    Pair --> Content["Aggregate content"]
+    Content --> Next["Next dialogue"]
     
-    ExchangeTables --> Hashes["HashBuilder"]
-    Hashes --> HashTables["content_hashes"]
+    Next --> Commit{"Batch full?"}
+    Commit -->|Yes| CommitDB["COMMIT"]
+    Commit -->|No| Iterate
+    CommitDB --> Iterate
 ```
 
 ### Annotation
@@ -186,343 +184,235 @@ Run annotators on entities:
 
 ```bash
 # Run all registered annotators
-llm-archive annotate all
+llm-archive annotate
 
 # Run specific annotator
-llm-archive annotate CodeBlockAnnotator
+llm-archive annotate WikiCandidateAnnotator
 
-# Run annotators for entity type
-llm-archive annotate --entity-type exchange
-
-# Clear and re-run
-llm-archive annotate all --clear
+# Clear cursors and re-run everything
+llm-archive annotate --clear
 ```
 
 **Arguments:**
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `annotator` | Annotator name or `all` | `all` |
-| `--entity-type` | Filter by entity type | None |
-| `--clear` | Clear existing annotations first | False |
+| `annotator` | Annotator name or None for all | None (all) |
+| `--clear` | Clear cursors before running | False |
 
 ```mermaid
 flowchart TD
-    Annotate["annotate all"] --> Sort["Sort by priority"]
+    Annotate["annotate"] --> Sort["Sort by priority"]
     Sort --> Loop["For each annotator"]
     
-    Loop --> GetCursor["Get cursor"]
+    Loop --> GetCursor["Get/Create cursor"]
     GetCursor --> Query["Query entities > cursor"]
-    Query --> Process["Process entities"]
     
-    Process --> AnnotateLoop["For each entity"]
-    AnnotateLoop --> Call["annotate(data)"]
-    Call --> Insert["INSERT annotations"]
-    Insert --> AnnotateLoop
+    Query --> HasEntities{"Entities?"}
+    HasEntities -->|Yes| Process["Process entity"]
+    Process --> Write["Write annotations"]
+    Write --> Next["Next entity"]
+    Next --> HasEntities
     
-    AnnotateLoop --> UpdateCursor["Update cursor"]
-    UpdateCursor --> Loop
-    
-    Loop --> Done["Complete"]
+    HasEntities -->|No| UpdateCursor["Update cursor"]
+    UpdateCursor --> NextAnnotator["Next annotator"]
+    NextAnnotator --> Loop
 ```
 
-#### `show-strategies`
-
-Display registered annotation strategies:
-
-```bash
-llm-archive show-strategies
-```
-
-Output:
-```
-Annotation Key: code
-  ChatGPTCodeExecutionAnnotator (priority=100)
-  CodeBlockAnnotator (priority=90)
-  ScriptHeaderAnnotator (priority=85)
-  CodeStructureAnnotator (priority=70)
-  FunctionDefinitionAnnotator (priority=50)
-  CodeKeywordDensityAnnotator (priority=30)
-
-Annotation Key: latex
-  LatexAnnotator (priority=50)
-  
-...
-```
-
-### Query Commands
+### Analysis and Queries
 
 #### `stats`
 
 Show database statistics:
 
 ```bash
+# Show overview
 llm-archive stats
+
+# Detailed stats
+llm-archive stats --detailed
 ```
 
-Output:
-```
-Raw Schema:
-  dialogues: 1,234
-  messages: 45,678
-  content_parts: 89,012
-  
-Derived Schema:
-  dialogue_trees: 1,234
-  exchanges: 12,345
-  annotations: 67,890
-  
-By Source:
-  chatgpt: 1,000 dialogues
-  claude: 234 dialogues
-```
+Output includes:
+- Dialogue counts by source
+- Message counts by role
+- Prompt-response pair counts
+- Annotation counts by key
 
-#### `list`
+#### `query_annotations`
 
-List entities with filters:
+Query entities by annotations:
 
 ```bash
-# List dialogues
-llm-archive list dialogues --source chatgpt --limit 10
+# Find all wiki article candidates
+llm-archive query_annotations \
+    --entity_type=prompt_response \
+    --annotation_key=exchange_type \
+    --annotation_value=wiki_article
 
-# List exchanges with annotations
-llm-archive list exchanges --has-tag coding --limit 20
+# Find entities with specific flag
+llm-archive query_annotations \
+    --entity_type=message \
+    --annotation_key=has_code_blocks \
+    --value_type=flag
 
-# List by date range
-llm-archive list dialogues --after 2024-01-01 --before 2024-02-01
-```
-
-#### `show`
-
-Show detailed entity information:
-
-```bash
-# Show dialogue
-llm-archive show dialogue <uuid>
-
-# Show exchange with content
-llm-archive show exchange <uuid> --include-content
-
-# Show message with annotations
-llm-archive show message <uuid> --include-annotations
-```
-
-### Export Commands
-
-#### `export`
-
-Export data to various formats:
-
-```bash
-# Export exchanges to JSONL (for training)
-llm-archive export exchanges output.jsonl --format jsonl
-
-# Export with filters
-llm-archive export exchanges output.jsonl \
-  --source chatgpt \
-  --has-tag coding \
-  --min-assistant-words 100
-
-# Export dialogues to JSON
-llm-archive export dialogues output.json --format json
+# Export results
+llm-archive query_annotations \
+    --entity_type=prompt_response \
+    --annotation_key=exchange_type \
+    --annotation_value=wiki_article \
+    --output=wiki_articles.json
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `--format` | `json`, `jsonl`, `csv` |
-| `--source` | Filter by source |
-| `--has-tag` | Filter by tag |
-| `--min-assistant-words` | Minimum word count |
-| `--primary-only` | Primary sequences only |
+| `--entity_type` | Entity type (prompt_response, message, etc.) |
+| `--annotation_key` | Annotation key to filter on |
+| `--annotation_value` | Annotation value to filter on (optional for flags) |
+| `--value_type` | Type of annotation (flag, string, numeric, json) |
+| `--output` | Output file path |
+
+### Pipeline Commands
+
+#### `pipeline`
+
+Run full import and processing pipeline:
+
+```bash
+# Full pipeline with initialization
+llm-archive pipeline \
+    --chatgpt_path=/path/to/chatgpt.json \
+    --claude_path=/path/to/claude.json \
+    --init_db
+
+# Incremental update
+llm-archive pipeline \
+    --chatgpt_path=/path/to/new_export.json \
+    --incremental
+```
+
+**Pipeline steps:**
+1. Initialize database (if `--init_db`)
+2. Import ChatGPT conversations (if `--chatgpt_path`)
+3. Import Claude conversations (if `--claude_path`)
+4. Build prompt-responses
+5. Run all annotators
 
 ---
 
-## Pipeline Commands
+## Usage Examples
 
-### `pipeline`
-
-Run full import-build-annotate pipeline:
-
-```bash
-# Full pipeline
-llm-archive pipeline chatgpt conversations.json
-
-# Pipeline with options
-llm-archive pipeline chatgpt conversations.json \
-  --mode incremental \
-  --skip-annotate
-```
-
-```mermaid
-flowchart LR
-    Pipeline["pipeline"] --> Import["import"]
-    Import --> Build["build all"]
-    Build --> Annotate["annotate all"]
-    Annotate --> Stats["stats"]
-```
-
----
-
-## Output Formats
-
-### JSON Output
-
-```bash
-llm-archive stats --format json
-```
-
-```json
-{
-  "raw": {
-    "dialogues": 1234,
-    "messages": 45678
-  },
-  "derived": {
-    "exchanges": 12345,
-    "annotations": 67890
-  }
-}
-```
-
-### Table Output (Default)
-
-```bash
-llm-archive stats
-```
-
-```
-┌─────────────┬────────┐
-│ Table       │ Count  │
-├─────────────┼────────┤
-│ dialogues   │ 1,234  │
-│ messages    │ 45,678 │
-│ exchanges   │ 12,345 │
-└─────────────┴────────┘
-```
-
----
-
-## Logging
-
-### Log Levels
-
-```bash
-# Debug logging
-llm-archive --log-level DEBUG import chatgpt file.json
-
-# Quiet mode
-llm-archive --log-level WARNING build all
-```
-
-### Log Format
-
-```
-2024-01-15 10:30:00 | INFO     | Importing 1234 conversations
-2024-01-15 10:30:05 | INFO     | Processed 100/1234 dialogues
-2024-01-15 10:30:10 | INFO     | Processed 200/1234 dialogues
-2024-01-15 10:30:45 | INFO     | Import complete: 1234 dialogues
-```
-
----
-
-## Error Handling
-
-### Common Errors
-
-#### Connection Error
-
-```
-Error: Could not connect to database
-  Host: localhost:5432
-  Database: llm_archive
-
-Solutions:
-  1. Check DATABASE_URL environment variable
-  2. Ensure PostgreSQL is running
-  3. Verify credentials
-```
-
-#### File Not Found
-
-```
-Error: Export file not found: conversations.json
-
-Solutions:
-  1. Check file path
-  2. Use absolute path
-```
-
-#### Invalid Source
-
-```
-Error: Unknown source 'openai'
-Valid sources: chatgpt, claude
-
-Solutions:
-  1. Use valid source name
-  2. Check available extractors
-```
-
-### Recovery
-
-```bash
-# Rollback failed import
-llm-archive import chatgpt file.json
-# Error during import...
-
-# The transaction is rolled back automatically
-# Re-run the import
-llm-archive import chatgpt file.json
-```
-
----
-
-## Examples
-
-### Full Workflow
+### First-Time Setup
 
 ```bash
 # 1. Initialize database
-llm-archive init-db
+llm-archive init --schema_dir=schema
 
 # 2. Import ChatGPT export
-llm-archive import chatgpt ~/Downloads/conversations.json
+llm-archive import_chatgpt ~/Downloads/conversations.json
 
 # 3. Import Claude export
-llm-archive import claude ~/Downloads/claude_export.json
+llm-archive import_claude ~/Downloads/claude_export.json
 
-# 4. Build derived structures
-llm-archive build all
+# 4. Build prompt-response pairs
+llm-archive build_prompt_responses
 
 # 5. Run annotations
-llm-archive annotate all
+llm-archive annotate
 
 # 6. Check statistics
 llm-archive stats
-
-# 7. Export coding exchanges
-llm-archive export exchanges coding_exchanges.jsonl \
-  --has-tag coding \
-  --min-assistant-words 100
 ```
 
 ### Incremental Update
 
 ```bash
 # Weekly update with new export
-llm-archive pipeline chatgpt new_conversations.json --mode incremental
+llm-archive pipeline \
+    --chatgpt_path=new_conversations.json \
+    --incremental
 ```
 
-### Targeted Rebuild
+### Targeted Operations
 
 ```bash
-# Rebuild exchanges for single dialogue
-llm-archive build exchanges --dialogue-id "12345678-..."
+# Rebuild prompt-responses for single dialogue
+llm-archive build_prompt_responses --dialogue_id="12345678-..."
 
-# Re-annotate with new annotator version
-llm-archive annotate CodeBlockAnnotator --clear
+# Re-run specific annotator
+llm-archive annotate WikiCandidateAnnotator --clear
+
+# Query wiki article candidates
+llm-archive query_annotations \
+    --entity_type=prompt_response \
+    --annotation_key=exchange_type \
+    --annotation_value=wiki_article \
+    --output=wiki_articles.json
+```
+
+### Development Workflow
+
+```bash
+# Reset database
+llm-archive reset --confirm
+
+# Import test data
+llm-archive import_chatgpt tests/fixtures/sample.json
+
+# Build and annotate
+llm-archive build_prompt_responses
+llm-archive annotate
+
+# Check results
+llm-archive stats --detailed
+```
+
+---
+
+## Error Handling
+
+### Common Issues
+
+**Database connection failed:**
+```bash
+# Check environment variables
+echo $DATABASE_URL
+
+# Or check individual vars
+echo $POSTGRES_HOST
+echo $POSTGRES_PORT
+
+# Test connection
+psql -h localhost -U postgres -d llm_archive
+```
+
+**Import fails with duplicate key:**
+```bash
+# Use incremental mode to update existing
+llm-archive import_chatgpt file.json --incremental
+
+# Or clear and reimport
+llm-archive reset --schema=raw --confirm
+llm-archive import_chatgpt file.json
+```
+
+**Annotation cursor stuck:**
+```bash
+# Clear cursors and re-run
+llm-archive annotate --clear
+```
+
+### Verbose Output
+
+```bash
+# Set log level
+export LOG_LEVEL=DEBUG
+llm-archive import_chatgpt file.json
+
+# Or use python directly with debug
+python -m llm_archive.cli import_chatgpt file.json
 ```
 
 ---
@@ -551,3 +441,4 @@ eval "$(llm-archive --completion zsh)"
 - [Extractors](extractors.md) - Import details
 - [Builders](builders.md) - Build process
 - [Annotators](annotators.md) - Annotation system
+- [Testing](testing.md) - Testing commands

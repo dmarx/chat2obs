@@ -1,4 +1,4 @@
-# docs/models.md
+<!-- docs/models.md -->
 # SQLAlchemy Models
 
 ## Overview
@@ -35,8 +35,6 @@ classDiagram
             +source_created_at: datetime
             +source_updated_at: datetime
             +source_json: dict
-            +created_at: datetime
-            +updated_at: datetime
         }
         
         class Message {
@@ -47,11 +45,7 @@ classDiagram
             +role: str
             +author_id: str
             +author_name: str
-            +source_created_at: datetime
-            +source_updated_at: datetime
             +content_hash: str
-            +deleted_at: datetime
-            +source_json: dict
         }
         
         class ContentPart {
@@ -60,12 +54,25 @@ classDiagram
             +sequence: int
             +part_type: str
             +text_content: str
-            +language: str
-            +media_type: str
-            +url: str
-            +tool_name: str
-            +tool_use_id: str
-            +tool_input: dict
+        }
+    }
+    
+    namespace derived {
+        class PromptResponse {
+            +id: UUID
+            +dialogue_id: UUID
+            +prompt_message_id: UUID
+            +response_message_id: UUID
+            +prompt_position: int
+            +response_position: int
+        }
+        
+        class PromptResponseContent {
+            +prompt_response_id: UUID
+            +prompt_text: str
+            +response_text: str
+            +prompt_word_count: int
+            +response_word_count: int
         }
     }
     
@@ -73,11 +80,17 @@ classDiagram
     Base <|-- Dialogue
     Base <|-- Message
     Base <|-- ContentPart
+    Base <|-- PromptResponse
+    Base <|-- PromptResponseContent
     
     Source "1" --> "*" Dialogue : dialogues
     Dialogue "1" --> "*" Message : messages
     Message "1" --> "*" ContentPart : content_parts
     Message "1" --> "*" Message : children
+    Dialogue "1" --> "*" PromptResponse : prompt_responses
+    PromptResponse "1" --> "1" PromptResponseContent : content
+    PromptResponse "1" --> "1" Message : prompt_message
+    PromptResponse "1" --> "1" Message : response_message
 ```
 
 ## Raw Models (`models/raw.py`)
@@ -107,6 +120,7 @@ class Source(Base):
 # Check if source supports tree structure
 if source.has_native_trees:
     # Handle ChatGPT-style branching
+    pass
     
 # Validate role
 if message.role not in source.role_vocabulary:
@@ -141,13 +155,22 @@ class Dialogue(Base):
     # Relationships
     source_rel = relationship("Source", back_populates="dialogues")
     messages = relationship("Message", back_populates="dialogue", 
-                           cascade="all, delete-orphan")
+                          cascade="all, delete-orphan")
+    prompt_responses = relationship("PromptResponse", back_populates="dialogue",
+                                  cascade="all, delete-orphan")
 ```
 
-**Key Points:**
-- `source_id`: Platform's native ID (for deduplication)
-- `source_json`: Complete original export data
-- Dual timestamp design: `source_*` vs `created_at/updated_at`
+**Usage:**
+```python
+# Get all messages
+for message in dialogue.messages:
+    print(f"{message.role}: {message.content_parts[0].text_content}")
+
+# Get prompt-response pairs
+for pr in dialogue.prompt_responses:
+    print(f"Q: {pr.content.prompt_text}")
+    print(f"A: {pr.content.response_text}")
+```
 
 #### Message
 
@@ -157,16 +180,17 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = {"schema": "raw"}
     
-    id = Column(PG_UUID(as_uuid=True), primary_key=True, 
+    id = Column(PG_UUID(as_uuid=True), primary_key=True,
                 server_default=func.gen_random_uuid())
     dialogue_id = Column(PG_UUID(as_uuid=True), 
-                        ForeignKey("raw.dialogues.id", ondelete="CASCADE"), 
+                        ForeignKey("raw.dialogues.id", ondelete="CASCADE"),
                         nullable=False)
     source_id = Column(String, nullable=False)
     
     # Tree structure
     parent_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
     
+    # Normalized fields
     role = Column(String, nullable=False)
     author_id = Column(String)
     author_name = Column(String)
@@ -181,36 +205,45 @@ class Message(Base):
     
     source_json = Column(JSONB, nullable=False)
     
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
     # Relationships
     dialogue = relationship("Dialogue", back_populates="messages")
-    parent = relationship("Message", remote_side=[id], backref="children")
     content_parts = relationship("ContentPart", back_populates="message",
-                                cascade="all, delete-orphan")
-    attachments = relationship("Attachment", back_populates="message",
-                              cascade="all, delete-orphan")
+                               cascade="all, delete-orphan",
+                               order_by="ContentPart.sequence")
+    
+    # Tree relationships
+    parent = relationship("Message", remote_side=[id], backref="children")
 ```
 
-**Tree Navigation:**
+**Usage:**
 ```python
-# Get children (regenerations/branches)
+# Get text content
+text = ' '.join(part.text_content for part in message.content_parts 
+                if part.text_content)
+
+# Navigate tree
+if message.parent:
+    print(f"Parent: {message.parent.role}")
+
 for child in message.children:
-    print(f"Child: {child.id}")
+    print(f"Child: {child.role}")
 
-# Walk up to root
-current = message
-while current.parent:
-    current = current.parent
-root = current
-
-# Check if leaf
-is_leaf = len(message.children) == 0
+# Check for regenerations (siblings)
+if message.parent:
+    siblings = [m for m in message.parent.children if m.id != message.id]
+    if siblings:
+        print(f"This message has {len(siblings)} regeneration(s)")
 ```
 
 #### ContentPart
 
 ```python
 class ContentPart(Base):
-    """Content segments within a message."""
+    """Segmented content within a message."""
     __tablename__ = "content_parts"
     __table_args__ = {"schema": "raw"}
     
@@ -221,7 +254,7 @@ class ContentPart(Base):
                        nullable=False)
     sequence = Column(Integer, nullable=False)
     
-    part_type = Column(String, nullable=False)  # 'text', 'code', 'image', etc.
+    part_type = Column(String, nullable=False)
     text_content = Column(Text)
     
     # Code-specific
@@ -231,36 +264,30 @@ class ContentPart(Base):
     media_type = Column(String)
     url = Column(String)
     
-    # Tool use (Claude)
+    # Tool use-specific
     tool_name = Column(String)
     tool_use_id = Column(String)
     tool_input = Column(JSONB)
     
-    # Timing
-    started_at = Column(DateTime(timezone=True))
-    ended_at = Column(DateTime(timezone=True))
-    is_error = Column(Boolean, default=False)
-    
-    source_json = Column(JSONB, nullable=False)
-    
     # Relationships
     message = relationship("Message", back_populates="content_parts")
-    citations = relationship("Citation", back_populates="content_part",
-                            cascade="all, delete-orphan")
 ```
 
-**Part Type Discriminator:**
+**Usage:**
+```python
+# Filter by type
+text_parts = [p for p in message.content_parts if p.part_type == 'text']
+code_parts = [p for p in message.content_parts if p.part_type == 'code']
 
-| `part_type` | Description | Key Fields |
-|-------------|-------------|------------|
-| `text` | Plain text content | `text_content` |
-| `code` | Code block | `text_content`, `language` |
-| `image` | Image reference | `media_type`, `url` |
-| `tool_use` | Tool invocation | `tool_name`, `tool_use_id`, `tool_input` |
-| `tool_result` | Tool response | `tool_use_id`, `text_content`, `is_error` |
-| `thinking` | Reasoning content | `text_content` |
+# Get code blocks
+for part in code_parts:
+    print(f"Language: {part.language}")
+    print(part.text_content)
+```
 
-### ChatGPT Extension Models
+### Platform Extension Models
+
+#### ChatGPT Extensions
 
 ```python
 class ChatGPTMessageMeta(Base):
@@ -271,106 +298,54 @@ class ChatGPTMessageMeta(Base):
     message_id = Column(PG_UUID(as_uuid=True),
                        ForeignKey("raw.messages.id", ondelete="CASCADE"),
                        primary_key=True)
-    model_slug = Column(String)          # 'gpt-4', 'gpt-4o', etc.
-    status = Column(String)              # 'finished_successfully'
-    end_turn = Column(Boolean)           # True if assistant finished turn
-    gizmo_id = Column(String)            # Custom GPT identifier
-    source_json = Column(JSONB, nullable=False)
+    
+    weight = Column(Float)
+    end_turn = Column(Boolean)
+    recipient = Column(String)
+    model_slug = Column(String)
+    is_complete = Column(Boolean)
+    finish_details = Column(JSONB)
 
+class ChatGPTCodeExecution(Base):
+    """Code execution results from ChatGPT."""
+    # ... similar structure
 
 class ChatGPTSearchGroup(Base):
-    """ChatGPT search result groups."""
-    # ... search metadata
-    
-class ChatGPTCodeExecution(Base):
-    """ChatGPT code execution records."""
-    # ... code interpreter metadata
-    
-class ChatGPTCanvasDoc(Base):
-    """ChatGPT canvas document operations."""
-    # ... canvas metadata
-    
-class ChatGPTDalleGeneration(Base):
-    """ChatGPT DALL-E image generations."""
-    # ... image generation metadata
+    """Web search groups from ChatGPT."""
+    # ... similar structure
 ```
 
----
-
-## Derived Models (`models/derived.py`)
-
-### Tree Analysis Models
-
-#### DialogueTree
+#### Claude Extensions
 
 ```python
-class DialogueTree(Base):
-    """Tree analysis results for a dialogue."""
-    __tablename__ = "dialogue_trees"
-    __table_args__ = {"schema": "derived"}
-    
-    dialogue_id = Column(PG_UUID(as_uuid=True),
-                        ForeignKey("raw.dialogues.id", ondelete="CASCADE"),
-                        primary_key=True)
-    
-    total_nodes = Column(Integer, nullable=False)
-    max_depth = Column(Integer, nullable=False)
-    branch_count = Column(Integer, nullable=False)
-    leaf_count = Column(Integer, nullable=False)
-    
-    primary_leaf_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
-    primary_path_length = Column(Integer)
-    
-    # is_linear is GENERATED ALWAYS in SQL
-    has_regenerations = Column(Boolean, nullable=False, default=False)
-    has_edits = Column(Boolean, nullable=False, default=False)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-```
-
-**Usage:**
-```python
-# Check if dialogue is simple linear conversation
-if tree.branch_count == 0:  # or tree.is_linear in SQL
-    # Simple linear processing
-else:
-    # Handle branching conversation
-```
-
-#### MessagePath
-
-```python
-class MessagePath(Base):
-    """Materialized path for a message in the tree."""
-    __tablename__ = "message_paths"
-    __table_args__ = {"schema": "derived"}
+class ClaudeMessageMeta(Base):
+    """Claude-specific message metadata."""
+    __tablename__ = "claude_message_meta"
+    __table_args__ = {"schema": "raw"}
     
     message_id = Column(PG_UUID(as_uuid=True),
                        ForeignKey("raw.messages.id", ondelete="CASCADE"),
                        primary_key=True)
-    dialogue_id = Column(PG_UUID(as_uuid=True),
-                        ForeignKey("raw.dialogues.id", ondelete="CASCADE"),
-                        nullable=False)
     
-    ancestor_path = Column(ARRAY(PG_UUID(as_uuid=True)), nullable=False)
-    depth = Column(Integer, nullable=False)
-    
-    is_root = Column(Boolean, nullable=False)
-    is_leaf = Column(Boolean, nullable=False)
-    child_count = Column(Integer, nullable=False)
-    sibling_index = Column(Integer, nullable=False)
-    
-    is_on_primary_path = Column(Boolean, nullable=False)
+    model = Column(String)
+    usage_input_tokens = Column(Integer)
+    usage_output_tokens = Column(Integer)
 ```
 
-### Exchange Models
+## Derived Models (`models/derived.py`)
 
-#### Exchange
+### PromptResponse
 
 ```python
-class Exchange(Base):
-    """Logical interaction unit (user prompt + assistant response)."""
-    __tablename__ = "exchanges"
+class PromptResponse(Base):
+    """
+    Direct prompt-response association without tree dependency.
+    
+    Each record pairs a user prompt with one of its responses.
+    A prompt can have multiple responses (regenerations).
+    Each response appears in exactly one record.
+    """
+    __tablename__ = "prompt_responses"
     __table_args__ = {"schema": "derived"}
     
     id = Column(PG_UUID(as_uuid=True), primary_key=True,
@@ -379,278 +354,249 @@ class Exchange(Base):
                         ForeignKey("raw.dialogues.id", ondelete="CASCADE"),
                         nullable=False)
     
-    first_message_id = Column(PG_UUID(as_uuid=True),
-                             ForeignKey("raw.messages.id"), nullable=False)
-    last_message_id = Column(PG_UUID(as_uuid=True),
-                            ForeignKey("raw.messages.id"), nullable=False)
+    prompt_message_id = Column(PG_UUID(as_uuid=True),
+                              ForeignKey("raw.messages.id"),
+                              nullable=False)
+    response_message_id = Column(PG_UUID(as_uuid=True),
+                                ForeignKey("raw.messages.id"),
+                                nullable=False)
     
-    message_count = Column(Integer, nullable=False)
-    user_message_count = Column(Integer, nullable=False)
-    assistant_message_count = Column(Integer, nullable=False)
+    prompt_position = Column(Integer, nullable=False)
+    response_position = Column(Integer, nullable=False)
     
-    is_continuation = Column(Boolean, default=False)
-    continuation_of_id = Column(PG_UUID(as_uuid=True),
-                               ForeignKey("derived.exchanges.id"))
-    merged_count = Column(Integer, default=1)
-    
-    started_at = Column(DateTime(timezone=True))
-    ended_at = Column(DateTime(timezone=True))
+    prompt_role = Column(String, nullable=False)
+    response_role = Column(String, nullable=False)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
     # Relationships
-    exchange_messages = relationship("ExchangeMessage", back_populates="exchange",
-                                    cascade="all, delete-orphan")
-    content = relationship("ExchangeContent", back_populates="exchange",
-                          uselist=False, cascade="all, delete-orphan")
+    dialogue = relationship("Dialogue", back_populates="prompt_responses")
+    prompt_message = relationship("Message", foreign_keys=[prompt_message_id])
+    response_message = relationship("Message", foreign_keys=[response_message_id])
+    content = relationship("PromptResponseContent", uselist=False,
+                         back_populates="prompt_response",
+                         cascade="all, delete-orphan")
 ```
 
-#### ExchangeContent
-
+**Usage:**
 ```python
-class ExchangeContent(Base):
-    """Aggregated content for an exchange."""
-    __tablename__ = "exchange_content"
-    __table_args__ = {"schema": "derived"}
-    
-    exchange_id = Column(PG_UUID(as_uuid=True),
-                        ForeignKey("derived.exchanges.id", ondelete="CASCADE"),
-                        primary_key=True)
-    
-    user_text = Column(Text)
-    assistant_text = Column(Text)
-    full_text = Column(Text)
-    
-    user_text_hash = Column(String)
-    assistant_text_hash = Column(String)
-    full_text_hash = Column(String)
-    
-    user_word_count = Column(Integer)
-    assistant_word_count = Column(Integer)
-    total_word_count = Column(Integer)
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Relationship
-    exchange = relationship("Exchange", back_populates="content")
-```
+# Access messages
+print(f"User: {pr.prompt_message.content_parts[0].text_content}")
+print(f"Assistant: {pr.response_message.content_parts[0].text_content}")
 
-### Annotation Models
+# Access denormalized content (faster)
+print(f"Q: {pr.content.prompt_text}")
+print(f"A: {pr.content.response_text}")
 
-#### Annotation
-
-```python
-class Annotation(Base):
-    """Polymorphic annotation on any entity."""
-    __tablename__ = "annotations"
-    __table_args__ = {"schema": "derived"}
-    
-    id = Column(PG_UUID(as_uuid=True), primary_key=True,
-                server_default=func.gen_random_uuid())
-    
-    # Polymorphic target
-    entity_type = Column(String, nullable=False)  # 'message', 'exchange', 'dialogue'
-    entity_id = Column(PG_UUID(as_uuid=True), nullable=False)
-    
-    # Annotation content
-    annotation_type = Column(String, nullable=False)  # 'tag', 'feature', 'metadata'
-    annotation_key = Column(String)                    # optional sub-key
-    annotation_value = Column(String, nullable=False)
-    annotation_data = Column(JSONB)
-    
-    # Provenance
-    confidence = Column(Float)
-    source = Column(String, nullable=False)            # 'manual', 'heuristic', 'model'
-    source_version = Column(String)
-    
-    # Lifecycle
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    superseded_at = Column(DateTime(timezone=True))
-    superseded_by = Column(PG_UUID(as_uuid=True), ForeignKey("derived.annotations.id"))
-```
-
-**Querying Annotations:**
-```python
-# Get active annotations for an entity
-annotations = (
-    session.query(Annotation)
-    .filter(Annotation.entity_type == 'exchange')
-    .filter(Annotation.entity_id == exchange_id)
-    .filter(Annotation.superseded_at.is_(None))  # Active only
-    .all()
-)
-
-# Get all tags for an exchange
-tags = (
-    session.query(Annotation.annotation_value)
-    .filter(Annotation.entity_type == 'exchange')
-    .filter(Annotation.entity_id == exchange_id)
-    .filter(Annotation.annotation_type == 'tag')
-    .filter(Annotation.superseded_at.is_(None))
-    .all()
-)
-```
-
-#### AnnotatorCursor
-
-```python
-class AnnotatorCursor(Base):
-    """Tracks processing state for incremental annotation."""
-    __tablename__ = "annotator_cursors"
-    __table_args__ = {"schema": "derived"}
-    
-    id = Column(PG_UUID(as_uuid=True), primary_key=True,
-                server_default=func.gen_random_uuid())
-    
-    annotator_name = Column(String, nullable=False)
-    annotator_version = Column(String, nullable=False)
-    entity_type = Column(String, nullable=False)
-    
-    high_water_mark = Column(DateTime(timezone=True), nullable=False)
-    
-    entities_processed = Column(Integer, nullable=False, default=0)
-    annotations_created = Column(Integer, nullable=False, default=0)
-    
-    updated_at = Column(DateTime(timezone=True), server_default=func.now())
-```
-
----
-
-## Model Relationships Diagram
-
-```mermaid
-flowchart TB
-    subgraph Raw["raw.* Models"]
-        Source --> Dialogue
-        Dialogue --> Message
-        Message --> ContentPart
-        Message --> Attachment
-        ContentPart --> Citation
-        Message --> |parent_id| Message
-        
-        Message -.-> ChatGPTMessageMeta
-        Message -.-> ChatGPTSearchGroup
-        Message -.-> ChatGPTCodeExecution
-        ContentPart -.-> ChatGPTDalleGeneration
-    end
-    
-    subgraph Derived["derived.* Models"]
-        Dialogue -.-> DialogueTree
-        Message -.-> MessagePath
-        Dialogue -.-> LinearSequence
-        Dialogue -.-> Exchange
-        
-        LinearSequence --> SequenceMessage
-        LinearSequence --> SequenceExchange
-        Exchange --> ExchangeMessage
-        Exchange --> ExchangeContent
-        
-        Annotation
-        AnnotatorCursor
-        ContentHash
-    end
-    
-    Exchange -.-> |entity_id| Annotation
-    Message -.-> |entity_id| Annotation
-    Dialogue -.-> |entity_id| Annotation
-```
-
----
-
-## Module Exports (`models/__init__.py`)
-
-```python
-from llm_archive.models.raw import (
-    Base,
-    Source,
-    Dialogue,
-    Message,
-    ContentPart,
-    Citation,
-    Attachment,
-    ChatGPTMessageMeta,
-    ChatGPTSearchGroup,
-    ChatGPTSearchEntry,
-    ChatGPTCodeExecution,
-    ChatGPTCodeOutput,
-    ChatGPTDalleGeneration,
-    ChatGPTCanvasDoc,
-    ClaudeMessageMeta,
-)
-
-from llm_archive.models.derived import (
-    DialogueTree,
-    MessagePath,
-    LinearSequence,
-    SequenceMessage,
-    Exchange,
-    ExchangeMessage,
-    SequenceExchange,
-    ExchangeContent,
-    Annotation,
-    ContentHash,
-    AnnotatorCursor,
-)
-```
-
----
-
-## Best Practices
-
-### Querying with Relationships
-
-```python
-# Eager loading to avoid N+1 queries
-dialogues = (
-    session.query(Dialogue)
-    .options(
-        joinedload(Dialogue.messages)
-        .joinedload(Message.content_parts)
+# Find regenerations (same prompt, different responses)
+siblings = (
+    session.query(PromptResponse)
+    .filter(
+        PromptResponse.prompt_message_id == pr.prompt_message_id,
+        PromptResponse.id != pr.id
     )
+    .all()
+)
+```
+
+### PromptResponseContent
+
+```python
+class PromptResponseContent(Base):
+    """
+    Denormalized text content for annotation/search without joins.
+    """
+    __tablename__ = "prompt_response_content"
+    __table_args__ = {"schema": "derived"}
+    
+    prompt_response_id = Column(PG_UUID(as_uuid=True),
+                                ForeignKey("derived.prompt_responses.id",
+                                         ondelete="CASCADE"),
+                                primary_key=True)
+    
+    prompt_text = Column(Text)
+    response_text = Column(Text)
+    
+    prompt_word_count = Column(Integer)
+    response_word_count = Column(Integer)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    prompt_response = relationship("PromptResponse", back_populates="content")
+```
+
+**Usage:**
+```python
+# Query with content filters
+long_responses = (
+    session.query(PromptResponse)
+    .join(PromptResponseContent)
+    .filter(PromptResponseContent.response_word_count > 500)
+    .all()
+)
+
+# Search text content
+wiki_articles = (
+    session.query(PromptResponse)
+    .join(PromptResponseContent)
+    .filter(PromptResponseContent.prompt_text.ilike('%write an article%'))
+    .all()
+)
+```
+
+## Querying Patterns
+
+### Basic Queries
+
+```python
+from sqlalchemy.orm import Session
+from llm_archive.models import Dialogue, Message, PromptResponse
+
+# Get all dialogues from ChatGPT
+chatgpt_dialogues = (
+    session.query(Dialogue)
     .filter(Dialogue.source == 'chatgpt')
     .all()
 )
 
-# Explicit joins for complex queries
-results = (
-    session.query(Exchange, ExchangeContent)
-    .join(ExchangeContent)
-    .filter(ExchangeContent.assistant_word_count > 500)
+# Get user messages
+user_messages = (
+    session.query(Message)
+    .filter(Message.role == 'user')
+    .all()
+)
+
+# Get prompt-responses with long responses
+long_prs = (
+    session.query(PromptResponse)
+    .join(PromptResponseContent)
+    .filter(PromptResponseContent.response_word_count > 1000)
     .all()
 )
 ```
 
-### Transaction Management
+### Joining with Annotations
 
 ```python
-from llm_archive.db import get_session
+from sqlalchemy import text
 
+# Get wiki article candidates
+wiki_candidates = (
+    session.query(PromptResponse)
+    .join(
+        text("""
+            derived.prompt_response_annotations_string 
+            ON derived.prompt_response_annotations_string.entity_id = derived.prompt_responses.id
+        """)
+    )
+    .filter(
+        text("""
+            derived.prompt_response_annotations_string.annotation_key = 'exchange_type'
+            AND derived.prompt_response_annotations_string.annotation_value = 'wiki_article'
+        """)
+    )
+    .all()
+)
+```
+
+### Eager Loading
+
+```python
+from sqlalchemy.orm import joinedload
+
+# Load dialogue with all messages and content
+dialogue = (
+    session.query(Dialogue)
+    .options(
+        joinedload(Dialogue.messages).joinedload(Message.content_parts)
+    )
+    .filter(Dialogue.id == dialogue_id)
+    .one()
+)
+
+# Load prompt-response with content
+pr = (
+    session.query(PromptResponse)
+    .options(joinedload(PromptResponse.content))
+    .filter(PromptResponse.id == pr_id)
+    .one()
+)
+```
+
+### Tree Navigation
+
+```python
+# Get message tree depth
+def get_depth(message):
+    depth = 0
+    current = message
+    while current.parent:
+        depth += 1
+        current = current.parent
+    return depth
+
+# Get all descendants
+def get_descendants(message):
+    descendants = []
+    for child in message.children:
+        descendants.append(child)
+        descendants.extend(get_descendants(child))
+    return descendants
+
+# Get root message
+def get_root(message):
+    current = message
+    while current.parent:
+        current = current.parent
+    return current
+```
+
+## Session Management
+
+### Basic Session
+
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from llm_archive.config import DATABASE_URL
+from llm_archive.models import Base
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+
+with SessionLocal() as session:
+    dialogues = session.query(Dialogue).all()
+    # ... work with data
+    session.commit()
+```
+
+### Context Manager
+
+```python
+from contextlib import contextmanager
+
+@contextmanager
+def get_session():
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+# Usage
 with get_session() as session:
-    dialogue = Dialogue(source='chatgpt', source_id='abc', ...)
-    session.add(dialogue)
-    # Commits automatically on exit, rolls back on exception
+    dialogue = session.query(Dialogue).first()
 ```
-
-### UUID Handling
-
-```python
-from uuid import UUID
-
-# UUIDs are native Python UUID objects
-exchange_id: UUID = exchange.id
-
-# String conversion when needed
-exchange_id_str = str(exchange.id)
-
-# Parse from string
-exchange_id = UUID('12345678-1234-5678-1234-567812345678')
-```
-
----
 
 ## Related Documentation
 
+- [Architecture Overview](architecture.md)
 - [Schema Design](schema.md) - Database schema details
-- [Extractors](extractors.md) - How models are populated
-- [Builders](builders.md) - How derived models are created
-- [Annotators](annotators.md) - Working with annotations
+- [Extractors](extractors.md) - Creating model instances
+- [Builders](builders.md) - Building derived models
+- [Annotators](annotators.md) - Querying models
