@@ -1,5 +1,5 @@
 # tests/integration/conftest.py
-"""Pytest configuration for integration tests."""
+"""Pytest configuration for integration tests - CORRECTED FIXTURES."""
 
 import os
 from typing import Generator
@@ -46,13 +46,10 @@ def setup_schemas(db_engine):
             print(f"Executing {sql_file.name}")
             sql = sql_file.read_text()
             
-            # Execute the entire file as one block
-            # PostgreSQL can handle multiple statements separated by semicolons
             try:
                 conn.execute(text(sql))
                 conn.commit()
             except Exception as e:
-                # Only ignore "already exists" errors
                 if "already exists" in str(e).lower():
                     conn.rollback()
                     print(f"Note: {sql_file.name} - {e}")
@@ -63,7 +60,7 @@ def setup_schemas(db_engine):
     
     yield
     
-    # Cleanup after all tests
+    # Cleanup
     with db_engine.connect() as conn:
         conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
         conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
@@ -73,17 +70,13 @@ def setup_schemas(db_engine):
 @pytest.fixture
 def db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
     """Create a database session with transaction rollback."""
-    # Create connection and begin transaction
     connection = db_engine.connect()
     transaction = connection.begin()
-    
-    # Create session bound to this connection
     SessionFactory = sessionmaker(bind=connection)
     session = SessionFactory()
     
     yield session
     
-    # Rollback transaction and close connection
     session.close()
     transaction.rollback()
     connection.close()
@@ -91,12 +84,12 @@ def db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
 
 @pytest.fixture
 def clean_db_session(db_session) -> Session:
-    """Alias for db_session for clarity in tests."""
+    """Alias for db_session."""
     return db_session
 
 
 # ============================================================
-# Test Data Fixtures - ChatGPT
+# ChatGPT Test Fixtures
 # ============================================================
 
 @pytest.fixture
@@ -176,7 +169,7 @@ def chatgpt_simple_conversation() -> dict:
 
 @pytest.fixture
 def chatgpt_branched_conversation() -> dict:
-    """ChatGPT conversation with branches (regenerations) - 5 messages total."""
+    """ChatGPT conversation with branches - 5 messages, first user has 2 children."""
     return {
         "conversation_id": "conv-branched-001",
         "title": "Branched Test Conversation",
@@ -187,12 +180,13 @@ def chatgpt_branched_conversation() -> dict:
                 "id": "root",
                 "parent": None,
                 "children": ["node-1"],
-                "message": None,  # Root has no message
+                "message": None,
             },
+            # First user message - THIS is the branch point (has 2 children)
             "node-1": {
                 "id": "node-1",
                 "parent": "root",
-                "children": ["node-2a", "node-2b"],  # Branch point
+                "children": ["node-2a", "node-2b"],  # 2 CHILDREN = REGENERATION
                 "message": {
                     "id": "msg-1",
                     "author": {"role": "user"},
@@ -203,10 +197,11 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
+            # First regeneration
             "node-2a": {
                 "id": "node-2a",
                 "parent": "node-1",
-                "children": ["node-3"],  # Continued from this branch
+                "children": ["node-3"],
                 "message": {
                     "id": "msg-2a",
                     "author": {"role": "assistant"},
@@ -217,10 +212,11 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
+            # Second regeneration
             "node-2b": {
                 "id": "node-2b",
                 "parent": "node-1",
-                "children": [],  # Alternative branch (not continued)
+                "children": [],
                 "message": {
                     "id": "msg-2b",
                     "author": {"role": "assistant"},
@@ -231,6 +227,7 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
+            # Continuation from first branch
             "node-3": {
                 "id": "node-3",
                 "parent": "node-2a",
@@ -265,7 +262,7 @@ def chatgpt_branched_conversation() -> dict:
 
 @pytest.fixture
 def chatgpt_conversation_with_code() -> dict:
-    """ChatGPT conversation with code content."""
+    """ChatGPT conversation with code content - uses nested parts structure."""
     return {
         "conversation_id": "conv-code-001",
         "title": "Code Example",
@@ -288,7 +285,7 @@ def chatgpt_conversation_with_code() -> dict:
                     "create_time": 1700000100.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Write a Python function to add two numbers"]
+                        "parts": ["Write a Python function to calculate fibonacci numbers"]
                     }
                 }
             },
@@ -301,9 +298,16 @@ def chatgpt_conversation_with_code() -> dict:
                     "author": {"role": "assistant"},
                     "create_time": 1700000200.0,
                     "content": {
-                        "content_type": "code",
-                        "language": "python",
-                        "text": "def add(a, b):\n    return a + b"
+                        "content_type": "text",
+                        "parts": [
+                            "Here's a Python function:",
+                            {
+                                "content_type": "code",
+                                "language": "python",
+                                "text": "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)"
+                            },
+                            "This is a recursive implementation."
+                        ]
                     }
                 }
             }
@@ -313,7 +317,7 @@ def chatgpt_conversation_with_code() -> dict:
 
 @pytest.fixture
 def chatgpt_conversation_with_image() -> dict:
-    """ChatGPT conversation with image content."""
+    """ChatGPT conversation with image content - uses nested parts structure."""
     return {
         "conversation_id": "conv-image-001",
         "title": "Image Example",
@@ -340,7 +344,7 @@ def chatgpt_conversation_with_image() -> dict:
                             "What's in this image?",
                             {
                                 "content_type": "image/png",
-                                "asset_pointer": "file-service://file-abc123"
+                                "asset_pointer": "file-service://dalle-gen-abc123"
                             }
                         ]
                     }
@@ -369,8 +373,7 @@ def chatgpt_conversations(
     chatgpt_simple_conversation,
     chatgpt_branched_conversation,
 ) -> list[dict]:
-    """List of all ChatGPT test conversations."""
-    # Create a third unique conversation
+    """List of ChatGPT test conversations."""
     third_conversation = {
         "conversation_id": "conv-third-001",
         "title": "Third Conversation",
@@ -407,7 +410,7 @@ def chatgpt_conversations(
 
 
 # ============================================================
-# Test Data Fixtures - Claude
+# Claude Test Fixtures
 # ============================================================
 
 @pytest.fixture
@@ -545,7 +548,7 @@ def claude_conversations(
     claude_conversation_with_thinking,
     claude_conversation_with_tool_use,
 ) -> list[dict]:
-    """List of all Claude test conversations."""
+    """List of Claude test conversations."""
     return [
         claude_simple_conversation,
         claude_conversation_with_thinking,
@@ -592,7 +595,6 @@ def fully_populated_db(
     from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
     from llm_archive.builders.prompt_response import PromptResponseBuilder
     
-    # Import conversations
     chatgpt_extractor = ChatGPTExtractor(clean_db_session)
     chatgpt_extractor.extract_dialogue(chatgpt_simple_conversation)
     chatgpt_extractor.extract_dialogue(chatgpt_branched_conversation)
@@ -602,7 +604,6 @@ def fully_populated_db(
     
     clean_db_session.commit()
     
-    # Build derived data (using new prompt_response builder)
     pr_builder = PromptResponseBuilder(clean_db_session)
     pr_builder.build_all()
     
