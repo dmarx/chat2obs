@@ -1,672 +1,520 @@
-# docs/annotators.md
+<!-- docs/annotators.md -->
 # Annotation System
 
 ## Overview
 
-The annotation system provides a flexible framework for adding labels, tags, and metadata to entities (messages, exchanges, dialogues). It supports:
-
-- **Multiple entity types**: Messages, exchanges, dialogues
-- **Annotation types**: Tags, features, metadata, titles, summaries
-- **Strategy pattern**: Multiple annotators can target the same semantic concept
-- **Incremental processing**: Cursor-based to avoid reprocessing
-- **Provenance tracking**: Source, version, confidence for all annotations
+The annotation system applies labels, tags, and metadata to entities using a typed table architecture. Multiple detection strategies can target the same semantic concept with priority-based resolution.
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    subgraph Entities["Entity Types"]
-        Messages["Messages"]
-        Exchanges["Exchanges"]
-        Dialogues["Dialogues"]
-    end
-    
-    subgraph Manager["AnnotationManager"]
-        Register["register()"]
-        RunAll["run_all()"]
-        HasKey["has_annotation_key()"]
-        GetStrat["get_strategy_info()"]
-    end
-    
-    subgraph Annotators["Annotator Classes"]
-        direction TB
-        
-        subgraph MsgAnnotators["Message Annotators"]
-            Code1["CodeBlockAnnotator<br/>priority=90"]
-            Code2["ScriptHeaderAnnotator<br/>priority=85"]
-            Code3["CodeStructureAnnotator<br/>priority=70"]
-            Wiki["WikiLinkAnnotator"]
-            Latex["LatexAnnotator"]
-        end
-        
-        subgraph ExchAnnotators["Exchange Annotators"]
-            Type["ExchangeTypeAnnotator"]
-            Evidence["CodeEvidenceAnnotator"]
-            Title["TitleExtractionAnnotator"]
-        end
-        
-        subgraph DlgAnnotators["Dialogue Annotators"]
-            Length["DialogueLengthAnnotator"]
-            Stats["PromptStatsAnnotator"]
-            Pattern["InteractionPatternAnnotator"]
-        end
-        
-        subgraph PlatAnnotators["Platform Annotators"]
-            Search["ChatGPTWebSearchAnnotator<br/>priority=100"]
-            CodeExec["ChatGPTCodeExecutionAnnotator<br/>priority=100"]
-            Gizmo["ChatGPTGizmoAnnotator"]
-        end
-    end
-    
-    subgraph Storage["Storage"]
-        Annotations["derived.annotations"]
-        Cursors["derived.annotator_cursors"]
-    end
-    
-    Messages --> MsgAnnotators
-    Exchanges --> ExchAnnotators
-    Dialogues --> DlgAnnotators
-    Exchanges --> PlatAnnotators
-    
-    MsgAnnotators --> Annotations
-    ExchAnnotators --> Annotations
-    DlgAnnotators --> Annotations
-    PlatAnnotators --> Annotations
-    
-    Manager --> Annotators
-    Annotators --> Cursors
+### Typed Annotation Tables
+
+Each entity type has four annotation tables based on value type:
+
+```
+derived.{entity}_annotations_flag      # Boolean presence (key only)
+derived.{entity}_annotations_string    # Text values
+derived.{entity}_annotations_numeric   # Numeric values
+derived.{entity}_annotations_json      # JSONB values
 ```
 
-## Core Concepts
+**Supported entity types:**
+- `content_part` - Individual content segments
+- `message` - Complete messages
+- `prompt_response` - User-assistant pairs
+- `dialogue` - Entire conversations
 
-### Annotation Keys vs Annotators (Strategy Pattern)
+**Table schema example** (for `prompt_response_annotations_string`):
 
-An **annotation key** identifies *what* we're trying to detect (e.g., "code", "latex", "web_search"). Multiple **annotators** can target the same key using different **strategies**, ordered by **priority**.
-
-```mermaid
-flowchart LR
-    subgraph Key["ANNOTATION_KEY = 'code'"]
-        direction TB
-        P100["ChatGPTCodeExecution<br/>priority=100<br/>(platform truth)"]
-        P90["CodeBlockAnnotator<br/>priority=90<br/>(explicit ```)"]
-        P85["ScriptHeaderAnnotator<br/>priority=85<br/>(#!/bin, #include)"]
-        P70["CodeStructureAnnotator<br/>priority=70<br/>(patterns)"]
-        P50["FunctionDefinitionAnnotator<br/>priority=50<br/>(keywords)"]
-        P30["CodeKeywordDensityAnnotator<br/>priority=30<br/>(density)"]
-    end
+```sql
+CREATE TABLE derived.prompt_response_annotations_string (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    entity_id           uuid NOT NULL REFERENCES derived.prompt_responses(id),
+    annotation_key      text NOT NULL,
+    annotation_value    text NOT NULL,
     
-    P100 --> P90 --> P85 --> P70 --> P50 --> P30
+    confidence          float,
+    reason              text,
+    source              text NOT NULL,
+    source_version      text,
+    created_at          timestamptz DEFAULT now(),
+    
+    UNIQUE (entity_id, annotation_key, annotation_value)
+);
 ```
 
-**Priority Guidelines:**
+### Design Benefits
 
-| Priority | Use Case | Examples |
-|----------|----------|----------|
-| 100 | Platform ground truth | Code execution records, web search results |
-| 90 | Explicit syntax | Markdown code blocks (```) |
-| 85 | Strong indicators | Shebangs, #include |
-| 70 | Structural patterns | Function definitions with full syntax |
-| 50 | Keyword detection | `def`, `function`, `import` keywords |
-| 30 | Heuristics | Keyword density analysis |
+| Benefit | Description |
+|---------|-------------|
+| **Query Performance** | Direct filtering on typed columns |
+| **Type Safety** | Database enforces value types |
+| **Efficient Indexes** | Separate indexes per value type |
+| **Null Handling** | Flags don't waste space on NULL values |
+| **Schema Clarity** | Explicit value types in table names |
 
-### Incremental Processing
-
-Each annotator tracks a **cursor** (high water mark) to avoid reprocessing:
-
-```mermaid
-sequenceDiagram
-    participant Annotator
-    participant Cursor as annotator_cursors
-    participant Entities
-    participant Annotations
-    
-    Annotator->>Cursor: get_cursor()
-    Cursor-->>Annotator: high_water_mark = 2024-01-15
-    
-    Annotator->>Entities: SELECT WHERE created_at > '2024-01-15'
-    Entities-->>Annotator: [new entities only]
-    
-    loop For each entity
-        Annotator->>Annotator: annotate(entity)
-        Annotator->>Annotations: INSERT annotation
-        Annotator->>Annotator: track_entity(created_at)
-    end
-    
-    Annotator->>Cursor: UPDATE high_water_mark
-```
-
-**Version Bumping**: Change `VERSION` in annotator class to force reprocessing all entities.
-
----
-
-## Base Classes
-
-### Annotator (Abstract Base)
-
-```python
-class Annotator(ABC):
-    """Base class for all annotators."""
-    
-    # Required class attributes
-    ANNOTATION_TYPE: str = None  # 'tag', 'feature', 'metadata', 'title'
-    ENTITY_TYPE: str = None      # 'message', 'exchange', 'dialogue'
-    SOURCE: str = 'heuristic'    # 'manual', 'heuristic', 'model'
-    VERSION: str = '1.0'         # Bump to reprocess all entities
-    
-    # Strategy system (optional)
-    ANNOTATION_KEY: str | None = None  # What we're detecting
-    PRIORITY: int = 50                  # Higher runs first (0-100)
-    
-    def __init__(self, session: Session):
-        self.session = session
-    
-    @abstractmethod
-    def compute(self) -> int:
-        """Run annotation logic, return count of annotations created."""
-        pass
-```
+## Core Components
 
 ### AnnotationResult
 
+Return value from annotator logic:
+
 ```python
-@dataclass
-class AnnotationResult:
-    """Result from annotator to be stored."""
-    value: str                          # The annotation value
-    key: str | None = None              # Optional sub-key
-    confidence: float | None = None     # 0.0-1.0
-    data: dict | None = None            # Additional structured data
+from llm_archive.annotations.core import AnnotationResult, ValueType
+
+# Flag annotation (presence = true)
+AnnotationResult(
+    key='has_code_blocks',
+    value_type=ValueType.FLAG,
+)
+
+# String annotation
+AnnotationResult(
+    key='exchange_type',
+    value='wiki_article',
+    value_type=ValueType.STRING,
+    confidence=0.9,
+)
+
+# Numeric annotation
+AnnotationResult(
+    key='response_quality_score',
+    value=0.85,
+    value_type=ValueType.NUMERIC,
+    confidence=0.7,
+)
+
+# JSON annotation
+AnnotationResult(
+    key='code_blocks',
+    value={'python': 3, 'javascript': 1},
+    value_type=ValueType.JSON,
+)
 ```
 
-### MessageTextAnnotator
+### AnnotationWriter
 
-For annotating messages based on text content:
+Inserts annotations into typed tables:
 
 ```python
-class MessageTextAnnotator(Annotator):
-    """Base for message text analysis."""
-    
-    ENTITY_TYPE = 'message'
-    ROLE_FILTER: str | None = None  # 'user', 'assistant', or None for all
-    
-    def compute(self) -> int:
-        """Iterate messages, call annotate() on each."""
-        count = 0
-        for data in self._iter_messages():
-            self.track_entity(data.created_at)
-            results = self.annotate(data)
-            for result in results:
-                if self.add_result(data.message_id, result):
-                    count += 1
-        self.finalize_cursor()
-        return count
-    
-    @abstractmethod
-    def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
-        """Analyze message text, return annotations."""
-        pass
+from llm_archive.annotations.core import AnnotationWriter, EntityType
 
+writer = AnnotationWriter(session)
 
-@dataclass
-class MessageTextData:
-    """Data passed to message annotators."""
-    message_id: UUID
-    text: str
-    created_at: datetime | None
-    role: str
+# Write flag
+writer.write_flag(
+    entity_type=EntityType.PROMPT_RESPONSE,
+    entity_id=pr_id,
+    key='is_wiki_candidate',
+    source='WikiCandidateAnnotator',
+    source_version='1.0',
+)
+
+# Write string
+writer.write_string(
+    entity_type=EntityType.PROMPT_RESPONSE,
+    entity_id=pr_id,
+    key='proposed_title',
+    value='Introduction to Machine Learning',
+    confidence=0.8,
+    source='NaiveTitleAnnotator',
+)
+
+# Write from AnnotationResult
+result = AnnotationResult(key='tag', value='technical', value_type=ValueType.STRING)
+writer.write_result(
+    entity_type=EntityType.MESSAGE,
+    entity_id=msg_id,
+    result=result,
+)
 ```
 
-### ExchangeAnnotator
+### AnnotationReader
 
-For annotating exchanges based on aggregated content:
+Queries annotations from typed tables:
 
 ```python
-class ExchangeAnnotator(Annotator):
-    """Base for exchange content analysis."""
-    
-    ENTITY_TYPE = 'exchange'
-    
-    @abstractmethod
-    def annotate(self, data: ExchangeData) -> list[AnnotationResult]:
-        pass
+from llm_archive.annotations.core import AnnotationReader, EntityType
 
+reader = AnnotationReader(session)
 
-@dataclass
-class ExchangeData:
-    """Data passed to exchange annotators."""
-    exchange_id: UUID
-    user_text: str | None
-    assistant_text: str | None
-    user_word_count: int | None
-    assistant_word_count: int | None
-    created_at: datetime | None
+# Check if flag exists
+if reader.has_flag(EntityType.PROMPT_RESPONSE, pr_id, 'is_wiki_candidate'):
+    print("This is a wiki candidate")
+
+# Get string values
+titles = reader.get_string(EntityType.PROMPT_RESPONSE, pr_id, 'proposed_title')
+print(f"Proposed titles: {titles}")
+
+# Get numeric value
+score = reader.get_numeric(EntityType.MESSAGE, msg_id, 'sentiment_score')
+
+# Get JSON value
+metadata = reader.get_json(EntityType.DIALOGUE, dialogue_id, 'summary_stats')
 ```
 
-### ExchangePlatformAnnotator
+## PromptResponseAnnotator Base Class
 
-For annotating exchanges by querying platform feature tables:
+### Basic Structure
 
 ```python
-class ExchangePlatformAnnotator(Annotator):
-    """Base for platform feature queries."""
-    
-    ENTITY_TYPE = 'exchange'
-    
-    @abstractmethod
-    def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
-        pass
+from llm_archive.annotators.prompt_response import (
+    PromptResponseAnnotator,
+    PromptResponseData,
+)
+from llm_archive.annotations.core import AnnotationResult, ValueType
 
+class MyAnnotator(PromptResponseAnnotator):
+    # Metadata
+    ANNOTATION_KEY = 'my_classification'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 50  # Higher runs first
+    VERSION = '1.0'
+    SOURCE = 'heuristic'
+    
+    # Optional: Filtering prerequisites
+    REQUIRES_FLAGS = []  # Only process entities with these flags
+    REQUIRES_STRINGS = []  # Only process entities with these (key, value) pairs
+    SKIP_IF_FLAGS = []  # Skip entities with these flags
+    SKIP_IF_STRINGS = []  # Skip entities with these key or (key, value) pairs
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        """
+        Annotate a single prompt-response pair.
+        
+        Args:
+            data: PromptResponseData with all fields populated
+        
+        Returns:
+            List of AnnotationResult objects (empty if no annotations)
+        """
+        if self._matches_criteria(data):
+            return [AnnotationResult(
+                key=self.ANNOTATION_KEY,
+                value='my_value',
+                confidence=0.9,
+                reason='Matched pattern X',
+            )]
+        return []
+```
 
+### PromptResponseData
+
+Data passed to annotation logic:
+
+```python
 @dataclass
-class ExchangePlatformData:
-    """Data passed to platform annotators."""
-    exchange_id: UUID
+class PromptResponseData:
+    prompt_response_id: UUID
     dialogue_id: UUID
-    message_ids: list[UUID]          # All messages in exchange
-    user_message_ids: list[UUID]     # User messages only
-    assistant_message_ids: list[UUID] # Assistant messages only
+    prompt_message_id: UUID
+    response_message_id: UUID
+    prompt_text: str | None
+    response_text: str | None
+    prompt_word_count: int | None
+    response_word_count: int | None
+    prompt_role: str
+    response_role: str
     created_at: datetime | None
 ```
 
-### DialogueAnnotator
+### Annotation Filtering
 
-For annotating dialogues with aggregate statistics:
+Annotators can specify prerequisites and skip conditions:
 
 ```python
-class DialogueAnnotator(Annotator):
-    """Base for dialogue-level analysis."""
+class WikiArticleAnnotator(PromptResponseAnnotator):
+    ANNOTATION_KEY = 'is_wiki_article'
+    VALUE_TYPE = ValueType.FLAG
     
-    ENTITY_TYPE = 'dialogue'
+    # Only process wiki candidates
+    REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
     
-    @abstractmethod
-    def annotate(self, data: DialogueData) -> list[AnnotationResult]:
-        pass
-
-
-@dataclass
-class DialogueData:
-    """Data passed to dialogue annotators."""
-    dialogue_id: UUID
-    source: str
-    title: str | None
-    exchange_count: int
-    message_count: int
-    user_message_count: int
-    assistant_message_count: int
-    user_texts: list[str]
-    assistant_texts: list[str]
-    user_word_counts: list[int]
-    assistant_word_counts: list[int]
-    created_at: datetime | None
-    first_user_text: str | None
-    first_assistant_text: str | None
+    # Skip if already marked as low quality
+    SKIP_IF_FLAGS = ['low_quality']
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        # This only runs on wiki_article candidates without low_quality flag
+        if self._is_complete_article(data.response_text):
+            return [AnnotationResult(key=self.ANNOTATION_KEY)]
+        return []
 ```
 
----
+## Example Annotators
 
-## AnnotationManager
+### WikiCandidateAnnotator
 
-The manager coordinates annotator registration and execution:
-
-```python
-class AnnotationManager:
-    """Manages annotator registration and execution."""
-    
-    def __init__(self, session: Session):
-        self.session = session
-        self.annotators: list[Annotator] = []
-    
-    def register(self, annotator_class: type[Annotator]):
-        """Register an annotator class."""
-        annotator = annotator_class(self.session)
-        self.annotators.append(annotator)
-    
-    def run_all(self) -> dict[str, int]:
-        """Run all registered annotators in priority order."""
-        results = {}
-        for annotator in self._sorted_annotators():
-            name = annotator.__class__.__name__
-            try:
-                count = annotator.compute()
-                results[name] = count
-            except Exception as e:
-                logger.error(f"{name} failed: {e}")
-                results[name] = -1
-                self.session.rollback()
-        self.session.commit()
-        return results
-    
-    def has_annotation_key(
-        self,
-        entity_type: str,
-        entity_id: UUID,
-        annotation_key: str,
-    ) -> bool:
-        """Check if annotation key exists for entity."""
-        # Useful for lower-priority annotators to skip work
-```
-
-### Strategy Resolution
+Identifies potential wiki articles:
 
 ```python
-def get_strategy_info(self) -> dict[str, list[tuple[str, int]]]:
-    """Get registered strategies grouped by annotation key."""
-    strategies = {}
-    for annotator in self.annotators:
-        key = annotator.ANNOTATION_KEY or '<none>'
-        if key not in strategies:
-            strategies[key] = []
-        strategies[key].append((annotator.name, annotator.PRIORITY))
+class WikiCandidateAnnotator(PromptResponseAnnotator):
+    """Flag prompt-responses that look like wiki article requests/responses."""
     
-    # Sort each by priority descending
-    for key in strategies:
-        strategies[key].sort(key=lambda x: x[1], reverse=True)
+    ANNOTATION_KEY = 'exchange_type'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 80
+    VERSION = '1.0'
     
-    return strategies
-
-# Example output:
-# {
-#     'code': [
-#         ('ChatGPTCodeExecutionAnnotator', 100),
-#         ('CodeBlockAnnotator', 90),
-#         ('ScriptHeaderAnnotator', 85),
-#         ('CodeStructureAnnotator', 70),
-#         ('FunctionDefinitionAnnotator', 50),
-#         ('CodeKeywordDensityAnnotator', 30),
-#     ],
-#     'latex': [('LatexAnnotator', 50)],
-#     'wiki_links': [('WikiLinkAnnotator', 50)],
-# }
-```
-
----
-
-## Built-in Annotators
-
-### Message Annotators
-
-#### Code Detection Hierarchy
-
-| Annotator | Priority | Detection Method | Confidence |
-|-----------|----------|------------------|------------|
-| `CodeBlockAnnotator` | 90 | Explicit ``` syntax | 1.0 |
-| `ScriptHeaderAnnotator` | 85 | `#!/bin/`, `#include` | 1.0 |
-| `CodeStructureAnnotator` | 70 | Function/class patterns | 0.95 |
-| `FunctionDefinitionAnnotator` | 50 | `def`, `function` keywords | 0.8 |
-| `ImportStatementAnnotator` | 50 | `import`, `require()` | 0.9 |
-| `CodeKeywordDensityAnnotator` | 30 | High keyword density | 0.5-0.9 |
-
-**Example: CodeBlockAnnotator**
-
-```python
-class CodeBlockAnnotator(MessageTextAnnotator):
-    """Detect explicit code blocks (```)."""
+    WIKI_KEYWORDS = [
+        'write an article', 'create an article', 'wiki article',
+        'wikipedia style', 'encyclopedia entry', 'comprehensive guide',
+    ]
     
-    ANNOTATION_TYPE = 'feature'
-    ANNOTATION_KEY = 'code'
-    PRIORITY = 90
-    VERSION = '1.1'
-    ROLE_FILTER = None
-    
-    LANGUAGE_PATTERN = re.compile(r'```(\w*)\n')
-    
-    def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
-        if '```' not in data.text:
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        # Check prompt for wiki-like requests
+        if not data.prompt_text:
             return []
         
-        languages = self.LANGUAGE_PATTERN.findall(data.text)
-        languages = [lang for lang in languages if lang]
+        prompt_lower = data.prompt_text.lower()
         
-        results = [AnnotationResult(
-            value='has_code_blocks',
-            confidence=1.0,
-            data={
-                'count': data.text.count('```') // 2,
-                'languages': list(set(languages)),
-            },
-        )]
+        # Check for explicit wiki keywords
+        for keyword in self.WIKI_KEYWORDS:
+            if keyword in prompt_lower:
+                return [AnnotationResult(
+                    key=self.ANNOTATION_KEY,
+                    value='wiki_article',
+                    confidence=0.9,
+                    reason=f'Matched keyword: {keyword}',
+                )]
         
-        # Add language-specific annotations
-        for lang in set(languages):
-            results.append(AnnotationResult(
-                value=lang,
-                key='code_language',
-                confidence=1.0,
-            ))
+        # Check response length (wiki articles tend to be long)
+        if data.response_word_count and data.response_word_count > 500:
+            # Check for article structure (sections, etc.)
+            if self._has_article_structure(data.response_text):
+                return [AnnotationResult(
+                    key=self.ANNOTATION_KEY,
+                    value='wiki_article',
+                    confidence=0.7,
+                    reason='Long response with article structure',
+                )]
         
-        return results
+        return []
+    
+    def _has_article_structure(self, text: str) -> bool:
+        """Check if text has typical article structure."""
+        if not text:
+            return False
+        
+        # Look for multiple headings
+        heading_patterns = ['\n## ', '\n### ', '\n#### ']
+        heading_count = sum(text.count(pattern) for pattern in heading_patterns)
+        
+        return heading_count >= 3
 ```
 
-#### Other Message Annotators
+### NaiveTitleAnnotator
 
-| Annotator | Key | Detects |
-|-----------|-----|---------|
-| `WikiLinkAnnotator` | wiki_links | `[[wiki links]]` |
-| `LatexAnnotator` | latex | `$$`, `\frac`, `\int` |
-| `ContinuationAnnotator` | continuation | "continue", "elaborate" |
-| `QuoteElaborateAnnotator` | continuation | `> quote\nelaborate` |
-
-### Exchange Annotators
-
-| Annotator | Key | Purpose |
-|-----------|-----|---------|
-| `ExchangeTypeAnnotator` | exchange_type | Classify: coding, qa, article |
-| `CodeEvidenceAnnotator` | code_evidence | Tier: strong/moderate/weak |
-| `TitleExtractionAnnotator` | proposed_title | Extract `# Title` from response |
-
-### Dialogue Annotators
-
-| Annotator | Key | Computes |
-|-----------|-----|----------|
-| `DialogueLengthAnnotator` | dialogue_length | single/short/medium/long/very_long |
-| `PromptStatsAnnotator` | prompt_stats | mean/median/variance, consistency |
-| `FirstExchangeAnnotator` | first_exchange | context_dump, starts_with_code |
-| `InteractionPatternAnnotator` | interaction_pattern | brief/extended/interactive |
-| `CodingAssistanceAnnotator` | coding_assistance | Dialogue-level code detection |
-
-### ChatGPT Platform Annotators
-
-All priority=100 (ground truth):
-
-| Annotator | Key | Data Source |
-|-----------|-----|-------------|
-| `ChatGPTCodeExecutionAnnotator` | code | `chatgpt_code_executions` |
-| `ChatGPTWebSearchAnnotator` | web_search | `chatgpt_search_groups` |
-| `ChatGPTCanvasAnnotator` | canvas | `chatgpt_canvas_docs` |
-| `ChatGPTGizmoAnnotator` | gizmo | `chatgpt_message_meta` |
-| `ChatGPTAttachmentAnnotator` | attachment | `attachments` |
-| `ChatGPTDalleAnnotator` | image_generation | `chatgpt_dalle_generations` |
-
----
-
-## Creating Custom Annotators
-
-### Step 1: Choose Base Class
+Extracts potential titles from wiki articles:
 
 ```python
-# For text content analysis
-class MyMessageAnnotator(MessageTextAnnotator):
-    pass
-
-# For exchange-level analysis
-class MyExchangeAnnotator(ExchangeAnnotator):
-    pass
-
-# For platform feature queries
-class MyChatGPTAnnotator(ExchangePlatformAnnotator):
-    pass
-
-# For dialogue aggregates
-class MyDialogueAnnotator(DialogueAnnotator):
-    pass
+class NaiveTitleAnnotator(PromptResponseAnnotator):
+    """
+    Extract potential article title from response.
+    
+    Only runs on wiki_article candidates.
+    """
+    
+    ANNOTATION_KEY = 'proposed_title'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 50
+    VERSION = '1.0'
+    
+    # Only process wiki candidates
+    REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if not data.response_text:
+            return []
+        
+        # Strategy 1: Look for markdown H1
+        lines = data.response_text.split('\n')
+        for line in lines[:5]:  # Check first 5 lines
+            if line.startswith('# '):
+                title = line[2:].strip()
+                if title:
+                    return [AnnotationResult(
+                        key=self.ANNOTATION_KEY,
+                        value=title,
+                        confidence=0.9,
+                        reason='Found markdown H1',
+                    )]
+        
+        # Strategy 2: Use first line if short enough
+        first_line = lines[0].strip()
+        if 5 <= len(first_line.split()) <= 10:
+            return [AnnotationResult(
+                key=self.ANNOTATION_KEY,
+                value=first_line,
+                confidence=0.6,
+                reason='Used first line',
+            )]
+        
+        return []
 ```
 
-### Step 2: Define Class Attributes
+## Priority System
 
-```python
-class SentimentAnnotator(MessageTextAnnotator):
-    """Detect message sentiment."""
+Annotators execute in priority order (highest first):
+
+```mermaid
+flowchart LR
+    Start["Annotators"] --> Sort["Sort by<br/>PRIORITY<br/>(descending)"]
     
-    ANNOTATION_TYPE = 'tag'           # 'tag', 'feature', 'metadata'
-    ANNOTATION_KEY = 'sentiment'      # What we're detecting
-    PRIORITY = 50                     # Execution order
-    VERSION = '1.0'                   # Bump to reprocess
-    ROLE_FILTER = 'user'              # Only user messages
+    Sort --> P100["Priority 90-100<br/>Platform Truth"]
+    P100 --> P80["Priority 70-89<br/>Explicit Syntax"]
+    P80 --> P50["Priority 40-69<br/>Statistical/ML"]
+    P50 --> P30["Priority 1-39<br/>Heuristics"]
 ```
 
-### Step 3: Implement annotate()
+| Priority Range | Use Case | Example |
+|----------------|----------|---------|
+| 90-100 | Platform ground truth | ChatGPT code execution metadata |
+| 70-89 | Explicit syntax detection | Code blocks, citations |
+| 40-69 | Statistical/ML models | Semantic classification |
+| 1-39 | Heuristics | Keyword matching |
 
-```python
-def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
-    """Analyze message and return annotations."""
+## Incremental Processing
+
+### Cursor-Based Execution
+
+Annotators track processing state with cursors:
+
+```sql
+CREATE TABLE derived.annotator_cursors (
+    id                      uuid PRIMARY KEY,
+    annotator_name          text NOT NULL,
+    annotator_version       text NOT NULL,
+    entity_type             text NOT NULL,
+    high_water_mark         timestamptz NOT NULL,
+    entities_processed      int DEFAULT 0,
+    annotations_created     int DEFAULT 0,
+    updated_at              timestamptz DEFAULT now(),
     
-    # Your detection logic
-    sentiment = self._analyze_sentiment(data.text)
-    
-    if sentiment:
-        return [AnnotationResult(
-            value=sentiment,           # e.g., 'positive', 'negative'
-            key='sentiment',           # Optional sub-key
-            confidence=0.85,           # How confident
-            data={'score': 0.73},      # Additional data
-        )]
-    
-    return []  # No annotation if not detected
+    UNIQUE (annotator_name, annotator_version, entity_type)
+);
 ```
 
-### Step 4: Register and Run
+### Execution Flow
 
 ```python
-from llm_archive.annotators import AnnotationManager
+def compute(self) -> int:
+    """Run annotation with cursor tracking."""
+    # Get or create cursor
+    cursor = self._get_cursor()
+    
+    # Query entities created after cursor
+    entities = self._iter_prompt_responses_after(cursor.high_water_mark)
+    
+    count = 0
+    latest_created_at = cursor.high_water_mark
+    
+    for data in entities:
+        results = self.annotate(data)
+        for result in results:
+            if self._write_result(data.prompt_response_id, result):
+                count += 1
+        
+        # Track latest timestamp
+        if data.created_at and data.created_at > latest_created_at:
+            latest_created_at = data.created_at
+    
+    # Update cursor
+    self._update_cursor(cursor, count, latest_created_at)
+    
+    return count
+```
 
+## Running Annotators
+
+### Via CLI
+
+```bash
+# Run all registered annotators
+llm-archive annotate
+
+# Run specific annotator
+llm-archive annotate WikiCandidateAnnotator
+
+# Clear and re-run (ignores cursors)
+llm-archive annotate --clear
+```
+
+### Via Python
+
+```python
+from llm_archive.cli import AnnotationManager
+from sqlalchemy.orm import Session
+
+# Create manager
 manager = AnnotationManager(session)
-manager.register(SentimentAnnotator)
-manager.register(CodeBlockAnnotator)
-# ... register more
 
+# Register annotators
+manager.register(WikiCandidateAnnotator)
+manager.register(NaiveTitleAnnotator)
+
+# Run all (respects priorities and cursors)
 results = manager.run_all()
-# {'SentimentAnnotator': 150, 'CodeBlockAnnotator': 89, ...}
+print(f"Created {results['total_annotations']} annotations")
+
+# Run specific annotator
+results = manager.run_one('WikiCandidateAnnotator')
 ```
 
----
+## Querying Annotations
 
-## Annotation Schema
+### Via Views
 
-### Storage Model
+Use convenience views for common queries:
+
+```sql
+-- Get all wiki article candidates with proposed titles
+SELECT 
+    pr.id,
+    pr.dialogue_id,
+    prc.prompt_text,
+    prc.response_text,
+    (SELECT annotation_value 
+     FROM derived.prompt_response_annotations_string 
+     WHERE entity_id = pr.id AND annotation_key = 'proposed_title') as title
+FROM derived.prompt_responses pr
+JOIN derived.prompt_response_content prc ON prc.prompt_response_id = pr.id
+JOIN derived.prompt_response_annotations_string ans ON ans.entity_id = pr.id
+WHERE ans.annotation_key = 'exchange_type' AND ans.annotation_value = 'wiki_article';
+```
+
+### Via Python
 
 ```python
-class Annotation(Base):
-    """Stored annotation."""
-    
-    # Target
-    entity_type = Column(String)       # 'message', 'exchange', 'dialogue'
-    entity_id = Column(UUID)
-    
-    # Content
-    annotation_type = Column(String)   # 'tag', 'feature', 'metadata'
-    annotation_key = Column(String)    # Optional sub-key
-    annotation_value = Column(String)  # The value
-    annotation_data = Column(JSONB)    # Additional structured data
-    
-    # Provenance
-    confidence = Column(Float)         # 0.0-1.0
-    source = Column(String)            # 'heuristic', 'model', 'manual'
-    source_version = Column(String)    # Annotator version
-    
-    # Lifecycle
-    created_at = Column(DateTime)
-    superseded_at = Column(DateTime)   # For versioning
-    superseded_by = Column(UUID)
-```
-
-### Querying Annotations
-
-```python
-# Get all tags for an exchange
-tags = manager.get_tags('exchange', exchange_id)
-# ['coding', 'long_response', ...]
-
-# Get title for dialogue
-title = manager.get_title('dialogue', dialogue_id)
-# 'Python Tutorial Discussion'
-
-# Get all annotations with filters
-annotations = manager.get_annotations(
-    entity_type='exchange',
-    entity_id=exchange_id,
-    annotation_type='feature',
-    annotation_key='code',  # Filter by key
-    active_only=True,       # Exclude superseded
-)
-
-# Get full annotation dict
-all_annotations = manager.get_entity_annotations('exchange', exchange_id)
-# {
-#     'feature:code:has_code_blocks': {'confidence': 1.0, 'data': {...}},
-#     'tag:exchange_type:coding': {'confidence': 0.8},
-#     ...
-# }
-```
-
----
-
-## Module Structure
-
-```
-annotators/
-├── __init__.py          # Exports and documentation
-├── base.py              # Base classes, manager, cursors
-├── message.py           # Message text annotators
-├── exchange.py          # Exchange content annotators
-├── dialogue.py          # Dialogue aggregate annotators
-└── chatgpt.py           # ChatGPT platform annotators
-```
-
-### Module Exports
-
-```python
-from llm_archive.annotators import (
-    # Base classes
-    Annotator,
-    AnnotationManager,
-    AnnotationResult,
-    MessageTextAnnotator,
-    MessageTextData,
-    ExchangeAnnotator,
-    ExchangeData,
-    ExchangePlatformAnnotator,
-    ExchangePlatformData,
-    DialogueAnnotator,
-    DialogueData,
-    
-    # Built-in annotators
-    CodeBlockAnnotator,
-    WikiLinkAnnotator,
-    LatexAnnotator,
-    ExchangeTypeAnnotator,
-    DialogueLengthAnnotator,
-    ChatGPTCodeExecutionAnnotator,
-    # ... and more
+# Get all wiki candidates
+wiki_candidates = (
+    session.query(PromptResponse)
+    .join(
+        prompt_response_annotations_string,
+        PromptResponse.id == prompt_response_annotations_string.c.entity_id
+    )
+    .filter(
+        prompt_response_annotations_string.c.annotation_key == 'exchange_type',
+        prompt_response_annotations_string.c.annotation_value == 'wiki_article',
+    )
+    .all()
 )
 ```
-
----
 
 ## Best Practices
 
 ### 1. Choose Appropriate Priority
 
 ```python
-# Platform truth = 100
-class MyPlatformAnnotator(ExchangePlatformAnnotator):
+# Platform truth = 90-100
+class ChatGPTCodeExecutionAnnotator(PromptResponseAnnotator):
     PRIORITY = 100
 
-# Explicit syntax = 90
-class MyExplicitSyntaxAnnotator(MessageTextAnnotator):
-    PRIORITY = 90
+# Explicit syntax = 70-89
+class CodeBlockDetector(PromptResponseAnnotator):
+    PRIORITY = 80
 
-# Heuristics = 30
-class MyHeuristicAnnotator(MessageTextAnnotator):
+# Heuristics = 1-39
+class KeywordMatcher(PromptResponseAnnotator):
     PRIORITY = 30
 ```
 
@@ -680,41 +528,92 @@ AnnotationResult(value='has_code_execution', confidence=1.0)
 AnnotationResult(value='has_code_blocks', confidence=1.0)
 
 # Moderate signal
-AnnotationResult(value='has_function_definitions', confidence=0.8)
+AnnotationResult(value='technical_content', confidence=0.7)
 
 # Weak signal
-AnnotationResult(value='has_high_keyword_density', confidence=0.5)
+AnnotationResult(value='possibly_tutorial', confidence=0.5)
 ```
 
-### 3. Include Useful Data
+### 3. Use Filtering Effectively
 
 ```python
-AnnotationResult(
-    value='has_code_blocks',
-    confidence=1.0,
-    data={
-        'count': 3,
-        'languages': ['python', 'javascript'],
-        'total_lines': 45,
-    },
-)
+# Only process specific types
+REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
+
+# Avoid reprocessing
+SKIP_IF_FLAGS = ['already_processed']
+
+# Avoid conflicts
+SKIP_IF_STRINGS = [('proposed_title',)]  # Skip if any title exists
 ```
 
 ### 4. Version Appropriately
 
 ```python
-# Bump version when logic changes
-class MyAnnotator(MessageTextAnnotator):
+class MyAnnotator(PromptResponseAnnotator):
     VERSION = '1.0'  # Initial
-    VERSION = '1.1'  # Bug fix
-    VERSION = '2.0'  # Major logic change
+    # VERSION = '1.1'  # Bug fix
+    # VERSION = '2.0'  # Major logic change
 ```
 
----
+Changing VERSION creates a new cursor, allowing re-annotation without clearing.
+
+## Testing
+
+### Unit Tests
+
+Test annotation logic without database:
+
+```python
+def test_wiki_candidate_detection():
+    """Test wiki candidate detection logic."""
+    annotator = WikiCandidateAnnotator(mock_session)
+    
+    data = PromptResponseData(
+        prompt_response_id=uuid4(),
+        dialogue_id=uuid4(),
+        prompt_message_id=uuid4(),
+        response_message_id=uuid4(),
+        prompt_text="Write a wiki article about Python",
+        response_text="# Python\n\nPython is...",
+        prompt_word_count=6,
+        response_word_count=500,
+        prompt_role='user',
+        response_role='assistant',
+        created_at=datetime.now(),
+    )
+    
+    results = annotator.annotate(data)
+    assert len(results) == 1
+    assert results[0].value == 'wiki_article'
+```
+
+### Integration Tests
+
+Test full annotation cycle:
+
+```python
+def test_annotation_creates_records(session, sample_prompt_response):
+    """Test annotation creates database records."""
+    annotator = WikiCandidateAnnotator(session)
+    count = annotator.compute()
+    
+    assert count > 0
+    
+    # Verify record exists
+    reader = AnnotationReader(session)
+    assert reader.has_string(
+        EntityType.PROMPT_RESPONSE,
+        sample_prompt_response.id,
+        'exchange_type',
+        'wiki_article',
+    )
+```
 
 ## Related Documentation
 
 - [Architecture Overview](architecture.md)
 - [Schema Design](schema.md) - Annotation table schema
-- [Models](models.md) - Annotation SQLAlchemy model
+- [Models](models.md) - Annotation models
 - [CLI Reference](cli.md) - Running annotators via CLI
+- [Builders](builders.md) - Creating entities to annotate
