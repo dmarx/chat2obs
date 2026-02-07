@@ -194,9 +194,6 @@ create table derived.content_hashes (
 -- DERIVED INDEXES
 -- ============================================================
 
-create index idx_derived_trees_linear on derived.dialogue_trees(is_linear);
-create index idx_derived_trees_branched on derived.dialogue_trees(branch_count) where branch_count > 0;
-
 create index idx_derived_paths_dialogue on derived.message_paths(dialogue_id);
 create index idx_derived_paths_depth on derived.message_paths(depth);
 create index idx_derived_paths_leaf on derived.message_paths(dialogue_id) where is_leaf;
