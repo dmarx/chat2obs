@@ -96,7 +96,7 @@ def clean_db_session(db_session) -> Session:
 
 
 # ============================================================
-# Test Data Fixtures
+# Test Data Fixtures - ChatGPT
 # ============================================================
 
 @pytest.fixture
@@ -176,7 +176,7 @@ def chatgpt_simple_conversation() -> dict:
 
 @pytest.fixture
 def chatgpt_branched_conversation() -> dict:
-    """ChatGPT conversation with branches (regenerations)."""
+    """ChatGPT conversation with branches (regenerations) - 5 messages total."""
     return {
         "conversation_id": "conv-branched-001",
         "title": "Branched Test Conversation",
@@ -187,12 +187,12 @@ def chatgpt_branched_conversation() -> dict:
                 "id": "root",
                 "parent": None,
                 "children": ["node-1"],
-                "message": None,
+                "message": None,  # Root has no message
             },
             "node-1": {
                 "id": "node-1",
                 "parent": "root",
-                "children": ["node-2a", "node-2b"],
+                "children": ["node-2a", "node-2b"],  # Branch point
                 "message": {
                     "id": "msg-1",
                     "author": {"role": "user"},
@@ -206,7 +206,7 @@ def chatgpt_branched_conversation() -> dict:
             "node-2a": {
                 "id": "node-2a",
                 "parent": "node-1",
-                "children": [],
+                "children": ["node-3"],  # Continued from this branch
                 "message": {
                     "id": "msg-2a",
                     "author": {"role": "assistant"},
@@ -220,7 +220,7 @@ def chatgpt_branched_conversation() -> dict:
             "node-2b": {
                 "id": "node-2b",
                 "parent": "node-1",
-                "children": [],
+                "children": [],  # Alternative branch (not continued)
                 "message": {
                     "id": "msg-2b",
                     "author": {"role": "assistant"},
@@ -228,6 +228,135 @@ def chatgpt_branched_conversation() -> dict:
                     "content": {
                         "content_type": "text",
                         "parts": ["In a galaxy far away..."]
+                    }
+                }
+            },
+            "node-3": {
+                "id": "node-3",
+                "parent": "node-2a",
+                "children": ["node-4"],
+                "message": {
+                    "id": "msg-3",
+                    "author": {"role": "user"},
+                    "create_time": 1700000300.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Continue"]
+                    }
+                }
+            },
+            "node-4": {
+                "id": "node-4",
+                "parent": "node-3",
+                "children": [],
+                "message": {
+                    "id": "msg-4",
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000400.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["There lived a brave knight..."]
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.fixture
+def chatgpt_conversation_with_code() -> dict:
+    """ChatGPT conversation with code content."""
+    return {
+        "conversation_id": "conv-code-001",
+        "title": "Code Example",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            "root": {
+                "id": "root",
+                "parent": None,
+                "children": ["node-1"],
+                "message": None,
+            },
+            "node-1": {
+                "id": "node-1",
+                "parent": "root",
+                "children": ["node-2"],
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["Write a Python function to add two numbers"]
+                    }
+                }
+            },
+            "node-2": {
+                "id": "node-2",
+                "parent": "node-1",
+                "children": [],
+                "message": {
+                    "id": "msg-2",
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "code",
+                        "language": "python",
+                        "text": "def add(a, b):\n    return a + b"
+                    }
+                }
+            }
+        }
+    }
+
+
+@pytest.fixture
+def chatgpt_conversation_with_image() -> dict:
+    """ChatGPT conversation with image content."""
+    return {
+        "conversation_id": "conv-image-001",
+        "title": "Image Example",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            "root": {
+                "id": "root",
+                "parent": None,
+                "children": ["node-1"],
+                "message": None,
+            },
+            "node-1": {
+                "id": "node-1",
+                "parent": "root",
+                "children": ["node-2"],
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            "What's in this image?",
+                            {
+                                "content_type": "image/png",
+                                "asset_pointer": "file-service://file-abc123"
+                            }
+                        ]
+                    }
+                }
+            },
+            "node-2": {
+                "id": "node-2",
+                "parent": "node-1",
+                "children": [],
+                "message": {
+                    "id": "msg-2",
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["This image shows a cat."]
                     }
                 }
             }
@@ -276,6 +405,10 @@ def chatgpt_conversations(
         third_conversation,
     ]
 
+
+# ============================================================
+# Test Data Fixtures - Claude
+# ============================================================
 
 @pytest.fixture
 def claude_simple_conversation() -> dict:
