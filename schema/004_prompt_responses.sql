@@ -46,3 +46,23 @@ create index if not exists idx_prompt_responses_prompt
 create index if not exists idx_prompt_responses_roles 
     on derived.prompt_responses(prompt_role, response_role);
 
+
+
+-- ============================================================
+-- derived.prompt_response_content
+-- 
+-- Denormalized text content for annotation/search without joins.
+-- Mirrors exchange_content pattern.
+-- ============================================================
+
+create table if not exists derived.prompt_response_content (
+    prompt_response_id      uuid primary key references derived.prompt_responses(id) on delete cascade,
+    
+    prompt_text             text,
+    response_text           text,
+    
+    prompt_word_count       int,
+    response_word_count     int,
+    
+    created_at              timestamptz default now()
+);
