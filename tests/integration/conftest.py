@@ -169,7 +169,7 @@ def chatgpt_simple_conversation() -> dict:
 
 @pytest.fixture
 def chatgpt_branched_conversation() -> dict:
-    """ChatGPT conversation with branches - 5 messages, first user has 2 children."""
+    """ChatGPT conversation with ONE user message that has 2 assistant children (regeneration)."""
     return {
         "conversation_id": "conv-branched-001",
         "title": "Branched Test Conversation",
@@ -179,16 +179,16 @@ def chatgpt_branched_conversation() -> dict:
             "root": {
                 "id": "root",
                 "parent": None,
-                "children": ["node-1"],
+                "children": ["node-user1"],
                 "message": None,
             },
-            # First user message - THIS is the branch point (has 2 children)
-            "node-1": {
-                "id": "node-1",
+            # THE ONLY USER MESSAGE - has 2 children (regenerations)
+            "node-user1": {
+                "id": "node-user1",
                 "parent": "root",
-                "children": ["node-2a", "node-2b"],  # 2 CHILDREN = REGENERATION
+                "children": ["node-assistant1a", "node-assistant1b"],  # 2 CHILDREN
                 "message": {
-                    "id": "msg-1",
+                    "id": "msg-user1",
                     "author": {"role": "user"},
                     "create_time": 1700000100.0,
                     "content": {
@@ -197,13 +197,13 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
-            # First regeneration
-            "node-2a": {
-                "id": "node-2a",
-                "parent": "node-1",
-                "children": ["node-3"],
+            # First assistant response (regeneration #1)
+            "node-assistant1a": {
+                "id": "node-assistant1a",
+                "parent": "node-user1",
+                "children": [],
                 "message": {
-                    "id": "msg-2a",
+                    "id": "msg-assistant1a",
                     "author": {"role": "assistant"},
                     "create_time": 1700000200.0,
                     "content": {
@@ -212,13 +212,13 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
-            # Second regeneration
-            "node-2b": {
-                "id": "node-2b",
-                "parent": "node-1",
-                "children": [],
+            # Second assistant response (regeneration #2)
+            "node-assistant1b": {
+                "id": "node-assistant1b",
+                "parent": "node-user1",
+                "children": ["node-user2"],
                 "message": {
-                    "id": "msg-2b",
+                    "id": "msg-assistant1b",
                     "author": {"role": "assistant"},
                     "create_time": 1700000250.0,
                     "content": {
@@ -227,13 +227,13 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
-            # Continuation from first branch
-            "node-3": {
-                "id": "node-3",
-                "parent": "node-2a",
-                "children": ["node-4"],
+            # Second user message (continuation)
+            "node-user2": {
+                "id": "node-user2",
+                "parent": "node-assistant1b",
+                "children": ["node-assistant2"],
                 "message": {
-                    "id": "msg-3",
+                    "id": "msg-user2",
                     "author": {"role": "user"},
                     "create_time": 1700000300.0,
                     "content": {
@@ -242,12 +242,13 @@ def chatgpt_branched_conversation() -> dict:
                     }
                 }
             },
-            "node-4": {
-                "id": "node-4",
-                "parent": "node-3",
+            # Third assistant message
+            "node-assistant2": {
+                "id": "node-assistant2",
+                "parent": "node-user2",
                 "children": [],
                 "message": {
-                    "id": "msg-4",
+                    "id": "msg-assistant2",
                     "author": {"role": "assistant"},
                     "create_time": 1700000400.0,
                     "content": {
