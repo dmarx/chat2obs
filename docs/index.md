@@ -1,24 +1,25 @@
-# docs/index.md
+<!-- docs/index.md -->
 # LLM Archive Documentation
 
 ## Overview
 
-LLM Archive is a system for importing, normalizing, analyzing, and annotating conversation data from multiple LLM platforms. It transforms heterogeneous export formats into a unified data model that supports both tree-structured and linear conversation representations.
+LLM Archive is a system for importing, normalizing, analyzing, and annotating conversation data from multiple LLM platforms. It transforms heterogeneous export formats into a unified data model optimized for annotation and downstream analysis.
 
 ## Quick Start
 
 ```bash
 # Initialize database
-llm-archive init-db
+llm-archive init --schema_dir=schema
 
 # Import conversations
-llm-archive import chatgpt conversations.json
+llm-archive import_chatgpt conversations.json
+llm-archive import_claude claude_export.json
 
-# Build derived structures
-llm-archive build all
+# Build prompt-response pairs
+llm-archive build_prompt_responses
 
 # Run annotations
-llm-archive annotate all
+llm-archive annotate
 
 # View statistics
 llm-archive stats
@@ -39,9 +40,10 @@ llm-archive stats
 | Document | Description |
 |----------|-------------|
 | [Extractors](extractors.md) | Platform-specific data extraction (ChatGPT, Claude) |
-| [Builders](builders.md) | Derived data construction (trees, exchanges, hashes) |
-| [Annotators](annotators.md) | Annotation system with strategy pattern |
+| [Builders](builders.md) | Derived data construction (prompt-responses) |
+| [Annotators](annotators.md) | Typed annotation system with strategy pattern |
 | [CLI](cli.md) | Command-line interface reference |
+| [Testing](testing.md) | Testing strategy and guidelines |
 
 ## Architecture Overview
 
@@ -62,7 +64,7 @@ flowchart TB
     end
     
     subgraph Process["Processing"]
-        Build["Builders"]
+        Build["Prompt-Response<br/>Builder"]
         Annotate["Annotators"]
     end
     
@@ -89,157 +91,118 @@ flowchart TB
 - **raw.\***: Immutable imported data with full source fidelity
 - **derived.\***: Computed structures that can be rebuilt
 
-### Tree-Native Design
-
-- Messages form a tree (parent-child relationships)
-- Supports ChatGPT's regeneration/edit branches
-- Linear sequences extracted for training export
-
-### Exchange Model
+### Prompt-Response Model
 
 - Fundamental interaction unit: user prompt + assistant response
-- Supports continuation detection and merging
-- Aggregated content for efficient querying
+- Direct parent-child associations without tree dependency
+- Each response associated with exactly one prompt
+- Prompts can have multiple responses (regenerations)
 
-### Strategy Pattern for Annotations
+### Typed Annotation System
 
-- Multiple annotators can target the same semantic concept
-- Priority-based execution (higher runs first)
-- Platform ground truth (priority=100) vs heuristics (priority=30)
+- Separate tables per (entity_type, value_type) combination
+- Four value types: `flag`, `string`, `numeric`, `json`
+- Four entity types: `content_part`, `message`, `prompt_response`, `dialogue`
+- Cursor-based incremental processing
+- Multiple strategies can target the same semantic concept with priority ordering
 
 ## Module Structure
 
 ```
 llm_archive/
 ├── models/
-│   ├── raw.py          # Raw schema models
-│   └── derived.py      # Derived schema models
+│   ├── raw.py              # Raw schema models
+│   └── derived.py          # Derived schema models
 ├── extractors/
-│   ├── base.py         # Base extractor class
-│   ├── chatgpt.py      # ChatGPT extractor
-│   └── claude.py       # Claude extractor
+│   ├── base.py             # Base extractor class
+│   ├── chatgpt.py          # ChatGPT extractor
+│   └── claude.py           # Claude extractor
 ├── builders/
-│   ├── trees.py        # Tree analysis
-│   ├── exchanges.py    # Exchange segmentation
-│   └── hashes.py       # Content hashing
+│   └── prompt_response.py  # Prompt-response builder
+├── annotations/
+│   └── core.py             # AnnotationWriter/Reader
 ├── annotators/
-│   ├── base.py         # Base classes, manager
-│   ├── message.py      # Message annotators
-│   ├── exchange.py     # Exchange annotators
-│   ├── dialogue.py     # Dialogue annotators
-│   └── chatgpt.py      # ChatGPT platform annotators
-├── cli.py              # Command-line interface
-├── db.py               # Database connection
-└── config.py           # Configuration
+│   └── prompt_response.py  # Prompt-response annotators
+├── cli.py                  # Command-line interface
+└── config.py               # Environment configuration
 ```
 
-## Common Tasks
+## Schema Layers
 
-### Import New Data
+### Raw Schema (`raw.*`)
 
-```bash
-# ChatGPT (from GDPR export zip)
-unzip chatgpt_export.zip
-llm-archive import chatgpt conversations.json
+- Sources registry
+- Dialogues (conversations)
+- Messages (with tree structure via parent_id)
+- Content parts (text, code, images, tool use)
+- Platform-specific extensions (ChatGPT search, code execution, DALL-E, etc.)
 
-# Claude
-llm-archive import claude claude_conversations.json
-```
+### Derived Schema (`derived.*`)
 
-### Add Custom Annotator
+- Prompt-response pairs and content
+- Typed annotation tables
+- Views for querying annotated content
+- Annotator cursor tracking
 
-```python
-from llm_archive.annotators import MessageTextAnnotator, MessageTextData, AnnotationResult
+## Annotation Workflow
 
-class MyAnnotator(MessageTextAnnotator):
-    ANNOTATION_TYPE = 'tag'
-    ANNOTATION_KEY = 'my_feature'
-    PRIORITY = 50
-    VERSION = '1.0'
+```mermaid
+flowchart LR
+    Entities["Prompt-Response<br/>Pairs"] --> Annotator1["WikiCandidate<br/>Priority=80"]
+    Annotator1 --> Annotator2["NaiveTitle<br/>Priority=50"]
+    Annotator2 --> Results["Typed<br/>Annotations"]
     
-    def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
-        if 'pattern' in data.text:
-            return [AnnotationResult(value='has_pattern', confidence=0.9)]
-        return []
-
-# Register and run
-manager.register(MyAnnotator)
-manager.run_all()
+    Results --> FlagTable["*_annotations_flag"]
+    Results --> StringTable["*_annotations_string"]
+    Results --> NumericTable["*_annotations_numeric"]
+    Results --> JSONTable["*_annotations_json"]
 ```
 
-### Export for Training
-
-```bash
-llm-archive export exchanges training_data.jsonl \
-    --format jsonl \
-    --has-tag coding \
-    --min-assistant-words 100 \
-    --primary-only
-```
-
-### Query Annotations
-
-```python
-from llm_archive.annotators import AnnotationManager
-
-manager = AnnotationManager(session)
-
-# Get all tags for an exchange
-tags = manager.get_tags('exchange', exchange_id)
-
-# Get exchanges with specific annotation
-annotations = manager.get_annotations(
-    entity_type='exchange',
-    annotation_type='tag',
-    annotation_key='exchange_type',
-)
-```
-
-## Diagrams
-
-### Entity Relationships
+## Entity Relationships
 
 ```mermaid
 erDiagram
     Dialogue ||--o{ Message : contains
     Message ||--o{ ContentPart : has
     Message ||--o{ Message : parent_of
-    Dialogue ||--|| DialogueTree : analyzed_by
-    Message ||--|| MessagePath : has_path
-    Dialogue ||--o{ Exchange : segmented_into
-    Exchange ||--|| ExchangeContent : has
-    Exchange ||--o{ Annotation : annotated_by
-    Message ||--o{ Annotation : annotated_by
-    Dialogue ||--o{ Annotation : annotated_by
+    Dialogue ||--o{ PromptResponse : segmented_into
+    PromptResponse ||--|| PromptResponseContent : has
+    PromptResponse ||--o{ Annotation_Flag : annotated_by
+    PromptResponse ||--o{ Annotation_String : annotated_by
+    PromptResponse ||--o{ Annotation_Numeric : annotated_by
+    PromptResponse ||--o{ Annotation_JSON : annotated_by
+    Message ||--o{ Annotation_Flag : annotated_by
+    Message ||--o{ Annotation_String : annotated_by
 ```
 
-### Processing Pipeline
+## Processing Pipeline
 
 ```mermaid
-flowchart LR
-    subgraph Import
-        JSON["Export JSON"] --> Extract["Extractor"]
-        Extract --> Raw["raw.dialogues<br/>raw.messages"]
-    end
+flowchart TD
+    Import["Import<br/>(Extractors)"] --> Raw["raw.dialogues<br/>raw.messages<br/>raw.content_parts"]
     
-    subgraph Build
-        Raw --> Trees["TreeBuilder"]
-        Trees --> Paths["message_paths<br/>dialogue_trees"]
-        Paths --> Exchanges["ExchangeBuilder"]
-        Exchanges --> Exch["exchanges<br/>exchange_content"]
-    end
+    Raw --> Builder["PromptResponse<br/>Builder"]
+    Builder --> PRs["derived.prompt_responses<br/>derived.prompt_response_content"]
     
-    subgraph Annotate
-        Exch --> Ann["Annotators"]
-        Ann --> Annot["annotations"]
-    end
+    PRs --> Annotators["Annotators<br/>(Priority-Ordered)"]
+    Annotators --> Annotations["derived.*_annotations_*"]
+    
+    Annotations --> Query["Query/Export"]
 ```
+
+## Getting Started
+
+1. **Setup**: Initialize database and import data
+2. **Build**: Create prompt-response pairs
+3. **Annotate**: Run annotators to classify and tag content
+4. **Query**: Use views and annotations to find specific content
+5. **Export**: Extract processed data for downstream use
 
 ## Support
 
-- GitHub Issues: Bug reports and feature requests
-- Documentation: This docs/ folder
-- Tests: tests/ folder for examples
+- **GitHub Issues**: Bug reports and feature requests
+- **Documentation**: This docs/ folder
+- **Tests**: tests/ folder for examples and integration patterns
 
 ## Version History
 
