@@ -1,624 +1,314 @@
-# docs/builders.md
-# Derived Data Builders
+<!-- docs/builders.md -->
+# Builders: Derived Data Construction
 
 ## Overview
 
-Builders transform raw imported data into derived structures that support efficient querying and analysis. They run after extraction to compute:
+Builders transform raw imported data into derived structures optimized for annotation and analysis. The current builder system focuses on creating prompt-response pairs directly from message parent-child relationships.
 
-- **Tree Analysis**: Message paths, depths, branch detection
-- **Linear Sequences**: Root-to-leaf paths for training/export
-- **Exchanges**: User-assistant interaction pairs
-- **Content Hashes**: Deduplication and change detection
+## PromptResponseBuilder
 
-## Builder Architecture
+### Purpose
+
+The `PromptResponseBuilder` creates direct user→assistant associations without depending on tree analysis. This is simpler and more robust than the previous exchange-based model.
+
+### Key Features
+
+- **Direct associations**: Uses `parent_id` for tree-aware pairing
+- **Sequential fallback**: Falls back to most recent user message when parent_id unavailable
+- **Handles regenerations**: Multiple responses can share the same prompt
+- **Denormalized content**: Aggregates text content for efficient queries
+
+### Data Model
+
+```mermaid
+erDiagram
+    PromptResponse ||--|| Message : "prompt (user)"
+    PromptResponse ||--|| Message : "response (assistant)"
+    PromptResponse ||--|| PromptResponseContent : "has content"
+    PromptResponse }o--|| Dialogue : "belongs to"
+    
+    PromptResponse {
+        uuid id PK
+        uuid dialogue_id FK
+        uuid prompt_message_id FK
+        uuid response_message_id FK
+        int prompt_position
+        int response_position
+        string prompt_role
+        string response_role
+    }
+    
+    PromptResponseContent {
+        uuid prompt_response_id PK_FK
+        text prompt_text
+        text response_text
+        int prompt_word_count
+        int response_word_count
+    }
+```
+
+### Pairing Strategy
 
 ```mermaid
 flowchart TD
-    subgraph Input["Raw Data (input)"]
-        Dialogues["raw.dialogues"]
-        Messages["raw.messages"]
-        ContentParts["raw.content_parts"]
-    end
+    Start["Process Message"] --> RoleCheck{"Role?"}
     
-    subgraph Builders["Builder Layer"]
-        TreeBuilder["TreeBuilder"]
-        ExchangeBuilder["ExchangeBuilder"]
-        HashBuilder["HashBuilder"]
-    end
+    RoleCheck -->|"user"| UpdateLast["Update<br/>last_user_msg"]
+    RoleCheck -->|"assistant"| FindPrompt["Find Prompt"]
+    RoleCheck -->|"system/tool"| Skip["Skip"]
     
-    subgraph Output["Derived Data (output)"]
-        Trees["dialogue_trees"]
-        Paths["message_paths"]
-        Sequences["linear_sequences"]
-        Exchanges["exchanges"]
-        ExchangeContent["exchange_content"]
-        Hashes["content_hashes"]
-    end
+    FindPrompt --> HasParent{"Has<br/>parent_id?"}
     
-    Dialogues --> TreeBuilder
-    Messages --> TreeBuilder
+    HasParent -->|"Yes"| CheckParentRole{"Parent<br/>is user?"}
+    CheckParentRole -->|"Yes"| UseParent["Use parent"]
+    CheckParentRole -->|"No"| WalkUp["Walk up tree"]
     
-    TreeBuilder --> Trees
-    TreeBuilder --> Paths
-    TreeBuilder --> Sequences
+    WalkUp --> FoundUser{"Found<br/>user?"}
+    FoundUser -->|"Yes"| UseFound["Use found"]
+    FoundUser -->|"No"| UseLast["Use last_user_msg"]
     
-    Trees --> ExchangeBuilder
-    Paths --> ExchangeBuilder
-    Messages --> ExchangeBuilder
+    HasParent -->|"No"| UseLast
     
-    ExchangeBuilder --> Exchanges
-    ExchangeBuilder --> ExchangeContent
+    UseParent --> CreatePR["Create<br/>PromptResponse"]
+    UseFound --> CreatePR
+    UseLast --> CreatePR
     
-    ContentParts --> HashBuilder
-    ExchangeContent --> HashBuilder
-    HashBuilder --> Hashes
+    CreatePR --> UpdateLast
+    UpdateLast --> NextMsg["Next Message"]
+    Skip --> NextMsg
 ```
 
----
+### Handling Regenerations
 
-## Tree Builder
-
-The `TreeBuilder` analyzes message tree structures to compute paths, depths, and branch information.
-
-### Tree Concepts
+When a user regenerates an assistant response, ChatGPT creates multiple sibling messages with the same parent:
 
 ```mermaid
-flowchart TD
-    subgraph Tree["Message Tree"]
-        Root["Root (system)<br/>depth=0"]
-        U1["User 1<br/>depth=1"]
-        A1a["Assistant 1a<br/>depth=2"]
-        A1b["Assistant 1b<br/>(regeneration)<br/>depth=2"]
-        U2["User 2<br/>depth=3"]
-        A2["Assistant 2<br/>depth=4<br/>(leaf)"]
-    end
+flowchart TB
+    User["user: 'Write a story'"] --> Asst1["assistant v1"]
+    User --> Asst2["assistant v2<br/>(regeneration)"]
+    User --> Asst3["assistant v3<br/>(regeneration)"]
     
-    Root --> U1
-    U1 --> A1a
-    U1 --> A1b
-    A1a --> U2
-    U2 --> A2
-    
-    style A1b fill:#ffe0b2
-    style A2 fill:#c8e6c9
+    style Asst2 fill:#ffe0b2
+    style Asst3 fill:#ffe0b2
 ```
 
-**Key Terms:**
-- **Root**: Message with no parent (`parent_id IS NULL`)
-- **Leaf**: Message with no children
-- **Branch Point**: Message with multiple children (regenerations)
-- **Primary Path**: The "main" conversation (typically most recent/deepest)
-- **Ancestor Path**: Array of message IDs from root to parent
+Each regeneration creates a separate `PromptResponse` record:
+- All three records have the same `prompt_message_id`
+- Each has a unique `response_message_id`
+- Position tracking maintains sequential order
 
-### Builder API
+## Implementation
 
-```python
-class TreeBuilder:
-    """Builds derived tree structures from raw messages."""
-    
-    def __init__(self, session: Session):
-        self.session = session
-    
-    def build(self, dialogue_id: UUID = None) -> dict[str, int]:
-        """
-        Build tree structures for dialogues.
-        
-        Args:
-            dialogue_id: Optional - build for single dialogue
-            
-        Returns:
-            {'trees': n, 'paths': n, 'sequences': n}
-        """
-    
-    def build_incremental(self) -> dict[str, int]:
-        """Build only for dialogues without existing tree analysis."""
-```
-
-### Algorithm: Path Computation
+### Core Algorithm
 
 ```python
-def _compute_paths(self, dialogue_id: UUID, messages: list[Message]) -> list[MessagePath]:
-    """Compute materialized paths for all messages."""
-    paths = []
-    
-    # Build lookup structures
-    by_id = {m.id: m for m in messages}
-    children_of = defaultdict(list)
-    for m in messages:
-        if m.parent_id:
-            children_of[m.parent_id].append(m.id)
-    
-    # Find root(s)
-    roots = [m for m in messages if m.parent_id is None]
-    
-    # BFS to compute paths
-    queue = [(root.id, []) for root in roots]
-    
-    while queue:
-        msg_id, ancestor_path = queue.pop(0)
-        children = children_of[msg_id]
-        
-        path = MessagePath(
-            message_id=msg_id,
-            dialogue_id=dialogue_id,
-            ancestor_path=ancestor_path,
-            depth=len(ancestor_path),
-            is_root=len(ancestor_path) == 0,
-            is_leaf=len(children) == 0,
-            child_count=len(children),
-            sibling_index=self._compute_sibling_index(msg_id, ancestor_path, children_of),
-            is_on_primary_path=False,  # Set later
+class PromptResponseBuilder:
+    def build_for_dialogue(self, dialogue_id: UUID):
+        # Get all messages ordered by created_at
+        messages = (
+            self.session.query(Message)
+            .filter(Message.dialogue_id == dialogue_id)
+            .filter(Message.deleted_at.is_(None))
+            .order_by(Message.created_at.nulls_first(), Message.id)
+            .all()
         )
-        paths.append(path)
         
-        # Queue children
-        for child_id in children:
-            queue.append((child_id, ancestor_path + [msg_id]))
-    
-    return paths
-```
-
-### Algorithm: Primary Path Selection
-
-The primary path is the "main" conversation, selected by:
-1. Find all leaf messages
-2. Score each by: depth (primary) + recency (tiebreaker)
-3. Trace back from best leaf to root
-
-```python
-def _select_primary_path(self, paths: list[MessagePath], messages: dict) -> set[UUID]:
-    """Select the primary (main) conversation path."""
-    # Find leaves
-    leaves = [p for p in paths if p.is_leaf]
-    
-    if not leaves:
-        return set()
-    
-    # Score leaves: prefer deeper, then more recent
-    def score_leaf(path):
-        msg = messages[path.message_id]
-        timestamp = msg.source_created_at or msg.created_at or datetime.min
-        return (path.depth, timestamp)
-    
-    best_leaf = max(leaves, key=score_leaf)
-    
-    # Trace back to root
-    primary_ids = set(best_leaf.ancestor_path) | {best_leaf.message_id}
-    
-    return primary_ids
-```
-
-### Algorithm: Sequence Extraction
-
-```python
-def _extract_sequences(self, dialogue_id: UUID, paths: list[MessagePath]) -> list[LinearSequence]:
-    """Extract all root-to-leaf paths as linear sequences."""
-    sequences = []
-    
-    # Group by leaf
-    leaves = [p for p in paths if p.is_leaf]
-    
-    for leaf_path in leaves:
-        sequence = LinearSequence(
-            dialogue_id=dialogue_id,
-            leaf_message_id=leaf_path.message_id,
-            sequence_length=leaf_path.depth + 1,
-            is_primary=leaf_path.is_on_primary_path,
-            branch_reason=self._detect_branch_reason(leaf_path, paths),
-            branched_at_depth=self._find_branch_point(leaf_path, paths),
-        )
-        sequences.append(sequence)
+        # Build lookup structures
+        msg_by_id = {m.id: m for m in messages}
+        position_by_id = {m.id: i for i, m in enumerate(messages)}
         
-        # Add sequence messages
-        all_msg_ids = leaf_path.ancestor_path + [leaf_path.message_id]
-        for position, msg_id in enumerate(all_msg_ids):
-            seq_msg = SequenceMessage(
-                sequence_id=sequence.id,
-                message_id=msg_id,
-                position=position,
-            )
-            self.session.add(seq_msg)
-    
-    return sequences
-```
-
-### Tree Analysis Output
-
-```python
-def _create_tree_analysis(self, dialogue_id: UUID, paths: list[MessagePath]) -> DialogueTree:
-    """Create aggregate tree statistics."""
-    branch_count = sum(1 for p in paths if p.child_count > 1)
-    
-    # Detect regenerations vs edits
-    has_regenerations, has_edits = self._classify_branches(paths)
-    
-    # Find primary leaf
-    primary_leaves = [p for p in paths if p.is_leaf and p.is_on_primary_path]
-    primary_leaf = primary_leaves[0] if primary_leaves else None
-    
-    return DialogueTree(
-        dialogue_id=dialogue_id,
-        total_nodes=len(paths),
-        max_depth=max(p.depth for p in paths) if paths else 0,
-        branch_count=branch_count,
-        leaf_count=sum(1 for p in paths if p.is_leaf),
-        primary_leaf_id=primary_leaf.message_id if primary_leaf else None,
-        primary_path_length=primary_leaf.depth + 1 if primary_leaf else None,
-        has_regenerations=has_regenerations,
-        has_edits=has_edits,
-    )
-```
-
----
-
-## Exchange Builder
-
-The `ExchangeBuilder` segments conversations into user-assistant exchange pairs.
-
-### Exchange Definition
-
-An **exchange** is a logical interaction unit:
-- Starts with user message(s)
-- Ends with assistant response(s)
-- May include system/tool messages
-- Tracks continuation patterns
-
-```mermaid
-flowchart LR
-    subgraph Exchange1["Exchange 1"]
-        U1["User: Hello"]
-        A1["Assistant: Hi!"]
-    end
-    
-    subgraph Exchange2["Exchange 2"]
-        U2["User: Explain X"]
-        A2["Assistant: [long response]"]
-    end
-    
-    subgraph Exchange3["Exchange 3 (continuation)"]
-        U3["User: continue"]
-        A3["Assistant: [more]"]
-    end
-    
-    Exchange1 --> Exchange2 --> Exchange3
-    
-    Exchange3 -.->|"continuation_of"| Exchange2
-```
-
-### Builder API
-
-```python
-class ExchangeBuilder:
-    """Builds exchanges from message trees."""
-    
-    def __init__(self, session: Session):
-        self.session = session
-    
-    def build(self, dialogue_id: UUID = None) -> dict[str, int]:
-        """
-        Build exchanges for dialogues.
+        # Track most recent user for sequential fallback
+        last_user_msg = None
         
-        Args:
-            dialogue_id: Optional - build for single dialogue
+        for msg in messages:
+            if msg.role == 'user':
+                last_user_msg = msg
+                continue
             
-        Returns:
-            {'exchanges': n, 'content': n}
-        """
-    
-    def build_incremental(self) -> dict[str, int]:
-        """Build only for dialogues without existing exchanges."""
-```
-
-### Algorithm: Exchange Segmentation
-
-```python
-def _segment_exchanges(
-    self,
-    dialogue_id: UUID,
-    messages: list[Message],
-) -> list[Exchange]:
-    """Segment a linear message sequence into exchanges."""
-    exchanges = []
-    current_exchange_msgs = []
-    
-    for message in messages:
-        current_exchange_msgs.append(message)
-        
-        # Exchange ends when assistant finishes turn
-        if message.role == 'assistant':
-            # Check if this is end of turn
-            if self._is_turn_complete(message, messages):
-                exchange = self._create_exchange(
+            # Find the prompt for this response
+            prompt_msg = self._find_prompt(msg, msg_by_id, last_user_msg)
+            
+            if prompt_msg:
+                self._create_prompt_response(
                     dialogue_id=dialogue_id,
-                    messages=current_exchange_msgs,
+                    prompt_msg=prompt_msg,
+                    response_msg=msg,
+                    prompt_position=position_by_id[prompt_msg.id],
+                    response_position=position_by_id[msg.id],
                 )
-                exchanges.append(exchange)
-                current_exchange_msgs = []
-    
-    # Handle incomplete exchange at end
-    if current_exchange_msgs:
-        exchange = self._create_exchange(
-            dialogue_id=dialogue_id,
-            messages=current_exchange_msgs,
-        )
-        exchanges.append(exchange)
-    
-    return exchanges
 ```
 
-### Continuation Detection
-
-Continuations are exchanges where the user's intent is to continue the previous response:
+### Finding the Prompt
 
 ```python
-CONTINUATION_PATTERNS = [
-    r'^continue$',
-    r'^go on$',
-    r'^keep going$',
-    r'^more$',
-    r'^elaborate$',
-    r'^\s*$',  # Empty/whitespace only
-]
-
-def _is_continuation(self, user_text: str) -> bool:
-    """Detect if user message is a continuation prompt."""
-    text = user_text.strip().lower()
+def _find_prompt(
+    self,
+    response_msg: Message,
+    msg_by_id: dict[UUID, Message],
+    last_user_msg: Message | None,
+) -> Message | None:
+    """Find the user prompt that elicited this response."""
     
-    for pattern in CONTINUATION_PATTERNS:
-        if re.match(pattern, text):
-            return True
-    
-    return False
-
-def _link_continuations(self, exchanges: list[Exchange]):
-    """Link continuation exchanges to their predecessors."""
-    for i, exchange in enumerate(exchanges):
-        if i == 0:
-            continue
+    # Strategy 1: Use parent_id if it points to a user message
+    if response_msg.parent_id and response_msg.parent_id in msg_by_id:
+        parent = msg_by_id[response_msg.parent_id]
+        if parent.role == 'user':
+            return parent
         
-        user_text = self._get_user_text(exchange)
-        if self._is_continuation(user_text):
-            exchange.is_continuation = True
-            exchange.continuation_of_id = exchanges[i - 1].id
-            
-            # Update merged count on original
-            original = exchanges[i - 1]
-            while original.is_continuation and original.continuation_of_id:
-                original = self._get_exchange(original.continuation_of_id)
-            original.merged_count += 1
+        # Parent exists but isn't user - walk up tree
+        current = parent
+        visited = {response_msg.id}
+        while current and current.id not in visited:
+            visited.add(current.id)
+            if current.role == 'user':
+                return current
+            if current.parent_id and current.parent_id in msg_by_id:
+                current = msg_by_id[current.parent_id]
+            else:
+                break
+    
+    # Strategy 2: Fall back to most recent user message
+    return last_user_msg
 ```
 
 ### Content Aggregation
 
+After creating prompt-response records, content is aggregated:
+
 ```python
-def _create_exchange_content(self, exchange: Exchange, messages: list[Message]) -> ExchangeContent:
-    """Aggregate text content for an exchange."""
-    user_parts = []
-    assistant_parts = []
-    
-    for message in messages:
-        text = self._extract_text_content(message)
-        
-        if message.role == 'user':
-            user_parts.append(text)
-        elif message.role == 'assistant':
-            assistant_parts.append(text)
-    
-    user_text = '\n\n'.join(user_parts) if user_parts else None
-    assistant_text = '\n\n'.join(assistant_parts) if assistant_parts else None
-    full_text = '\n\n'.join(filter(None, [user_text, assistant_text]))
-    
-    return ExchangeContent(
-        exchange_id=exchange.id,
-        user_text=user_text,
-        assistant_text=assistant_text,
-        full_text=full_text,
-        user_text_hash=self._hash_text(user_text),
-        assistant_text_hash=self._hash_text(assistant_text),
-        full_text_hash=self._hash_text(full_text),
-        user_word_count=len(user_text.split()) if user_text else None,
-        assistant_word_count=len(assistant_text.split()) if assistant_text else None,
-        total_word_count=len(full_text.split()) if full_text else None,
+def _build_content(self, dialogue_id: UUID) -> int:
+    """Build content records for all prompt-responses in a dialogue."""
+    result = self.session.execute(
+        text("""
+            INSERT INTO derived.prompt_response_content 
+                (prompt_response_id, prompt_text, response_text, 
+                 prompt_word_count, response_word_count)
+            SELECT 
+                pr.id,
+                (SELECT string_agg(cp.text_content, ' ' ORDER BY cp.sequence)
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.prompt_message_id),
+                (SELECT string_agg(cp.text_content, ' ' ORDER BY cp.sequence)
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.response_message_id),
+                (SELECT sum(array_length(
+                    string_to_array(cp.text_content, ' '), 1))
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.prompt_message_id),
+                (SELECT sum(array_length(
+                    string_to_array(cp.text_content, ' '), 1))
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.response_message_id)
+            FROM derived.prompt_responses pr
+            WHERE pr.dialogue_id = :dialogue_id
+            ON CONFLICT (prompt_response_id) DO UPDATE SET
+                prompt_text = EXCLUDED.prompt_text,
+                response_text = EXCLUDED.response_text,
+                prompt_word_count = EXCLUDED.prompt_word_count,
+                response_word_count = EXCLUDED.response_word_count
+        """),
+        {'dialogue_id': dialogue_id}
     )
+    return result.rowcount
 ```
 
-### Exchange-Sequence Linking
-
-Exchanges are linked to sequences for training export:
-
-```python
-def _link_to_sequences(self, dialogue_id: UUID, exchanges: list[Exchange]):
-    """Link exchanges to their containing sequences."""
-    sequences = (
-        self.session.query(LinearSequence)
-        .filter(LinearSequence.dialogue_id == dialogue_id)
-        .all()
-    )
-    
-    for sequence in sequences:
-        # Get messages in this sequence
-        seq_msg_ids = set(
-            sm.message_id for sm in 
-            self.session.query(SequenceMessage.message_id)
-            .filter(SequenceMessage.sequence_id == sequence.id)
-            .all()
-        )
-        
-        # Find exchanges that are fully contained in this sequence
-        position = 0
-        for exchange in exchanges:
-            exchange_msg_ids = set(
-                em.message_id for em in exchange.exchange_messages
-            )
-            
-            if exchange_msg_ids.issubset(seq_msg_ids):
-                link = SequenceExchange(
-                    sequence_id=sequence.id,
-                    exchange_id=exchange.id,
-                    position=position,
-                )
-                self.session.add(link)
-                position += 1
-```
-
----
-
-## Hash Builder
-
-The `HashBuilder` computes content hashes for deduplication and change detection.
-
-### Hash Types
-
-| Scope | Description | Use Case |
-|-------|-------------|----------|
-| `full` | All content concatenated | Exact duplicate detection |
-| `user` | User content only | Prompt deduplication |
-| `assistant` | Assistant content only | Response deduplication |
-
-### Builder API
-
-```python
-class HashBuilder:
-    """Builds content hashes for deduplication."""
-    
-    def __init__(self, session: Session):
-        self.session = session
-    
-    def build(
-        self,
-        entity_type: str = 'exchange',
-        normalization: str = 'none',
-    ) -> int:
-        """
-        Build content hashes for entities.
-        
-        Args:
-            entity_type: 'message' or 'exchange'
-            normalization: 'none', 'lowercase', 'whitespace'
-            
-        Returns:
-            Number of hashes created
-        """
-```
-
-### Normalization Options
-
-```python
-def _normalize_text(self, text: str, normalization: str) -> str:
-    """Normalize text before hashing."""
-    if normalization == 'none':
-        return text
-    
-    if normalization == 'lowercase':
-        return text.lower()
-    
-    if normalization == 'whitespace':
-        # Collapse whitespace, normalize newlines
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
-    
-    if normalization == 'full':
-        # Lowercase + whitespace + remove punctuation
-        text = text.lower()
-        text = re.sub(r'\s+', ' ', text)
-        text = re.sub(r'[^\w\s]', '', text)
-        return text.strip()
-    
-    return text
-```
-
-### SimHash for Fuzzy Matching
-
-Beyond SHA256 for exact matching, SimHash enables near-duplicate detection:
-
-```python
-def _compute_simhash(self, text: str) -> str:
-    """Compute SimHash for fuzzy matching."""
-    # Tokenize
-    tokens = text.lower().split()
-    
-    # Compute hash vector
-    v = [0] * 64
-    for token in tokens:
-        token_hash = int(hashlib.md5(token.encode()).hexdigest(), 16)
-        for i in range(64):
-            bit = (token_hash >> i) & 1
-            v[i] += 1 if bit else -1
-    
-    # Convert to fingerprint
-    fingerprint = 0
-    for i in range(64):
-        if v[i] > 0:
-            fingerprint |= (1 << i)
-    
-    return format(fingerprint, '016x')
-```
-
----
-
-## Build Pipeline
+## Build Modes
 
 ### Full Rebuild
 
+Clears and rebuilds all prompt-responses:
+
+```bash
+# Rebuild all dialogues
+llm-archive build_prompt_responses
+
+# Rebuild specific dialogue
+llm-archive build_prompt_responses --dialogue_id=<uuid>
+```
+
 ```python
-def rebuild_derived(session: Session, dialogue_id: UUID = None):
-    """Rebuild all derived structures."""
-    tree_builder = TreeBuilder(session)
-    exchange_builder = ExchangeBuilder(session)
-    hash_builder = HashBuilder(session)
+def build_all(self):
+    """Rebuild all prompt-responses."""
+    # Clear all existing
+    self.session.execute(
+        text("DELETE FROM derived.prompt_response_content")
+    )
+    self.session.execute(
+        text("DELETE FROM derived.prompt_responses")
+    )
     
-    # Clear existing derived data
-    if dialogue_id:
-        _clear_derived_for_dialogue(session, dialogue_id)
-    else:
-        _clear_all_derived(session)
+    # Rebuild all dialogues
+    dialogues = self.session.query(Dialogue.id).all()
+    for (dialogue_id,) in dialogues:
+        self.build_for_dialogue(dialogue_id)
     
-    # Build in order
-    tree_results = tree_builder.build(dialogue_id)
-    exchange_results = exchange_builder.build(dialogue_id)
-    hash_results = hash_builder.build()
-    
-    session.commit()
-    
-    return {**tree_results, **exchange_results, 'hashes': hash_results}
+    self.session.commit()
 ```
 
 ### Incremental Build
 
+Builds only for new/updated dialogues:
+
 ```python
-def build_incremental(session: Session):
-    """Build derived structures for new dialogues only."""
-    tree_builder = TreeBuilder(session)
-    exchange_builder = ExchangeBuilder(session)
-    
-    # Find dialogues without tree analysis
-    new_dialogues = (
-        session.query(Dialogue.id)
-        .outerjoin(DialogueTree)
-        .filter(DialogueTree.dialogue_id.is_(None))
+def build_incremental(self):
+    """Build prompt-responses for dialogues without them."""
+    # Find dialogues without prompt-responses
+    dialogues_without_prs = (
+        self.session.query(Dialogue.id)
+        .outerjoin(PromptResponse, Dialogue.id == PromptResponse.dialogue_id)
+        .filter(PromptResponse.id.is_(None))
         .all()
     )
     
-    for (dialogue_id,) in new_dialogues:
-        tree_builder.build(dialogue_id)
-        exchange_builder.build(dialogue_id)
+    for (dialogue_id,) in dialogues_without_prs:
+        self.build_for_dialogue(dialogue_id)
     
-    session.commit()
+    self.session.commit()
 ```
 
----
+## Edge Cases
+
+### System Messages
+
+System messages are typically not part of user→assistant pairs:
+
+```python
+# System message is skipped
+if msg.role in ('system', 'tool', 'tool_result'):
+    continue
+```
+
+### Empty Content
+
+Messages with no content parts are still included:
+
+```python
+# Content may be NULL if message has no content_parts
+prompt_text = None
+response_text = None
+```
+
+### Tool Use
+
+Tool use messages are treated as non-user, non-assistant messages:
+
+```python
+# Tool messages skipped, but assistant response after tool_result is paired
+if msg.role in ('tool', 'tool_result'):
+    continue
+```
 
 ## Performance Considerations
 
 ### Batch Processing
 
 ```python
-def build(self, dialogue_id: UUID = None, batch_size: int = 100):
-    """Build with batch commits."""
-    dialogues = self._get_dialogues(dialogue_id)
+def build_all(self, batch_size: int = 100):
+    """Build with periodic commits."""
+    dialogues = self.session.query(Dialogue.id).all()
     
-    for i, dialogue in enumerate(dialogues):
-        self._process_dialogue(dialogue)
+    for i, (dialogue_id,) in enumerate(dialogues):
+        self.build_for_dialogue(dialogue_id)
         
         if (i + 1) % batch_size == 0:
             self.session.commit()
@@ -627,24 +317,100 @@ def build(self, dialogue_id: UUID = None, batch_size: int = 100):
     self.session.commit()
 ```
 
-### Memory-Efficient Iteration
+### Memory Efficiency
 
-```python
-def _iter_dialogues(self):
-    """Iterate dialogues without loading all into memory."""
-    query = self.session.query(Dialogue.id)
-    
-    # Use server-side cursor
-    for (dialogue_id,) in query.yield_per(1000):
-        yield dialogue_id
+- Uses database-side text aggregation for content
+- Processes one dialogue at a time
+- Clears per-dialogue structures after processing
+
+## Views
+
+Several views provide convenient access to prompt-response data:
+
+### prompt_response_content_v
+
+Joins prompt_responses with their content for annotation:
+
+```sql
+CREATE VIEW derived.prompt_response_content_v AS
+SELECT 
+    pr.id as prompt_response_id,
+    pr.dialogue_id,
+    pr.prompt_message_id,
+    pr.response_message_id,
+    prc.prompt_text,
+    prc.response_text,
+    prc.prompt_word_count,
+    prc.response_word_count,
+    pr.prompt_role,
+    pr.response_role,
+    pr.prompt_position,
+    pr.response_position
+FROM derived.prompt_responses pr
+LEFT JOIN derived.prompt_response_content prc 
+    ON prc.prompt_response_id = pr.id;
 ```
 
----
+### prompt_exchanges
+
+Groups responses by their prompt (shows regenerations):
+
+```sql
+CREATE VIEW derived.prompt_exchanges AS
+SELECT 
+    prompt_message_id,
+    dialogue_id,
+    ARRAY_AGG(response_message_id ORDER BY response_position) as response_ids,
+    COUNT(*) as response_count,
+    COUNT(*) > 1 as has_regenerations,
+    MIN(prompt_text) as prompt_text
+FROM derived.prompt_responses pr
+LEFT JOIN derived.prompt_response_content prc 
+    ON prc.prompt_response_id = pr.id
+GROUP BY prompt_message_id, dialogue_id;
+```
+
+## Testing
+
+### Unit Tests
+
+Test pairing logic with mock data:
+
+```python
+def test_find_prompt_uses_parent_id(builder, messages):
+    """Test that parent_id takes precedence."""
+    user_msg = messages[0]  # role='user'
+    asst_msg = messages[1]  # role='assistant', parent_id=user_msg.id
+    
+    msg_by_id = {m.id: m for m in messages}
+    prompt = builder._find_prompt(asst_msg, msg_by_id, user_msg)
+    
+    assert prompt.id == user_msg.id
+```
+
+### Integration Tests
+
+Test full build with real database:
+
+```python
+def test_build_creates_prompt_responses(session, sample_dialogue):
+    """Test building prompt-responses for a dialogue."""
+    builder = PromptResponseBuilder(session)
+    stats = builder.build_for_dialogue(sample_dialogue.id)
+    
+    assert stats['prompt_responses'] > 0
+    
+    # Verify records exist
+    prs = session.query(PromptResponse).filter(
+        PromptResponse.dialogue_id == sample_dialogue.id
+    ).all()
+    assert len(prs) == stats['prompt_responses']
+```
 
 ## Related Documentation
 
 - [Architecture Overview](architecture.md)
-- [Schema Design](schema.md) - Derived table definitions
-- [Models](models.md) - SQLAlchemy models
+- [Schema Design](schema.md) - Prompt-response table definitions
+- [Models](models.md) - PromptResponse SQLAlchemy model
 - [Extractors](extractors.md) - Raw data source
-- [Annotators](annotators.md) - Post-building analysis
+- [Annotators](annotators.md) - Downstream annotation
