@@ -172,15 +172,23 @@ class ChatGPTExtractor(BaseExtractor):
         # Third pass: update parent links (now that all messages exist)
         for source_id, data in message_data.items():
             node = data['node']
-            parent_source_id = node.get('parent')
+            parent_node_id = node.get('parent')
             
-            native_id = self.resolve_message_id(source_id)
-            parent_native_id = self.resolve_message_id(parent_source_id)
-            
-            if native_id:
-                msg = self.session.get(Message, native_id)
-                if msg and msg.parent_id != parent_native_id:
-                    msg.parent_id = parent_native_id
+            # Look up parent node and get its message ID
+            if parent_node_id and parent_node_id in mapping:
+                parent_node = mapping[parent_node_id]
+                parent_msg_data = parent_node.get('message')
+                
+                if parent_msg_data:
+                    parent_source_id = parent_msg_data.get('id')
+                    
+                    native_id = self.resolve_message_id(source_id)
+                    parent_native_id = self.resolve_message_id(parent_source_id)
+                    
+                    if native_id:
+                        msg = self.session.get(Message, native_id)
+                        if msg and msg.parent_id != parent_native_id:
+                            msg.parent_id = parent_native_id
         
         # Fourth pass: soft-delete messages no longer in source (unless incremental mode)
         if not self.incremental:
@@ -283,15 +291,23 @@ class ChatGPTExtractor(BaseExtractor):
                 continue
             
             source_id = msg_data.get('id')
-            parent_source_id = node.get('parent')
+            parent_node_id = node.get('parent')
             
-            native_id = self.resolve_message_id(source_id)
-            parent_native_id = self.resolve_message_id(parent_source_id)
-            
-            if native_id and parent_native_id:
-                msg = self.session.get(Message, native_id)
-                if msg:
-                    msg.parent_id = parent_native_id
+            # Look up parent node and get its message ID
+            if parent_node_id and parent_node_id in mapping:
+                parent_node = mapping[parent_node_id]
+                parent_msg_data = parent_node.get('message')
+                
+                if parent_msg_data:
+                    parent_source_id = parent_msg_data.get('id')
+                    
+                    native_id = self.resolve_message_id(source_id)
+                    parent_native_id = self.resolve_message_id(parent_source_id)
+                    
+                    if native_id and parent_native_id:
+                        msg = self.session.get(Message, native_id)
+                        if msg:
+                            msg.parent_id = parent_native_id
     
     def _extract_content_parts(self, message_id: UUID, msg_data: dict[str, Any]):
         """Extract content parts from a message."""

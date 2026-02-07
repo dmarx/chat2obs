@@ -1,11 +1,46 @@
--- schema/003b_prompt_response_views.sql
--- Optional views for convenient querying of prompt-response data
+-- schema/005_prompt_response_views.sql
+-- Prompt-response views that don't depend on annotation tables
 
 -- ============================================================
+-- prompt_response_content_v
+--
+-- Join prompt_responses with their content and roles.
+-- This is the primary view used by prompt-response annotators.
+-- ============================================================
+
+CREATE OR REPLACE VIEW derived.prompt_response_content_v AS
+SELECT 
+    pr.id as prompt_response_id,
+    pr.dialogue_id,
+    pr.prompt_message_id,
+    pr.response_message_id,
+    
+    -- Content (from prompt_response_content table)
+    prc.prompt_text,
+    prc.response_text,
+    prc.prompt_word_count,
+    prc.response_word_count,
+    
+    -- Roles (denormalized for convenience)
+    pr.prompt_role,
+    pr.response_role,
+    
+    -- Position info
+    pr.prompt_position,
+    pr.response_position,
+    
+    -- Timestamps
+    pr.created_at
+FROM derived.prompt_responses pr
+LEFT JOIN derived.prompt_response_content prc 
+    ON prc.prompt_response_id = pr.id;
+
+
+-- ============================================================
+-- prompt_exchanges
+--
 -- Exchange-like view: Group responses by their prompt
--- 
--- This gives you an "exchange" perspective where you can see
--- all responses associated with a given prompt message.
+-- Shows all responses associated with a given prompt message.
 -- ============================================================
 
 CREATE OR REPLACE VIEW derived.prompt_exchanges AS
@@ -35,84 +70,3 @@ FROM derived.prompt_responses pr
 LEFT JOIN derived.prompt_response_content prc 
     ON prc.prompt_response_id = pr.id
 GROUP BY pr.prompt_message_id, pr.dialogue_id;
-
-
--- ============================================================
--- Wiki articles with their annotation status
--- ============================================================
-
-CREATE OR REPLACE VIEW derived.wiki_article_status AS
-SELECT 
-    pr.id as prompt_response_id,
-    pr.dialogue_id,
-    d.title as dialogue_title,
-    d.source as platform,
-    
-    prc.prompt_text,
-    prc.response_text,
-    prc.response_word_count,
-    
-    -- Title extraction status
-    title_ann.annotation_value as extracted_title,
-    title_ann.confidence as title_confidence,
-    
-    -- Count of wiki links
-    (wiki_ann.annotation_data->>'wiki_link_count')::int as wiki_link_count,
-    
-    -- For manual inspection
-    SPLIT_PART(prc.response_text, E'\n', 1) as first_line,
-    SPLIT_PART(prc.response_text, E'\n', 2) as second_line,
-    
-    pr.created_at
-
-FROM derived.prompt_responses pr
-JOIN raw.dialogues d ON d.id = pr.dialogue_id
-LEFT JOIN derived.prompt_response_content prc ON prc.prompt_response_id = pr.id
-
--- Must have wiki_article tag
-JOIN derived.annotations wiki_ann ON 
-    wiki_ann.entity_type = 'prompt_response' 
-    AND wiki_ann.entity_id = pr.id
-    AND wiki_ann.annotation_key = 'exchange_type'
-    AND wiki_ann.annotation_value = 'wiki_article'
-    AND wiki_ann.superseded_at IS NULL
-
--- May or may not have title
-LEFT JOIN derived.annotations title_ann ON 
-    title_ann.entity_type = 'prompt_response'
-    AND title_ann.entity_id = pr.id
-    AND title_ann.annotation_key = 'proposed_title'
-    AND title_ann.superseded_at IS NULL
-
-WHERE pr.response_role = 'assistant';
-
-
--- ============================================================
--- Annotation summary per entity
--- ============================================================
-
-CREATE OR REPLACE VIEW derived.prompt_response_annotations AS
-SELECT 
-    pr.id as prompt_response_id,
-    pr.dialogue_id,
-    
-    -- Collect all annotations as JSONB
-    JSONB_OBJECT_AGG(
-        COALESCE(a.annotation_key, a.annotation_type),
-        JSONB_BUILD_OBJECT(
-            'value', a.annotation_value,
-            'confidence', a.confidence,
-            'data', a.annotation_data
-        )
-    ) FILTER (WHERE a.id IS NOT NULL) as annotations,
-    
-    -- Quick access to common annotations
-    MAX(CASE WHEN a.annotation_key = 'exchange_type' THEN a.annotation_value END) as exchange_type,
-    MAX(CASE WHEN a.annotation_key = 'proposed_title' THEN a.annotation_value END) as proposed_title
-
-FROM derived.prompt_responses pr
-LEFT JOIN derived.annotations a ON 
-    a.entity_type = 'prompt_response'
-    AND a.entity_id = pr.id
-    AND a.superseded_at IS NULL
-GROUP BY pr.id, pr.dialogue_id;
