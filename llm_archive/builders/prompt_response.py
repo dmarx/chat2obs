@@ -95,14 +95,10 @@ class PromptResponseBuilder:
             )
             pr_count += 1
         
-        # Build content records
-        content_count = self._build_content(dialogue_id)
-        
         self.session.flush()
         
         return {
             'prompt_responses': pr_count,
-            'content_records': content_count,
         }
     
     def _find_prompt(
@@ -163,44 +159,6 @@ class PromptResponseBuilder:
             }
         )
         return result.scalar_one()
-    
-    def _build_content(self, dialogue_id: UUID) -> int:
-        """Build content records for all prompt-responses in a dialogue."""
-        # Use SQL to aggregate text content efficiently
-        result = self.session.execute(
-            text("""
-                INSERT INTO derived.prompt_response_content 
-                    (prompt_response_id, prompt_text, response_text, 
-                     prompt_word_count, response_word_count)
-                SELECT 
-                    pr.id,
-                    prompt_content.text_content as prompt_text,
-                    response_content.text_content as response_text,
-                    COALESCE(array_length(regexp_split_to_array(prompt_content.text_content, '\\s+'), 1), 0),
-                    COALESCE(array_length(regexp_split_to_array(response_content.text_content, '\\s+'), 1), 0)
-                FROM derived.prompt_responses pr
-                LEFT JOIN LATERAL (
-                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.sequence) as text_content
-                    FROM raw.content_parts cp
-                    WHERE cp.message_id = pr.prompt_message_id
-                      AND cp.part_type = 'text'
-                ) prompt_content ON true
-                LEFT JOIN LATERAL (
-                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.sequence) as text_content
-                    FROM raw.content_parts cp
-                    WHERE cp.message_id = pr.response_message_id
-                      AND cp.part_type = 'text'
-                ) response_content ON true
-                WHERE pr.dialogue_id = :dialogue_id
-                ON CONFLICT (prompt_response_id) DO UPDATE SET
-                    prompt_text = EXCLUDED.prompt_text,
-                    response_text = EXCLUDED.response_text,
-                    prompt_word_count = EXCLUDED.prompt_word_count,
-                    response_word_count = EXCLUDED.response_word_count
-            """),
-            {'dialogue_id': dialogue_id}
-        )
-        return result.rowcount
     
     def _clear_existing(self, dialogue_id: UUID):
         """Clear existing prompt-response data for a dialogue."""
