@@ -225,7 +225,15 @@ class BaseExtractor(ABC):
             .filter(Dialogue.source_id == source_id)
             .first()
         )
-    
+    def get_existing_messages(self, dialogue_id: UUID) -> dict[str, Message]:
+        """Get all existing messages for a dialogue, keyed by source_id."""
+        messages = (
+            self.session.query(Message)
+            .filter(Message.dialogue_id == dialogue_id)
+            .all()
+        )
+        return {m.source_id: m for m in messages}
+        
     def should_update(
         self,
         existing: Dialogue,
