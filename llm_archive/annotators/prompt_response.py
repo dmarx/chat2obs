@@ -70,7 +70,7 @@ class PromptResponseAnnotator(BaseAnnotator):
         
         Applies filtering based on REQUIRES_* and SKIP_IF_* class attributes.
         """
-        # Build base query
+        # Build base query with placeholder for annotation filters
         query = """
             SELECT 
                 pr.id as prompt_response_id,
@@ -89,13 +89,17 @@ class PromptResponseAnnotator(BaseAnnotator):
             FROM derived.prompt_responses pr
             LEFT JOIN derived.prompt_response_content prc 
                 ON prc.prompt_response_id = pr.id
-            WHERE pr.created_at > :high_water_mark
         """
+        
+        # Add annotation filter JOINs (must come before WHERE)
+        query += self._build_annotation_joins()
+        
+        # Add WHERE clause
+        query += " WHERE pr.created_at > :high_water_mark"
         
         params = {'high_water_mark': high_water_mark}
         
-        # Add filtering conditions
-        query = self._add_annotation_filters(query)
+        # Add ORDER BY
         query += " ORDER BY pr.created_at"
         
         result = self.session.execute(text(query), params)
@@ -121,26 +125,39 @@ class PromptResponseAnnotator(BaseAnnotator):
                 created_at=row.created_at,
             )
     
-    def _add_annotation_filters(self, query: str) -> str:
-        """Add JOIN clauses for annotation prerequisites."""
+    def _build_annotation_joins(self) -> str:
+        """
+        Build JOIN clauses for annotation prerequisites.
+        
+        NOTE: This uses string formatting for simplicity. In production,
+        consider using SQLAlchemy's query builder or parameterized queries
+        to prevent SQL injection if annotation keys/values come from user input.
+        """
+        joins = ""
+        
         # Add joins for REQUIRES_FLAGS
         for i, flag_key in enumerate(self.REQUIRES_FLAGS):
-            query += f"""
+            # Escape single quotes to prevent SQL injection
+            safe_flag_key = flag_key.replace("'", "''")
+            joins += f"""
                 INNER JOIN derived.prompt_response_annotations_flag req_flag_{i}
                     ON req_flag_{i}.entity_id = pr.id
-                    AND req_flag_{i}.annotation_key = '{flag_key}'
+                    AND req_flag_{i}.annotation_key = '{safe_flag_key}'
             """
         
         # Add joins for REQUIRES_STRINGS
         for i, (key, value) in enumerate(self.REQUIRES_STRINGS):
-            query += f"""
+            # Escape single quotes to prevent SQL injection
+            safe_key = key.replace("'", "''")
+            safe_value = value.replace("'", "''")
+            joins += f"""
                 INNER JOIN derived.prompt_response_annotations_string req_str_{i}
                     ON req_str_{i}.entity_id = pr.id
-                    AND req_str_{i}.annotation_key = '{key}'
-                    AND req_str_{i}.annotation_value = '{value}'
+                    AND req_str_{i}.annotation_key = '{safe_key}'
+                    AND req_str_{i}.annotation_value = '{safe_value}'
             """
         
-        return query
+        return joins
     
     def _should_skip(self, entity_id: UUID) -> bool:
         """Check if entity should be skipped based on SKIP_IF conditions."""
@@ -249,7 +266,6 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                     ]
         
         return []
-
 
 # ============================================================
 # Annotator Registry
