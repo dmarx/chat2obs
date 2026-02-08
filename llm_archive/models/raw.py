@@ -181,13 +181,11 @@ class ChatGPTMessageMeta(Base):
     __table_args__ = {"schema": "raw"}
     
     message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), primary_key=True)
-    
-    weight = Column(Float)
-    end_turn = Column(Boolean)
-    recipient = Column(String)
     model_slug = Column(String)
-    is_complete = Column(Boolean)
-    finish_details = Column(JSONB)
+    status = Column(String)
+    end_turn = Column(Boolean)
+    gizmo_id = Column(String)
+    source_json = Column(JSONB, nullable=False)
 
 
 class ChatGPTSearchGroup(Base):
