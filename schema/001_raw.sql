@@ -1,6 +1,6 @@
 -- schema/001_raw.sql
 -- Raw data layer: imported conversation data
-
+create extension if not exists vector;
 -- ============================================================
 -- SCHEMA SETUP
 -- ============================================================
