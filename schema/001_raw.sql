@@ -182,15 +182,13 @@ create index if not exists idx_attachments_message on raw.attachments(message_id
 -- ============================================================
 
 -- ChatGPT message metadata
-create table if not exists raw.chatgpt_message_meta (
+create table raw.chatgpt_message_meta (
     message_id          uuid primary key references raw.messages on delete cascade,
-    
-    weight              float,
-    end_turn            boolean,
-    recipient           text,
     model_slug          text,
-    is_complete         boolean,
-    finish_details      jsonb
+    status              text,
+    end_turn            boolean,
+    gizmo_id            text,
+    source_json         jsonb not null
 );
 
 -- ChatGPT web search groups
