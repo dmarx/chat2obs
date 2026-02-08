@@ -489,6 +489,8 @@ class TestPromptResponseData:
             response_word_count=0,
             prompt_role='user',
             response_role='assistant',
+            prompt_position=-1,
+            response_position=-1,
             created_at=datetime.now(timezone.utc),
         )
         
