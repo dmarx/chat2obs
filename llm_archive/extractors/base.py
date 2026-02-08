@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from llm_archive.models import Dialogue, Message, ContentPart
+from llm_archive.annotations.core import AnnotationWriter, EntityType
 
 
 def parse_timestamp(value: int | float | str | None) -> datetime | None:
@@ -63,6 +64,18 @@ def normalize_role(role: str, source: str) -> str:
     return role_lower
 
 
+def compute_word_count(text: str | None) -> int:
+    """
+    Compute word count for text content.
+    
+    Simple whitespace-based word counting.
+    Returns 0 for None or empty text.
+    """
+    if not text:
+        return 0
+    return len(text.split())
+
+
 def safe_get(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
     """Safely traverse nested dict."""
     current = data
@@ -95,84 +108,95 @@ class BaseExtractor(ABC):
     - Soft-delete messages removed from source (unless incremental=True)
     - Only rebuild content_parts for actually changed messages
     
+    Provides helper for creating content parts with automatic word_count annotation.
+    
     Args:
         session: SQLAlchemy session
         assume_immutable: If True, assume message content never changes once created.
             This skips content hash comparison for existing messages, which is faster
-            but won't detect in-place edits. Use for providers where edits create new
-            message UUIDs rather than modifying existing ones. Default: False.
-        incremental: If True, treat the import as a delta/partial update. Messages
-            not present in the current import will NOT be soft-deleted. Use when
-            importing partial exports or streaming updates. Default: False.
+            but won't detect in-place edits.
+        incremental: If True, only update changed dialogues and messages.
+            If False, replace entire dialogue on any change.
     """
     
     SOURCE_ID: str = None  # Override in subclass
     
     def __init__(
-        self, 
-        session: Session, 
+        self,
+        session: Session,
         assume_immutable: bool = False,
         incremental: bool = False,
     ):
+        if self.SOURCE_ID is None:
+            raise ValueError("SOURCE_ID must be set in subclass")
+        
         self.session = session
         self.assume_immutable = assume_immutable
         self.incremental = incremental
-        self._message_id_map: dict[str, UUID] = {}  # source_id -> native UUID
-        self.counts: dict[str, int] = {}  # Populated by extract_all
+        self.annotation_writer = AnnotationWriter(session)
     
-    def _increment_count(self, key: str, amount: int = 1):
-        """Safely increment a count (no-op if counts not initialized)."""
-        if key in self.counts:
-            self.counts[key] += amount
-    
-    @abstractmethod
-    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+    def create_content_part_with_annotation(
+        self,
+        message_id: UUID,
+        sequence: int,
+        part_type: str,
+        text_content: str | None = None,
+        language: str | None = None,
+        media_type: str | None = None,
+        url: str | None = None,
+        tool_name: str | None = None,
+        tool_use_id: str | None = None,
+        tool_input: dict | None = None,
+    ) -> ContentPart:
         """
-        Extract a single dialogue and all its contents.
+        Create a ContentPart and annotate it with word_count.
+        
+        This is the standard way to create content parts - it ensures
+        word_count is always annotated consistently.
+        
+        Args:
+            message_id: Parent message ID
+            sequence: Order within message
+            part_type: Type of content ('text', 'code', 'image', 'tool_use', etc.)
+            text_content: Text content (if any)
+            language: Programming language for code blocks
+            media_type: MIME type for media
+            url: URL for media or links
+            tool_name: Name of tool for tool_use
+            tool_use_id: ID of tool use
+            tool_input: Input parameters for tool
         
         Returns:
-            'new' - new dialogue created
-            'updated' - existing dialogue updated  
-            'skipped' - existing dialogue unchanged
-            None - extraction failed
+            Created ContentPart with word_count annotation
         """
-        pass
-    
-    def extract_all(self, data: list[dict[str, Any]]) -> dict[str, int]:
-        """Extract all dialogues from a data list."""
-        self.counts = {
-            'dialogues_new': 0,
-            'dialogues_updated': 0,
-            'dialogues_skipped': 0,
-            'messages_new': 0,
-            'messages_updated': 0,
-            'messages_unchanged': 0,
-            'messages_restored': 0,
-            'messages_soft_deleted': 0,
-            'content_parts': 0,
-            'failed': 0,
-        }
+        # Create the content part
+        content_part = ContentPart(
+            message_id=message_id,
+            sequence=sequence,
+            part_type=part_type,
+            text_content=text_content,
+            language=language,
+            media_type=media_type,
+            url=url,
+            tool_name=tool_name,
+            tool_use_id=tool_use_id,
+            tool_input=tool_input,
+        )
         
-        for i, raw in enumerate(data):
-            try:
-                result = self.extract_dialogue(raw)
-                if result == 'new':
-                    self.counts['dialogues_new'] += 1
-                elif result == 'updated':
-                    self.counts['dialogues_updated'] += 1
-                elif result == 'skipped':
-                    self.counts['dialogues_skipped'] += 1
-                elif result is None:
-                    self.counts['failed'] += 1
-            except Exception as e:
-                logger.error(f"Failed to extract dialogue {i}: {e}")
-                self.counts['failed'] += 1
-                self.session.rollback()
+        self.session.add(content_part)
+        self.session.flush()  # Get the ID
         
-        self.session.commit()
-        total = self.counts['dialogues_new'] + self.counts['dialogues_updated']
-        logger.info(f"{self.SOURCE_ID} extraction complete: {total} processed ({self.counts})")
-        return self.counts
+        # Annotate with word count
+        word_count = compute_word_count(text_content)
+        self.annotation_writer.write_numeric(
+            entity_type=EntityType.CONTENT_PART,
+            entity_id=content_part.id,
+            key='word_count',
+            value=word_count,
+            source=self.SOURCE_ID,
+        )
+        
+        return content_part
     
     def get_existing_dialogue(self, source_id: str) -> Dialogue | None:
         """Check if dialogue already exists."""
@@ -183,50 +207,32 @@ class BaseExtractor(ABC):
             .first()
         )
     
-    def get_existing_messages(self, dialogue_id: UUID) -> dict[str, Message]:
-        """Get all existing messages for a dialogue, keyed by source_id."""
-        messages = (
-            self.session.query(Message)
-            .filter(Message.dialogue_id == dialogue_id)
-            .all()
-        )
-        return {m.source_id: m for m in messages}
-    
-    def should_update(self, existing: Dialogue, new_updated_at: datetime | None) -> bool:
-        """Determine if existing dialogue should be updated."""
+    def should_update(
+        self,
+        existing: Dialogue,
+        new_updated_at: datetime | None,
+    ) -> bool:
+        """Determine if dialogue should be updated."""
         if new_updated_at is None:
-            return False
-        if existing.updated_at is None:
+            # No timestamp - always update
             return True
-        return new_updated_at > existing.updated_at
+        
+        if existing.source_updated_at is None:
+            # Existing has no timestamp - update
+            return True
+        
+        # Update if new is newer
+        return new_updated_at > existing.source_updated_at
     
-    def register_message_id(self, source_id: str, native_id: UUID):
-        """Register a mapping from source message ID to native UUID."""
-        self._message_id_map[source_id] = native_id
-    
-    def resolve_message_id(self, source_id: str | None) -> UUID | None:
-        """Resolve a source message ID to native UUID."""
-        if source_id is None:
-            return None
-        return self._message_id_map.get(source_id)
-    
-    def _delete_message_content(self, message_id: UUID):
-        """Delete content parts and related data for a message."""
-        # Content parts cascade delete citations
-        self.session.query(ContentPart).filter(
-            ContentPart.message_id == message_id
-        ).delete()
-    
-    def _soft_delete_messages(self, messages: list[Message]) -> int:
-        """Soft delete messages that are no longer in source."""
-        now = datetime.now(timezone.utc)
-        count = 0
-        for msg in messages:
-            if msg.deleted_at is None:
-                msg.deleted_at = now
-                count += 1
-        return count
-    
-    def _restore_message(self, message: Message):
-        """Restore a soft-deleted message."""
-        message.deleted_at = None
+    @abstractmethod
+    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+        """
+        Extract a single dialogue.
+        
+        Returns:
+            'new' - new dialogue created
+            'updated' - existing dialogue updated
+            'skipped' - existing dialogue unchanged
+            None - extraction failed
+        """
+        pass
