@@ -147,6 +147,8 @@ class BaseExtractor(ABC):
         tool_name: str | None = None,
         tool_use_id: str | None = None,
         tool_input: dict | None = None,
+        is_error: bool | None = None,
+        source_json: dict | None = None,
     ) -> ContentPart:
         """
         Create a ContentPart and annotate it with word_count.
@@ -165,6 +167,8 @@ class BaseExtractor(ABC):
             tool_name: Name of tool for tool_use
             tool_use_id: ID of tool use
             tool_input: Input parameters for tool
+            is_error: Whether tool result is an error
+            source_json: Original source data
         
         Returns:
             Created ContentPart with word_count annotation
@@ -181,6 +185,8 @@ class BaseExtractor(ABC):
             tool_name=tool_name,
             tool_use_id=tool_use_id,
             tool_input=tool_input,
+            is_error=is_error,
+            source_json=source_json,
         )
         
         self.session.add(content_part)
