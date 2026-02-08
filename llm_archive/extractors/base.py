@@ -134,6 +134,12 @@ class BaseExtractor(ABC):
         self.assume_immutable = assume_immutable
         self.incremental = incremental
         self.annotation_writer = AnnotationWriter(session)
+        self.counts: dict[str, int] = {}  # Populated by extract_all
+    
+    def _increment_count(self, key: str, amount: int = 1):
+        """Safely increment a count (no-op if counts not initialized)."""
+        if key in self.counts:
+            self.counts[key] += amount
     
     def create_content_part_with_annotation(
         self,
