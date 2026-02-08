@@ -1,4 +1,4 @@
--- schema/006_annotations.sql
+-- schema/005_annotations.sql
 -- Typed annotation tables for all entity types
 
 -- ============================================================
