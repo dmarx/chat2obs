@@ -143,6 +143,11 @@ class BaseExtractor(ABC):
     def register_message_id(self, source_id: str, native_id: UUID):
         """Register a mapping from source message ID to native UUID."""
         self._message_id_map[source_id] = native_id
+    def resolve_message_id(self, source_id: str | None) -> UUID | None:
+        """Resolve a source message ID to native UUID."""
+        if source_id is None:
+            return None
+        return self._message_id_map.get(source_id)
     def create_content_part_with_annotation(
         self,
         message_id: UUID,
