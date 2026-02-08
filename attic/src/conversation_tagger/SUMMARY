@@ -1,0 +1,2457 @@
+---
+File: attic/src/conversation_tagger/__init__.py
+---
+# conversation_tagger/__init__.py
+"""
+Minimal conversation tagging system with exchange-based analysis.
+"""
+
+from .core.tag import Tag
+from .core.tagger import ConversationTagger
+from .factory import create_default_tagger
+from .core.conversation import Conversation
+from .core.exchange import Exchange
+from .core.message import Message
+from .core.exchange_parser import ExchangeParser, ExchangeParserOAI, ExchangeParserClaude
+from .core.exchange_tagger import ExchangeTagger
+from .core.detection import EXCHANGE_RULES, CONVERSATION_RULES
+from .core.generate import generate_notes   
+
+__all__ = ['Tag', 'ConversationTagger', 'create_default_tagger', 'Conversation', 'Exchange', 'Message', 'ExchangeParser', 'ExchangeParserOAI', 'ExchangeParserClaude', 'ExchangeTagger', 'EXCHANGE_RULES', 'CONVERSATION_RULES' ]
+
+
+---
+File: attic/src/conversation_tagger/analysis/__init__.py
+---
+
+
+
+---
+File: attic/src/conversation_tagger/analysis/faceting.py
+---
+# conversation_tagger/analysis/faceting.py
+"""
+Faceting functionality for analyzing conversations by different dimensions.
+Updated to use dictionary-based annotations.
+"""
+
+from typing import Dict, Any, List, Optional
+from collections import defaultdict
+
+from ..core.tag import Tag
+
+
+def get_facet_value(annotations: Dict[str, Any], facet_annotation_name: str, 
+                   facet_attribute: Optional[str] = None) -> str:
+    """Extract facet value from a conversation's annotations."""
+    if facet_annotation_name not in annotations:
+        return "<none>"
+    
+    annotation_value = annotations[facet_annotation_name]
+    
+    if facet_attribute is None:
+        # Just check for presence of the annotation
+        if annotation_value is True:
+            return f"has_{facet_annotation_name}"
+        else:
+            return str(annotation_value)
+    
+    # Extract specific attribute values from structured annotation
+    if isinstance(annotation_value, dict) and facet_attribute in annotation_value:
+        return str(annotation_value[facet_attribute])
+    
+    return f"<{facet_annotation_name}_no_{facet_attribute}>"
+
+
+def do_facet_conversations(tagged_conversations: List[Dict[str, Any]], 
+                       facet_annotation_name: str, 
+                       facet_attribute: Optional[str] = None,
+                       max_facets: int = 50) -> Dict[str, List[Dict[str, Any]]]:
+    """Group conversations by facet values."""
+    facets = defaultdict(list)
+    
+    for tagged_conv in tagged_conversations:
+        # Handle both old Tag-based format and new annotation format
+        if 'annotations' in tagged_conv:
+            annotations = tagged_conv['annotations']
+        else:
+            # Legacy: convert tags to annotations for compatibility
+            annotations = {}
+            for tag in tagged_conv.get('tags', []):
+                if isinstance(tag, Tag):
+                    annotations.update(tag.to_dict())
+                else:
+                    annotations[str(tag)] = True
+        
+        facet_value = get_facet_value(annotations, facet_annotation_name, facet_attribute)
+        facets[facet_value].append(tagged_conv)
+    
+    # Sort by facet size (largest first) and limit
+    sorted_facets = dict(sorted(facets.items(), key=lambda x: len(x[1]), reverse=True))
+    
+    if len(sorted_facets) > max_facets:
+        # Keep top facets and group rest into "others"
+        items = list(sorted_facets.items())
+        top_facets = dict(items[:max_facets-1])
+        
+        other_conversations = []
+        for _, conversations in items[max_facets-1:]:
+            other_conversations.extend(conversations)
+        
+        if other_conversations:
+            top_facets["<other>"] = other_conversations
+        
+        return top_facets
+    
+    return sorted_facets
+
+
+def print_faceted_summary(tagged_conversations: List[Dict[str, Any]], 
+                         facet_annotation_name: str, 
+                         facet_attribute: Optional[str] = None,
+                         show_details: bool = False,
+                         max_facets: int = 20):
+    """Print annotation summary broken down by facets."""
+    total = len(tagged_conversations)
+    facets = do_facet_conversations(tagged_conversations, facet_annotation_name, facet_attribute, max_facets)
+    
+    print(f"Tagged {total} conversations")
+    print(f"Faceted by: {facet_annotation_name}" + 
+          (f".{facet_attribute}" if facet_attribute else ""))
+    print(f"Found {len(facets)} facet values")
+    
+    print(f"\n{'='*80}")
+    print(f"FACETED ANNOTATION SUMMARY")
+    print(f"{'='*80}")
+    
+    for facet_value, facet_conversations in facets.items():
+        facet_size = len(facet_conversations)
+        facet_percentage = (facet_size / total) * 100
+        
+        print(f"\n📊 FACET: {facet_value}")
+        print(f"    Conversations: {facet_size} ({facet_percentage:.1f}% of total)")
+        print(f"    {'-' * 60}")
+        
+        # Calculate annotation statistics for this facet
+        annotation_counts = defaultdict(int)
+        annotation_attributes = defaultdict(lambda: defaultdict(list))
+        unique_structured_annotations = defaultdict(set)
+        
+        for tagged_conv in facet_conversations:
+            # Handle both new annotation format and legacy tag format
+            if 'annotations' in tagged_conv:
+                annotations = tagged_conv['annotations']
+            else:
+                # Legacy: convert tags to annotations
+                annotations = {}
+                for tag in tagged_conv.get('tags', []):
+                    if isinstance(tag, Tag):
+                        annotations.update(tag.to_dict())
+                    else:
+                        annotations[str(tag)] = True
+            
+            for annotation_name, annotation_value in annotations.items():
+                annotation_counts[annotation_name] += 1
+                
+                # Collect attribute information
+                if isinstance(annotation_value, dict):
+                    for attr_name, attr_value in annotation_value.items():
+                        if isinstance(attr_value, (int, float)):
+                            annotation_attributes[annotation_name][attr_name].append(attr_value)
+                        else:
+                            unique_structured_annotations[annotation_name].add(f"{attr_name}={attr_value}")
+                elif isinstance(annotation_value, (int, float)):
+                    annotation_attributes[annotation_name]['value'].append(annotation_value)
+        
+        # Sort annotations for this facet (show all annotations)
+        sorted_annotations = sorted(annotation_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        for annotation_name, count in sorted_annotations:
+            percentage = (count / facet_size) * 100
+            print(f"    {annotation_name}: {count} ({percentage:.1f}%)")
+            
+            if show_details:
+                # Show numeric attribute statistics
+                if annotation_name in annotation_attributes:
+                    for attr_name, values in annotation_attributes[annotation_name].items():
+                        if values:
+                            avg_val = sum(values) / len(values)
+                            min_val = min(values)
+                            max_val = max(values)
+                            print(f"        {attr_name}: avg={avg_val:.1f}, range=[{min_val}, {max_val}]")
+                
+                # Show unique structured values
+                if annotation_name in unique_structured_annotations:
+                    unique_vals = sorted(unique_structured_annotations[annotation_name])
+                    if len(unique_vals) <= 5:
+                        print(f"        values: {', '.join(unique_vals)}")
+                    else:
+                        print(f"        values: {', '.join(unique_vals[:5])} ... (+{len(unique_vals)-5} more)")
+
+
+
+---
+File: attic/src/conversation_tagger/core/conversation.py
+---
+# conversation_tagger/core/conversation.py
+"""
+Conversation class updated to use dictionary-based annotations.
+"""
+
+from typing import List, Dict, Any, TYPE_CHECKING
+from dataclasses import dataclass, field
+
+if TYPE_CHECKING:
+    from .exchange import Exchange
+    from .exchange_parser import ExchangeParser
+
+from .tag import Tag
+
+@dataclass 
+class Conversation:
+    """A conversation consisting of sequential exchanges with annotations."""
+    
+    conversation_id: str
+    title: str
+    exchanges: List['Exchange'] = field(default_factory=list)
+    annotations: Dict[str, Any] = field(default_factory=dict)  # Dictionary-based annotations
+    raw: Dict[str, Any] | None = field(default=None)  
+    
+    def __post_init__(self):
+        """Post-initialization to ensure annotations are set."""
+        if not self.annotations:
+            self._add_exchange_annotations()
+
+    def _add_exchange_annotations(self):
+        """Aggregate annotations from all exchanges."""
+        if not self.annotations:
+            # Collect all unique annotations from exchanges
+            for exchange in self.exchanges:
+                for name, value in exchange.annotations.items():
+                    if name not in self.annotations:
+                        self.annotations[name] = value
+
+    def add_annotation(self, name: str, value: Any = True) -> None:
+        """Add an annotation to this conversation."""
+        self.annotations[name] = value
+    
+    def has_annotation(self, name: str) -> bool:
+        """Check if annotation exists."""
+        return name in self.annotations
+    
+    def get_annotation(self, name: str, default: Any = None) -> Any:
+        """Get annotation value."""
+        return self.annotations.get(name, default)
+    
+    # Legacy compatibility
+    @property
+    def tags(self) -> List[Tag]:
+        """Convert annotations back to Tag objects for backward compatibility."""
+        tags = []
+        for name, value in self.annotations.items():
+            if value is True:
+                tags.append(Tag(name))
+            elif isinstance(value, dict):
+                tags.append(Tag(name, **value))
+            else:
+                tags.append(Tag(name, value=value))
+        return tags
+    
+    @tags.setter
+    def tags(self, tag_list: List[Tag]) -> None:
+        """Convert Tag objects to annotations for backward compatibility."""
+        self.annotations = {}
+        for tag in tag_list:
+            self.annotations.update(tag.to_dict())
+    
+    @property
+    def exchange_count(self) -> int:
+        return len(self.exchanges)
+    
+    @property 
+    def total_message_count(self) -> int:
+        return sum(len(exchange.messages) for exchange in self.exchanges)
+    
+    @property
+    def total_user_messages(self) -> int:
+        return sum(len(exchange.get_user_messages()) for exchange in self.exchanges)
+        
+    @property
+    def total_assistant_messages(self) -> int:
+        return sum(len(exchange.get_assistant_messages()) for exchange in self.exchanges)
+    
+    @property
+    def has_continuations(self) -> bool:
+        return any(exchange.has_continuations() for exchange in self.exchanges)
+    
+    def get_all_user_text(self) -> str:
+        return ' '.join(' '.join(exchange.get_user_texts()) for exchange in self.exchanges)
+    
+    def get_all_assistant_text(self) -> str:
+        return ' '.join(' '.join(exchange.get_assistant_texts()) for exchange in self.exchanges)
+
+
+
+---
+File: attic/src/conversation_tagger/core/detection.py
+---
+# src/conversation_tagger/core/detection.py
+"""
+High-value detection rules for conversations and exchanges.
+Updated to use dictionary-based annotations.
+"""
+
+import re
+from typing import Dict, Any, List
+from .exchange import Exchange
+from .conversation import Conversation
+from .tag import Tag, create_annotation
+from .message import Message, MessageOpenAI
+
+######################
+#  Conversation Rules #
+######################
+# These should only do aggregation/summarization, not detection
+
+def create_conversation_length_annotation(conversation: Conversation) -> Dict[str, Any]:
+    """Create annotation for conversation length."""
+    exchange_count = conversation.exchange_count
+    
+    # Determine category based on number of exchanges
+    if exchange_count == 1:
+        category = 'single'
+    elif exchange_count <= 3:
+        category = 'short'
+    elif exchange_count <= 10:
+        category = 'medium'
+    elif exchange_count <= 25:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return create_annotation('conversation_length', {
+        'count': exchange_count,
+        'category': category
+    })
+
+
+def conversation_feature_summary(conversation: Conversation) -> Dict[str, Any]:
+    """Aggregate feature usage across all exchanges."""
+    feature_counts = {}
+    total_exchanges = conversation.exchange_count
+    
+    # Count exchanges with each feature
+    for exchange in conversation.exchanges:
+        exchange_features = set()
+        for annotation_name in exchange.annotations:
+            if annotation_name in ['has_github_repos', 'has_canvas_operations', 'has_web_search', 
+                                 'has_reasoning_thoughts', 'has_code_execution', 'has_code_blocks',
+                                 'has_script_headers', 'has_code_structure_patterns', 'has_wiki_links',
+                                 'has_latex_math', 'user_has_attachments']:
+                exchange_features.add(annotation_name)
+            elif annotation_name.startswith('gizmo_'):
+                exchange_features.add('has_gizmo_usage')
+            elif annotation_name.startswith('plugin_'):
+                exchange_features.add('has_plugin_usage')
+        
+        # Count each feature once per exchange
+        for feature in exchange_features:
+            feature_counts[feature] = feature_counts.get(feature, 0) + 1
+    
+    annotations = {}
+    for feature, count in feature_counts.items():
+        percentage = (count / total_exchanges) * 100 if total_exchanges > 0 else 0
+        annotations[f'conversation_{feature}'] = {
+            'exchange_count': count,
+            'total_exchanges': total_exchanges,
+            'percentage': round(percentage, 1)
+        }
+    
+    return annotations
+
+
+def conversation_gizmo_plugin_summary(conversation: Conversation) -> Dict[str, Any]:
+    """Aggregate gizmo/plugin usage across all exchanges."""
+    all_gizmos = set()
+    all_plugins = set()
+    gizmo_count = 0
+    plugin_count = 0
+    
+    # Collect from all exchange annotations
+    for exchange in conversation.exchanges:
+        for name, value in exchange.annotations.items():
+            if name.startswith('gizmo_'):
+                if isinstance(value, dict) and 'gizmo_id' in value:
+                    all_gizmos.add(value['gizmo_id'])
+                gizmo_count += 1
+            elif name.startswith('plugin_'):
+                if isinstance(value, dict) and 'plugin_id' in value:
+                    all_plugins.add(value['plugin_id'])
+                plugin_count += 1
+    
+    annotations = {}
+    
+    # Summary annotations
+    if all_gizmos:
+        annotations['conversation_gizmo_usage'] = {
+            'unique_gizmos': len(all_gizmos),
+            'total_usage': gizmo_count,
+            'gizmo_list': list(all_gizmos)
+        }
+    
+    if all_plugins:
+        annotations['conversation_plugin_usage'] = {
+            'unique_plugins': len(all_plugins),
+            'total_usage': plugin_count,
+            'plugin_list': list(all_plugins)
+        }
+    
+    return annotations
+
+
+######################
+#   Exchange Rules   #
+######################
+# These do actual detection on individual exchanges
+
+# Feature detection (moved from conversation-level)
+def has_github_repos(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_github_repos_oai(exchange)
+
+def has_github_repos_oai(exchange: Exchange) -> bool:
+    """Check if GitHub repositories were selected for context in this exchange."""
+    repos = None
+    for message in exchange.messages:
+        metadata = message.data.get('metadata', {})
+        repos = metadata.get('selected_github_repos', [])
+        if repos:
+            return True
+    return False
+
+def has_canvas_operations(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_canvas_operations_oai(exchange)
+    
+def has_canvas_operations_oai(exchange: Exchange) -> bool:
+    """Check for canvas/document operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.data.get('metadata', {})
+        if metadata.data.get('canvas'):
+            return True
+    return False
+
+
+def has_web_search(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_web_search_oai(exchange)
+    
+def has_web_search_oai(exchange: Exchange) -> bool:
+    """Check for web search operations in this exchange."""
+    for message in exchange.messages:
+        metadata = message.data.get('metadata', {})
+        if (metadata.data.get('search_queries') or 
+            metadata.data.get('search_result_groups') or
+            metadata.data.get('content_references')):
+            return True
+    return False
+
+
+def has_reasoning_thoughts(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_reasoning_thoughts_oai(exchange)
+    
+def has_reasoning_thoughts_oai(exchange: Exchange) -> bool:
+    """Check for reasoning/thinking patterns in this exchange."""
+    for message in exchange.messages:
+        content = message.data.get('content', {})
+        if content.get('thoughts'):  # Reasoning thoughts
+            return True
+    return False
+
+def has_code_execution(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_code_execution_oai(exchange)
+    
+def has_code_execution_oai(exchange: Exchange) -> bool:
+    """Check for code execution artifacts in this exchange."""
+    for message in exchange.messages:
+        metadata = message.data.get('metadata', {})
+        if (metadata.get('aggregate_result') or 
+            metadata.get('jupyter_messages')):
+            return True
+    return False
+
+
+def has_code_blocks(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return has_code_blocks_oai(exchange)
+
+# Code detection
+def has_code_blocks_oai(exchange: Exchange) -> bool:
+    """Check for explicit code blocks (``` markdown syntax)."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    return any('```' in text for text in all_texts)
+
+
+def has_script_headers(exchange: Exchange) -> bool:
+    """Check for script headers and system includes."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    script_indicators = ['#!/bin/', '#include', 'using namespace']
+    
+    for text in all_texts:
+        if any(indicator in text for indicator in script_indicators):
+            return True
+    return False
+
+
+def has_code_structure_patterns(exchange: Exchange) -> bool:
+    """Check for actual code structure patterns (syntax combinations that suggest real code)."""
+    all_texts = exchange.get_user_texts() + exchange.get_assistant_texts()
+    
+    for text in all_texts:
+        # Look for combinations that strongly suggest actual code
+        patterns = [
+            # Function definition pattern
+            ('def ' in text and '(' in text and ':' in text and 'return' in text),
+            # Class definition pattern  
+            ('class ' in text and '(' in text and ':' in text and 'def ' in text),
+            # JavaScript function pattern
+            ('function(' in text or 'function ' in text) and '{' in text and '}' in text,
+            # Multiple assignment pattern
+            text.count('=') >= 3 and ('let ' in text or 'const ' in text or 'var ' in text),
+        ]
+        
+        if any(pattern for pattern in patterns):
+            return True
+    
+    return False
+
+
+# User behavior detection
+def user_has_quote_elaborate(exchange: Exchange) -> bool:
+    """Check if user messages contain quote+elaborate continuation pattern."""
+    for message in exchange.get_user_messages():
+        text = message.content
+        if not text.startswith('>'):
+            continue
+        
+        lines = text.split('\n')
+        if len(lines) >= 2 and lines[-1].strip().lower() == 'elaborate':
+            return True
+    
+    return False
+
+
+def user_has_attachments(exchange: Exchange) -> bool:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return user_has_attachments_oai(exchange)
+    
+def user_has_attachments_oai(exchange: Exchange) -> bool:
+    """Check if user messages have attachments."""
+    for message in exchange.get_user_messages():
+        metadata = message.data.get('metadata', {})
+        if metadata.get('attachments'):
+            return True
+    return False
+
+
+def user_is_continuation(exchange: Exchange) -> bool:
+    """Check if this exchange started with a continuation prompt."""
+    return exchange.has_continuations()
+
+
+# Assistant behavior detection
+def assistant_has_reasoning(exchange: Exchange) -> bool:
+    """Check if assistant messages contain reasoning/thinking content."""
+    for message in exchange.get_assistant_messages():
+        content = message.get('content', {})
+        if content.get('thoughts'):
+            return True
+    return False
+
+
+def has_wiki_links(exchange: Exchange) -> bool:
+    """Check for Obsidian-style wiki links [[link text]]."""
+    assistant_texts = exchange.get_assistant_texts()
+    return any(bool(re.search(r'\[\[.+?\]\]', text)) for text in assistant_texts)
+
+
+def has_latex_math(exchange: Exchange) -> bool:
+    """Check for LaTeX/MathJax mathematical formulas."""
+    assistant_texts = exchange.get_assistant_texts()
+    
+    for text in assistant_texts:
+        math_indicators = [
+            re.search(r'\$\$.+?\$\$', text) is not None,
+            re.search(r'\\\((.+?)\\\)', text) is not None,
+            re.search(r'\\\[(.+?)\\\]', text) is not None,
+            # Common LaTeX commands
+            any(cmd in text for cmd in ['\\frac', '\\sum', '\\int', '\\sqrt', '\\alpha', 
+                                       '\\beta', '\\gamma', '\\theta', '\\pi', '\\sigma', 
+                                       '\\infty', '\\partial', '\\nabla']),
+        ]
+        
+        if any(math_indicators):
+            return True
+    
+    return False
+
+def first_user_has_large_content(exchange: Exchange, min_length: int = 2000) -> bool:
+    """Check if the first user message has large content."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    text = first_message.content
+    
+    return len(text.strip()) > min_length
+
+
+def first_user_has_code_patterns(exchange: Exchange) -> bool:
+    """Check if the first user message contains code patterns."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    content = first_message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    
+    # Strong code indicators
+    code_indicators = [
+        '```',  # Code blocks
+        'def ', 'function ', 'class ',  # Definitions
+        'import ', 'from ', 'require(',  # Imports
+        '#!/bin/', '#include',  # Script headers
+    ]
+    
+    return any(indicator in text for indicator in code_indicators)
+
+
+def first_user_has_attachments(exchange: Exchange) -> bool:
+    """Check if the first user message has attachments."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    metadata = first_message.data.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    return len(attachments) > 0
+
+
+def first_user_has_code_attachments(exchange: Exchange) -> bool:
+    """Check if the first user message has code-related attachments."""
+    user_messages = exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_message = user_messages[0]
+    metadata = first_message.data.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    
+    for attachment in attachments:
+        mime_type = attachment.get('mime_type', '').lower()
+        name = attachment.get('name', '').lower()
+        
+        # Check for code file extensions
+        code_extensions = ['.py', '.js', '.java', '.cpp', '.c', '.go', '.rs', 
+                          '.ts', '.jsx', '.tsx', '.sql', '.sh', '.rb', '.php']
+        if any(ext in name for ext in code_extensions):
+            return True
+            
+        # Check for code-related MIME types
+        code_mimes = ['text/x-python', 'text/x-java', 'application/javascript', 'text/x-script']
+        if any(mime in mime_type for mime in code_mimes):
+            return True
+    
+    return False
+
+
+def get_gizmo_annotations(exchange: Exchange) -> dict[str, Any]:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return get_gizmo_annotations_oai(exchange)
+    
+def get_gizmo_annotations_oai(exchange: Exchange) -> dict[str, Any]:
+    """Get annotations for specific gizmos used in this exchange."""
+    annotations = {}
+    gizmos = set()
+    
+    for message in exchange.messages:
+        metadata = message.data.get('metadata', {})
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    for i, gizmo in enumerate(gizmos):
+        annotations[f'gizmo_{i+1}'] = {'gizmo_id': gizmo}
+    
+    return annotations
+
+
+def get_plugin_annotations(exchange: Exchange) -> dict[str, Any]:
+    if isinstance(exchange.messages[0], MessageOpenAI):
+        return get_plugin_annotations_oai(exchange)
+    
+def get_plugin_annotations_oai(exchange: Exchange) -> dict[str, Any]:
+    """Get annotations for specific plugins used in this exchange."""
+    annotations = {}
+    plugins = set()
+    
+    for message in exchange.messages:
+        metadata = message.data.get('metadata', {})
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+    
+    for i, plugin in enumerate(plugins):
+        annotations[f'plugin_{i+1}'] = {'plugin_id': plugin}
+    
+    return annotations
+
+
+##############################
+# Template content inference #
+##############################
+
+def naive_title_extraction(text):
+    """
+    Attempts to detect presence of title in first line of a message.
+    """
+    # get first line
+    top = text.strip().split("\n")[0]
+
+    # title/section header detected
+    outv = None
+    if top.startswith("#"):
+        outv = top.replace("#","").strip()
+    elif top.startswith("**") and top.endswith("**"):
+        outv = top.replace("**","")
+    if outv is not None:
+        outv = outv.strip()
+    return outv
+
+def extract_proposed_title(exchange: Exchange) -> str:
+    """
+    Extracts proposed content title from the assistant's response.
+    Assumes that an article was generated with a proposed title.
+    """
+    try:
+       text = exchange.get_assistant_texts()[0]
+    except IndexError:
+        return None
+    return naive_title_extraction(text)
+
+
+######################
+#   Rule Registry    #
+######################
+
+# High-value conversation-level rules (aggregation only)
+CONVERSATION_RULES = {
+    'conversation_length': create_conversation_length_annotation,
+    'conversation_feature_summary': conversation_feature_summary,
+    'conversation_gizmo_plugin_summary': conversation_gizmo_plugin_summary,
+}
+
+# High-value exchange-level rules (actual detection)
+EXCHANGE_RULES = {
+    # Feature detection (moved from conversation-level)
+    'has_github_repos': has_github_repos,
+    'has_canvas_operations': has_canvas_operations,
+    'has_web_search': has_web_search,
+    'has_reasoning_thoughts': has_reasoning_thoughts,
+    'has_code_execution': has_code_execution,
+    
+    # Code detection
+    'has_code_blocks': has_code_blocks,
+    'has_script_headers': has_script_headers,
+    'has_code_structure_patterns': has_code_structure_patterns,
+    
+    # User behavior
+    'user_has_quote_elaborate': user_has_quote_elaborate,
+    'user_has_attachments': user_has_attachments,
+    'user_is_continuation': user_is_continuation,
+    
+    # Assistant behavior
+    'assistant_has_reasoning': assistant_has_reasoning,
+    'has_wiki_links': has_wiki_links,
+    'has_latex_math': has_latex_math,
+    
+    # First user message analysis
+    'first_user_has_large_content': first_user_has_large_content,
+    'first_user_has_code_patterns': first_user_has_code_patterns,
+    'first_user_has_attachments': first_user_has_attachments,
+    'first_user_has_code_attachments': first_user_has_code_attachments,
+    
+    # Gizmo/plugin detection
+    'get_gizmo_annotations': get_gizmo_annotations,
+    'get_plugin_annotations': get_plugin_annotations,
+
+    # Template content inference
+    'proposed_title': extract_proposed_title,
+}
+
+
+
+---
+File: attic/src/conversation_tagger/core/detection_old.py
+---
+"""
+NB: The intention is to collect rule functions in this file for organizaitonal purposes, but at present
+probably none of these will work out of the box. They were ported from an older brainstorming version of the
+codebase and at minimum need to be updated to account for the new Exchange/Conversation objects, and several
+probably need to have their logic re-implemented to just be better classifiers.
+
+In the future, would be great if we could compress documents into vectors which could be used for these classifications.
+"""
+from typing import Dict, Any
+
+from .exchange import Exchange
+
+
+### Already implemented elsewhere, need to be moved here
+# - wiki markdown
+#   - TODO: add a "see also:{bullleted list}" detector
+# - user first message?
+
+
+
+
+### Content ###
+
+def has_large_content(conversation: Dict[str, Any], min_length: int = 2000) -> bool:
+    """Check if conversation has unusually large content anywhere."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        content = message.get('content', {})
+        text = content.get('text', '')
+        if len(text) > min_length:
+            return True
+            
+        parts = content.get('parts', [])
+        for part in parts:
+            if isinstance(part, str) and len(part) > min_length:
+                return True
+    
+    return False
+
+
+def has_github_repos(conversation: Dict[str, Any]) -> bool:
+    """Check if GitHub repositories were selected for context."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        repos = metadata.get('selected_github_repos', [])
+        if repos:  # Non-empty list
+            return True
+    
+    return False
+
+
+def has_canvas_operations(conversation: Dict[str, Any]) -> bool:
+    """Check for canvas/document operations."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if metadata.get('canvas'):
+            return True
+    
+    return False
+
+
+def has_web_search(conversation: Dict[str, Any]) -> bool:
+    """Check for web search operations."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if (metadata.get('search_queries') or 
+            metadata.get('search_result_groups') or
+            metadata.get('content_references')):
+            return True
+    
+    return False
+
+
+def has_reasoning_thoughts(conversation: Dict[str, Any]) -> bool:
+    """Check for reasoning/thinking patterns."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        content = message.get('content', {})
+        if content.get('thoughts'):  # Reasoning thoughts
+            return True
+    
+    return False
+
+
+def has_code_execution(conversation: Dict[str, Any]) -> bool:
+    """Check for code execution artifacts."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        if (metadata.get('aggregate_result') or 
+            metadata.get('jupyter_messages')):
+            return True
+    
+    return False
+
+
+### Code Indicators ###
+
+# conversation_tagger/detection/code_indicators.py
+"""
+Individual code detection functions - each detects a specific type of code evidence.
+"""
+
+from typing import Dict, Any
+
+from .helpers import get_all_text_from_message
+
+
+def has_code_blocks(conversation: Dict[str, Any]) -> bool:
+    """Check for explicit code blocks (``` markdown syntax)."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        if '```' in all_text:
+            return True
+    
+    return False
+
+
+def has_function_definitions(conversation: Dict[str, Any]) -> bool:
+    """Check for function/class definition keywords."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        definition_keywords = ['def ', 'function ', 'class ']
+        if any(keyword in all_text for keyword in definition_keywords):
+            return True
+    
+    return False
+
+
+def has_import_statements(conversation: Dict[str, Any]) -> bool:
+    """Check for import/require statements."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        import_keywords = ['import ', 'from ', 'require(']
+        if any(keyword in all_text for keyword in import_keywords):
+            return True
+    
+    return False
+
+
+def has_script_headers(conversation: Dict[str, Any]) -> bool:
+    """Check for script headers and system includes."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        script_indicators = ['#!/bin/', '#include', 'using namespace']
+        if any(indicator in all_text for indicator in script_indicators):
+            return True
+    
+    return False
+
+
+def has_high_keyword_density(conversation: Dict[str, Any]) -> bool:
+    """Check for high density of programming keywords in large text."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        
+        # Only check substantial text
+        if len(all_text) <= 1000:
+            continue
+        
+        coding_keywords = ['function', 'class', 'import', 'def ', 'const ', 'let ', 'var ', 'return', 'if ', 'for ', 'while ']
+        keyword_count = sum(1 for keyword in coding_keywords if keyword in all_text.lower())
+        
+        # High threshold to avoid false positives in articles
+        if keyword_count >= 5:
+            return True
+    
+    return False
+
+
+def has_code_structure_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check for actual code structure patterns (syntax combinations that suggest real code)."""
+    mapping = conversation.get('mapping', {})
+    
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+        
+        all_text = get_all_text_from_message(message)
+        
+        # Look for combinations that strongly suggest actual code
+        patterns = [
+            # Function definition pattern
+            ('def ' in all_text and '(' in all_text and ':' in all_text and 'return' in all_text),
+            # Class definition pattern  
+            ('class ' in all_text and '(' in all_text and ':' in all_text and 'def ' in all_text),
+            # JavaScript function pattern
+            ('function(' in all_text or 'function ' in all_text) and '{' in all_text and '}' in all_text,
+            # Multiple assignment pattern
+            all_text.count('=') >= 3 and ('let ' in all_text or 'const ' in all_text or 'var ' in all_text),
+        ]
+        
+        if any(pattern for pattern in patterns):
+            return True
+    
+    return False
+
+
+def has_code_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check for any code patterns (combines individual indicators)."""
+    return (has_code_blocks(conversation) or 
+            has_function_definitions(conversation) or 
+            has_import_statements(conversation) or 
+            has_script_headers(conversation) or
+            has_code_structure_patterns(conversation) or
+            has_high_keyword_density(conversation))
+
+  
+### Continuation Rules ###
+
+def user_has_quote_elaborate(exchange: Exchange) -> bool:
+    """Check if user messages contain quote+elaborate continuation pattern."""
+    for message in exchange.user_messages:
+        content = message.get('content', {})
+        text = content.get('text', '').strip()
+        
+        if not text.startswith('>'):
+            continue
+        
+        lines = text.split('\n')
+        if len(lines) >= 2 and lines[-1].strip().lower() == 'elaborate':
+            return True
+    
+    return False
+
+### Exchange Rules
+
+# conversation_tagger/detection/exchange_rules.py
+"""
+Detection rules specifically designed for exchange-level analysis.
+"""
+
+from typing import Dict, Any
+from ..core.exchange import Exchange
+from ..core.tag import Tag
+
+
+# User message detection rules
+def user_has_code_blocks(exchange: Exchange) -> bool:
+    """Check if user messages contain code blocks."""
+    user_text = exchange.get_user_text()
+    return '```' in user_text
+
+
+def user_has_attachments(exchange: Exchange) -> bool:
+    """Check if user messages have attachments."""
+    for message in exchange.user_messages:
+        metadata = message.get('metadata', {})
+        if metadata.get('attachments'):
+            return True
+    return False
+
+
+def user_has_error_messages(exchange: Exchange) -> bool:
+    """Check if user messages contain error patterns."""
+    user_text = exchange.get_user_text().lower()
+    error_patterns = [
+        'error:', 'traceback', 'exception:', 'failed:', 'cannot', 'not working',
+        'broken', 'issue', 'problem', 'bug', 'crash', 'threw an error'
+    ]
+    return any(pattern in user_text for pattern in error_patterns)
+
+
+def user_prompt_length_category(exchange: Exchange) -> Tag:
+    """Categorize user prompt length."""
+    user_text = exchange.get_user_text()
+    length = len(user_text)
+    
+    if length < 50:
+        category = 'very_short'
+    elif length < 200:
+        category = 'short'
+    elif length < 1000:
+        category = 'medium'
+    elif length < 3000:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('user_prompt_length', length=length, category=category)
+
+
+def user_is_continuation(exchange: Exchange) -> bool:
+    """Check if this exchange started with a continuation prompt."""
+    return exchange.has_continuations()
+
+
+# Assistant message detection rules
+def assistant_has_code_blocks(exchange: Exchange) -> bool:
+    """Check if assistant messages contain code blocks."""
+    assistant_text = exchange.get_assistant_text()
+    return '```' in assistant_text
+
+
+def assistant_has_wiki_links(exchange: Exchange) -> bool:
+    """Check if assistant messages contain wiki-style links."""
+    assistant_text = exchange.get_assistant_text()
+    return '[[' in assistant_text and ']]' in assistant_text
+
+
+def assistant_has_latex_math(exchange: Exchange) -> bool:
+    """Check if assistant messages contain mathematical formulas."""
+    assistant_text = exchange.get_assistant_text()
+    
+    math_indicators = [
+        ('$' in assistant_text and assistant_text.count('$') >= 2),
+        '$$' in assistant_text,
+        ('\\(' in assistant_text and '\\)' in assistant_text),
+        any(cmd in assistant_text for cmd in ['\\frac', '\\sum', '\\int', '\\sqrt'])
+    ]
+    
+    return any(math_indicators)
+
+
+def assistant_response_length_category(exchange: Exchange) -> Tag:
+    """Categorize assistant response length."""
+    assistant_text = exchange.get_assistant_text()
+    length = len(assistant_text)
+    
+    if length < 100:
+        category = 'very_short'
+    elif length < 500:
+        category = 'short'
+    elif length < 2000:
+        category = 'medium'
+    elif length < 5000:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('assistant_response_length', length=length, category=category)
+
+
+def assistant_has_reasoning(exchange: Exchange) -> bool:
+    """Check if assistant messages contain reasoning/thinking content."""
+    for message in exchange.assistant_messages:
+        content = message.get('content', {})
+        if content.get('thoughts'):
+            return True
+    return False
+
+
+# Exchange-level detection rules
+def exchange_is_coding_focused(exchange: Exchange) -> bool:
+    """Check if the entire exchange is focused on coding."""
+    return (user_has_code_blocks(exchange) or 
+            assistant_has_code_blocks(exchange) or
+            exchange.is_code_focused())
+
+
+def exchange_is_wiki_article_focused(exchange: Exchange) -> bool:
+    """Check if exchange is focused on wiki/documentation content."""
+    user_text = exchange.get_user_text()
+    assistant_text = exchange.get_assistant_text()
+    
+    wiki_indicators = [
+        '[[' in user_text or '[[' in assistant_text,
+        'write an article' in user_text.lower(),
+        'create a wiki' in user_text.lower(),
+        len(assistant_text) > 1000 and ('# ' in assistant_text or '## ' in assistant_text)
+    ]
+    
+    return any(wiki_indicators)
+
+
+def exchange_has_error_resolution(exchange: Exchange) -> bool:
+    """Check if exchange involves error troubleshooting."""
+    return (user_has_error_messages(exchange) and 
+            len(exchange.assistant_messages) > 0)
+
+
+def exchange_interaction_pattern(exchange: Exchange) -> Tag:
+    """Determine the interaction pattern of this exchange."""
+    user_stats = exchange.get_user_prompt_stats()
+    assistant_stats = exchange.get_assistant_response_stats()
+    
+    if user_stats['message_count'] > 1:
+        pattern = 'multi_turn'
+    elif user_stats['length'] > 2000:
+        pattern = 'context_heavy'
+    elif assistant_stats['length'] > 3000:
+        pattern = 'detailed_response'
+    elif user_stats['length'] < 50 and assistant_stats['length'] < 200:
+        pattern = 'quick_qa'
+    else:
+        pattern = 'standard'
+    
+    return Tag('interaction_pattern', 
+               pattern=pattern,
+               user_messages=user_stats['message_count'],
+               assistant_messages=assistant_stats['message_count'])
+
+
+# #  For exchange no, but something like this could be interesting for Conversation level analysis.
+# def exchange_timing_stats(exchange: Exchange) -> Tag:
+#     """Calculate timing statistics for the exchange."""
+#     if exchange.start_time and exchange.end_time:
+#         duration = exchange.end_time - exchange.start_time
+        
+#         if duration < 30:
+#             speed = 'very_fast'
+#         elif duration < 120:
+#             speed = 'fast'
+#         elif duration < 300:
+#             speed = 'medium'
+#         elif duration < 600:
+#             speed = 'slow'
+#         else:
+#             speed = 'very_slow'
+        
+#         return Tag('exchange_timing', 
+#                    duration_seconds=duration,
+#                    speed_category=speed)
+    
+#     return Tag('exchange_timing', duration_seconds=0, speed_category='unknown')
+
+### User 1st message
+# possibly already implemented some or all of this elsewhere?
+
+def first_user_has_large_content(conversation: Dict[str, Any], min_length: int = 2000) -> bool:
+    """Check if the first user message has large content."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    all_text = get_all_text_from_message(first_message)
+    return len(all_text) > min_length
+
+
+def first_user_has_code_patterns(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message contains code patterns."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    all_text = get_all_text_from_message(first_message)
+    
+    # Strong code indicators
+    code_indicators = [
+        '```',  # Code blocks
+        'def ', 'function ', 'class ',  # Definitions
+        'import ', 'from ', 'require(',  # Imports
+        '#!/bin/', '#include',  # Script headers
+    ]
+    
+    return any(indicator in all_text for indicator in code_indicators)
+
+
+def first_user_has_attachments(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message has attachments."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    return len(attachments) > 0
+
+
+def first_user_has_code_attachments(conversation: Dict[str, Any]) -> bool:
+    """Check if the first user message has code-related attachments."""
+    first_message = get_first_user_message(conversation)
+    if not first_message:
+        return False
+    
+    metadata = first_message.get('metadata', {})
+    attachments = metadata.get('attachments', [])
+    
+    for attachment in attachments:
+        mime_type = attachment.get('mime_type', '').lower()
+        name = attachment.get('name', '').lower()
+        
+        # Check for code file extensions
+        code_extensions = ['.py', '.js', '.java', '.cpp', '.c', '.go', '.rs', '.ts', '.jsx', '.tsx', '.sql', '.sh', '.rb', '.php']
+        if any(ext in name for ext in code_extensions):
+            return True
+            
+        # Check for code-related MIME types
+        code_mimes = ['text/x-python', 'text/x-java', 'application/javascript', 'text/x-script']
+        if any(mime in mime_type for mime in code_mimes):
+            return True
+    
+    return False
+
+
+### Structured Tags
+
+# conversation_tagger/detection/structured_tags.py
+"""
+Functions that create structured tags with attributes.
+"""
+
+from typing import Dict, Any, List
+
+from ..core.tag import Tag
+from .helpers import get_all_user_messages
+
+
+def create_conversation_length_tag(conversation: Dict[str, Any]) -> Tag:
+    """Create structured tag for conversation length."""
+    user_count = len(get_all_user_messages(conversation))
+    
+    # Determine category
+    if user_count == 1:
+        category = 'single'
+    elif user_count <= 3:
+        category = 'short'
+    elif user_count <= 10:
+        category = 'medium'
+    elif user_count <= 25:
+        category = 'long'
+    else:
+        category = 'very_long'
+    
+    return Tag('conversation_length', count=user_count, category=category)
+
+
+def create_prompt_stats_tag(conversation: Dict[str, Any]) -> Tag:
+    """Create structured tag for prompt statistics."""
+    from .helpers import get_all_text_from_message
+    
+    user_messages = get_all_user_messages(conversation)
+    
+    if not user_messages:
+        return Tag('prompt_stats', count=0, mean=0, median=0, variance=0, 
+                  length_category='none', consistency='none')
+    
+    # Calculate message lengths
+    lengths = []
+    for message in user_messages:
+        all_text = get_all_text_from_message(message)
+        lengths.append(len(all_text))
+    
+    # Calculate statistics
+    mean_length = sum(lengths) / len(lengths)
+    sorted_lengths = sorted(lengths)
+    n = len(sorted_lengths)
+    median_length = (sorted_lengths[n//2] if n % 2 == 1 
+                    else (sorted_lengths[n//2-1] + sorted_lengths[n//2]) / 2)
+    variance = sum((x - mean_length) ** 2 for x in lengths) / len(lengths) if len(lengths) > 1 else 0
+    
+    # Determine categories
+    if mean_length < 50:
+        length_category = 'very_short'
+    elif mean_length < 200:
+        length_category = 'short'
+    elif mean_length < 1000:
+        length_category = 'medium'
+    elif mean_length < 3000:
+        length_category = 'long'
+    else:
+        length_category = 'very_long'
+    
+    if variance < 1000:
+        consistency = 'consistent'
+    elif variance < 10000:
+        consistency = 'mixed'
+    else:
+        consistency = 'variable'
+    
+    return Tag('prompt_stats', 
+               count=len(lengths),
+               mean=round(mean_length, 1),
+               median=round(median_length, 1),
+               variance=round(variance, 1),
+               length_category=length_category,
+               consistency=consistency)
+
+
+def create_gizmo_plugin_tags(conversation: Dict[str, Any]) -> List[Tag]:
+    """Create structured tags for gizmos and plugins."""
+    tags = []
+    gizmos = set()
+    plugins = set()
+    
+    # Check conversation-level
+    if conversation.get('gizmo_id'):
+        gizmos.add(conversation['gizmo_id'])
+    
+    plugin_ids = conversation.get('plugin_ids', [])
+    if plugin_ids:
+        plugins.update(plugin_ids)
+    
+    # Check message-level
+    mapping = conversation.get('mapping', {})
+    for node_id, node in mapping.items():
+        message = node.get('message')
+        if not message:
+            continue
+            
+        metadata = message.get('metadata', {})
+        
+        # Invoked plugins
+        invoked_plugin = metadata.get('invoked_plugin', {})
+        if invoked_plugin:
+            if invoked_plugin.get('plugin_id'):
+                plugins.add(invoked_plugin['plugin_id'])
+            if invoked_plugin.get('namespace'):
+                plugins.add(invoked_plugin['namespace'])
+        
+        # Gizmo usage
+        if metadata.get('gizmo_id'):
+            gizmos.add(metadata['gizmo_id'])
+    
+    # Create tags
+    for gizmo in gizmos:
+        tags.append(Tag('gizmo', gizmo_id=gizmo))
+    
+    for plugin in plugins:
+        tags.append(Tag('plugin', plugin_id=plugin))
+    
+    return tags
+
+
+
+---
+File: attic/src/conversation_tagger/core/exchange.py
+---
+# conversation_tagger/core/exchange.py
+"""
+Exchange abstraction with sequential message handling and merge capabilities.
+Updated to use dictionary-based annotations.
+"""
+
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from dataclasses import dataclass, field
+import uuid
+
+
+if TYPE_CHECKING:
+    from .tag import Tag
+
+from .message import Message
+
+
+
+@dataclass
+class Exchange:
+    """A sequential conversation exchange with merge capabilities."""
+    conversation_id: str
+    messages: list[Message]
+    annotations: Dict[str, Any] = field(default_factory=dict)  # Dictionary-based annotations
+    exchange_id: str|None = '' # this should just be the message id of the last assistant response, otherwise won't properly handle forks/leaves
+    
+    def __post_init__(self):
+        _id = None
+        if self.exchange_id:
+            return
+        #print(self.messages)
+        if self.messages:
+            _id = self.messages[-1].id
+        if _id is None:
+            _id = str(uuid.uuid4())
+        self.exchange_id = _id
+
+    @classmethod
+    def create(cls, conversation_id: str, messages: List[Message]) -> 'Exchange':
+        """Create a new exchange with a random UUID."""
+        return cls(
+            #exchange_id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            messages=messages,
+            annotations={}
+        )
+    
+    @property
+    def last_message_time(self) -> float:
+        """Get the create_time of the last message for ordering."""
+        if not self.messages:
+            return 0.0
+        return self.messages[-1].created_date
+    
+    @property
+    def first_message_time(self) -> float:
+        """Get the create_time of the first message for ordering."""
+        if not self.messages:
+            return 0.0
+        return self.messages[0].created_date
+    
+    def has_continuations(self) -> bool:
+        """Check if this exchange has continuation prompts (multiple user messages)."""
+        return len(self.get_user_messages()) > 1
+    
+    def get_message_ids(self) -> List[str]:
+        """Get the IDs of all messages in this exchange."""
+        return [msg.id for msg in self.messages if msg.id]
+
+    def get_user_messages(self) -> List[Dict[str, Any]]:
+        """Get just the user messages."""
+        return [msg for msg in self.messages if msg.author_role == 'user']
+    
+    def get_assistant_messages(self) -> List[Dict[str, Any]]:
+        """Get just the assistant messages."""
+        return [msg for msg in self.messages if msg.author_role == 'assistant']
+    
+    def get_user_texts(self) -> List[str]:
+        """Get text from all user messages."""
+        return [msg.content for msg in self.get_user_messages()]
+    
+    def get_assistant_texts(self) -> List[str]:
+        """Get text from all assistant messages."""
+        return [msg.content for msg in self.get_assistant_messages()]
+
+    def add_annotation(self, name: str, value: Any = True) -> None:
+        """Add an annotation to this exchange."""
+        self.annotations[name] = value
+    
+    def has_annotation(self, name: str) -> bool:
+        """Check if annotation exists."""
+        return name in self.annotations
+    
+    def get_annotation(self, name: str, default: Any = None) -> Any:
+        """Get annotation value."""
+        return self.annotations.get(name, default)
+
+    # # Legacy compatibility
+    # @property 
+    # def tags(self) -> List['Tag']:
+    #     """Convert annotations back to Tag objects for backward compatibility."""
+    #     from .tag import Tag
+    #     tags = []
+    #     for name, value in self.annotations.items():
+    #         if value is True:
+    #             tags.append(Tag(name))
+    #         elif isinstance(value, dict):
+    #             tags.append(Tag(name, **value))
+    #         else:
+    #             tags.append(Tag(name, value=value))
+    #     return tags
+    
+    # @tags.setter
+    # def tags(self, tag_list: List['Tag']) -> None:
+    #     """Convert Tag objects to annotations for backward compatibility."""
+    #     self.annotations = {}
+    #     for tag in tag_list:
+    #         self.annotations.update(tag.to_dict())
+
+    def __add__(self, other: 'Exchange') -> 'Exchange':
+        """Merge two exchanges by combining and time-ordering their messages."""
+        if not isinstance(other, Exchange):
+            raise TypeError("Can only add Exchange objects")
+        
+        if self.conversation_id != other.conversation_id:
+            raise ValueError("Cannot merge exchanges from different conversations")
+        
+        # Combine and sort messages by create_time to ensure proper chronological order
+        combined_messages = self.messages + other.messages
+        combined_messages.sort(key=lambda msg: msg.created_date)
+        
+        # Merge annotations from both exchanges
+        combined_annotations = {}
+        combined_annotations.update(self.annotations)
+        combined_annotations.update(other.annotations)
+        
+        # Create new exchange with combined content
+        merged_exchange = Exchange(
+            exchange_id=str(uuid.uuid4()),  # New UUID for merged exchange
+            conversation_id=self.conversation_id,
+            messages=combined_messages,
+            annotations=combined_annotations
+        )
+        
+        return merged_exchange
+    
+    def __len__(self) -> int:
+        """Return number of messages in exchange."""
+        return len(self.messages)
+    
+    @property
+    def content(self) -> str:
+        """Get concatenated content of all messages in this exchange."""
+        return '\n'.join(str(msg) for msg in self.messages if msg.content).strip()
+    
+    # def __str__(self) -> str:
+    #     """String representation showing message sequence."""
+    #     roles = [msg.get('author', {}).get('role', 'unknown') for msg in self.messages]
+    #     return f"Exchange({self.exchange_id[:8]}...: {' → '.join(roles)})"
+
+
+
+---
+File: attic/src/conversation_tagger/core/exchange_parser.py
+---
+# src/conversation_tagger/core/exchange_parser.py
+"""
+Parse conversations into exchanges using a two-step approach:
+1. Segment into dyadic USER-ASSISTANT chunks
+2. Merge chunks when continuations are detected
+"""
+
+from typing import Dict, Any, List, Callable
+from .exchange import Exchange
+from .conversation import Conversation
+
+from .message import Message, MessageOpenAI, MessageClaude
+from .exchange_tagger import ExchangeTagger
+
+
+def quote_elaborate_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for quote + elaborate continuation pattern."""
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    #content = first_user_message.get('content', {})
+    #text = content.get('text', '').strip()
+    text = first_user_message.content
+    
+    return (text.startswith('>') and 
+            len(text.split('\n')) >= 2 and 
+            text.split('\n')[-1].strip().lower() == 'elaborate')
+
+
+def simple_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for simple continuation keywords."""
+    continuation_patterns = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    text = first_user_message.content
+    
+    return text in continuation_patterns
+
+
+def short_continuation_rule(previous_exchange: Exchange, current_exchange: Exchange) -> bool:
+    """Check for short prompts starting with continuation words."""
+    continuation_starters = [
+        'continue', 'more', 'keep going', 'go on', 'next', 
+        'tell me more', 'expand', 'keep writing', 'finish', 'elaborate','do go on', 'make it so', 'yes', 'please', 'do it'
+    ]
+    
+    user_messages = current_exchange.get_user_messages()
+    if not user_messages:
+        return False
+    
+    first_user_message = user_messages[0]
+    text = first_user_message.content
+    
+    if len(text.split()) <= 3:
+        for pattern in continuation_starters:
+            if text.startswith(pattern):
+                return True
+    
+    return False
+
+
+class ExchangeParser:
+    """Parses conversations into tagged exchanges."""
+    SOURCE="LLM"
+    def __init__(self, exchange_tagger: ExchangeTagger | None = None):
+        self.continuation_rules: List[Callable[[Exchange, Exchange], bool]] = [
+            quote_elaborate_rule,
+            simple_continuation_rule,
+            short_continuation_rule
+        ]
+        if exchange_tagger is None:
+            exchange_tagger = ExchangeTagger()
+        exchange_tagger.add_rule('source', lambda x: self.SOURCE)
+        self.exchange_tagger = exchange_tagger
+
+    def add_continuation_rule(self, rule_function: Callable[[Exchange, Exchange], bool]):
+        """Add a new continuation detection rule."""
+        self.continuation_rules.append(rule_function)
+
+    def get_messages(self, conversation: dict):
+        raise NotImplementedError
+    
+    def get_conversation_id(self, conversation: dict) -> str:
+        raise NotImplementedError
+    
+    def get_title(self, conversation: dict) -> str:
+        raise NotImplementedError
+
+    def parse_conversation(self, conversation: Dict[str, Any]) -> Conversation:
+        """Parse a conversation into a Conversation object with fully-tagged exchanges."""
+        messages = self.get_messages(conversation)
+        
+        conversation_id = self.get_conversation_id(conversation)
+        title = self.get_title(conversation)
+        
+        dyadic_exchanges = self._create_dyadic_exchanges(messages, conversation_id)
+        merged_exchanges = self._merge_continuations(dyadic_exchanges)
+        
+        # Tag exchanges as they're finalized
+        if self.exchange_tagger:
+            tagged_exchanges = []
+            for exchange in merged_exchanges:
+                tagged_exchange = self.exchange_tagger.tag_exchange(exchange)
+                tagged_exchanges.append(tagged_exchange)
+        else:
+            tagged_exchanges = merged_exchanges
+        
+        # Create and return Conversation object
+        conv = Conversation(
+            conversation_id=conversation_id,
+            title=title,
+            exchanges=tagged_exchanges,
+            raw=conversation,
+        )
+        
+        return conv
+    
+    def _create_dyadic_exchanges(self, messages: list[Message|dict], 
+                                conversation_id: str) -> List[Exchange]:
+        """Step 1: Create simple USER-ASSISTANT dyadic exchanges."""
+        dyadic_exchanges = []
+        current_pair = []
+        
+        for message in messages:
+            # if not isinstance(message, Message):
+            #     message=Message(**message)
+            if message.author_role in ['user', 'assistant']:
+                current_pair.append(message)
+                
+                # If we have a user->assistant pair, create exchange
+                if (len(current_pair) == 2 and 
+                    current_pair[0].author_role == 'user' and
+                    current_pair[1].author_role == 'assistant'):
+                    
+                    exchange = Exchange.create(conversation_id, current_pair.copy())
+                    dyadic_exchanges.append(exchange)
+                    current_pair = []
+                
+                # Handle cases where we have multiple user messages or assistant messages
+                elif len(current_pair) > 2:
+                    # Create exchange with what we have so far
+                    exchange = Exchange.create(conversation_id, current_pair.copy())
+                    dyadic_exchanges.append(exchange)
+                    current_pair = []
+        
+        # Handle any remaining messages
+        if current_pair:
+            exchange = Exchange.create(conversation_id, current_pair)
+            dyadic_exchanges.append(exchange)
+        
+        return dyadic_exchanges
+    
+    def _merge_continuations(self, dyadic_exchanges: List[Exchange]) -> List[Exchange]:
+        """Step 2: Merge exchanges when continuation patterns are detected."""
+        if not dyadic_exchanges:
+            return []
+        
+        merged_exchanges = []
+        current_exchange = dyadic_exchanges[0]
+        
+        for i in range(1, len(dyadic_exchanges)):
+            next_exchange = dyadic_exchanges[i]
+            
+            # Check if next exchange is a continuation using any rule
+            should_merge = any(rule(current_exchange, next_exchange) 
+                             for rule in self.continuation_rules)
+            
+            if should_merge:
+                # Merge with current exchange (time-ordering handled by __add__)
+                current_exchange = current_exchange + next_exchange
+            else:
+                # Finalize current exchange and start new one
+                merged_exchanges.append(current_exchange)
+                current_exchange = next_exchange
+        
+        # Add the final exchange
+        merged_exchanges.append(current_exchange)
+        
+        return merged_exchanges
+
+
+# TODO: 
+# * Attach appropriate Message type to parser
+#   - currently, determination of source delegated to
+#     `message.msg_factory`, which is invoked in Exchange.create
+# * Rename to ConversationParser?
+class ExchangeParserOAI(ExchangeParser):
+    SOURCE = "oai"
+    def get_messages(self, conversation: dict):
+        mapping = conversation.get('mapping', {})
+        all_messages = []
+        for node_id, node in mapping.items():
+            message = node.get('message')
+            if message and message.get('author'):
+                create_time = message.get('create_time') or 0
+                all_messages.append((create_time, message))
+        all_messages.sort(key=lambda x: x[0])
+        return [MessageOpenAI(data=msg) for _, msg in all_messages]
+    
+    def get_conversation_id(self, conversation: dict) -> str:
+        return  conversation.get('conversation_id')
+
+    def get_title(self, conversation: dict) -> str:
+        return conversation.get('title')
+
+class ExchangeParserClaude(ExchangeParser):
+    SOURCE = "claude"
+    def get_messages(self, conversation: dict):
+        # Parse Claude conversation format
+        chat_messages = conversation.get('chat_messages', [])
+        all_messages = [MessageClaude(data=msg) for msg in chat_messages if msg]
+        all_messages.sort(key=lambda x: x.created_date)
+        return all_messages
+    
+    def get_conversation_id(self, conversation: dict) -> str:
+        return conversation.get('uuid')
+    def get_title(self, conversation: dict) -> str:
+        return conversation.get('name')
+
+
+---
+File: attic/src/conversation_tagger/core/exchange_tagger.py
+---
+# src/conversation_tagger/core/exchange_tagger.py
+"""
+Tag individual exchanges using the improved exchange structure.
+Updated to use dictionary-based annotations.
+"""
+from typing import Dict, Callable, Any
+from .tag import Tag
+from .exchange import Exchange
+
+
+class ExchangeTagger:
+    """Tags exchanges with configurable rules using annotations."""
+    
+    def __init__(self):
+        self.rules: Dict[str, Callable] = {}
+    
+    def add_rule(self, annotation_name: str, rule_function: Callable):
+        """Add rule for exchanges."""
+        self.rules[annotation_name] = rule_function
+    
+    def tag_exchange(self, exchange: Exchange) -> Exchange:
+        """Tag a single exchange and return the updated exchange."""
+        for annotation_name, rule_func in self.rules.items():
+            try:
+                result = rule_func(exchange)
+                if result:
+                    if isinstance(result, bool):
+                        # Simple boolean annotation
+                        exchange.add_annotation(annotation_name, True)
+                    elif isinstance(result, dict):
+                        # Multiple annotations returned
+                        for name, value in result.items():
+                            exchange.add_annotation(name, value)
+                    elif isinstance(result, Tag):
+                        # Legacy Tag object - convert to annotation
+                        exchange.annotations.update(result.to_dict())
+                    else:
+                        # Other truthy value - store as annotation value
+                        exchange.add_annotation(annotation_name, result)
+            except Exception as e:
+                # Skip failed rules silently for now
+                pass
+        
+        return exchange
+
+
+
+---
+File: attic/src/conversation_tagger/core/generate.py
+---
+"""
+Generates Obsidian notes from a conversation.
+"""
+from typing import List, Dict, Any
+from .conversation import Conversation
+from .exchange import Exchange
+from .message import Message
+
+# Generate Obsidian notes from a conversation using jinja template from templates/article.md.jinja
+import re
+import os
+from pathlib import Path
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Template
+
+import frontmatter
+from yaml.parser import ParserError
+from yaml.scanner import ScannerError
+
+
+from loguru import logger
+
+def sanitize_filename(title: str, max_length: int = 200) -> str:
+    """
+    Sanitize a title to be safe for use as a filename.
+    
+    Args:
+        title: The title to sanitize
+        max_length: Maximum length of the resulting filename
+        
+    Returns:
+        A sanitized filename string
+    """
+    if not title:
+        return
+    # Replace problematic characters with underscores
+    sanitized = re.sub(r'[<>:"/\\|?*\[\]]', '', title)
+    if sanitized.lower().startswith('the '):
+        sanitized = sanitized[4:]  # Remove 'the ' prefix if present
+    # Truncate to max length
+    return sanitized[:max_length].lower().strip()
+
+
+def extract_title(exchange: Exchange) -> str:
+    title = exchange.annotations.get('title')
+    if not title:
+        title = exchange.annotations.get('proposed_title')
+    if not title:
+        # If no title is set, use the first user message as the title
+        user_messages = exchange.get_user_messages()
+        if user_messages:
+            title = user_messages[0].content.split('\n')[0]
+    if not title:
+        # If still no title, use a default
+        title = f"_untitled_{exchange.exchange_id}"
+    return sanitize_filename(title)
+
+def load_template(template_name: str) -> Template:
+    """Load a Jinja template from the templates directory."""
+    templates_dir = Path(__file__).parent.parent / 'templates'
+    env = Environment(
+        loader=FileSystemLoader(templates_dir),
+        autoescape=select_autoescape(['html', 'xml'])
+    )
+    return env.get_template(template_name)
+
+def make_metadata(page) -> Dict[str, object]:
+    """
+    Build a dict that python-frontmatter will turn into YAML.
+    """
+    return {
+        "title": extract_title(page),
+        "date": page.first_message_time,
+        "tags": [
+            "autogenerated",
+            f"source__{page.annotations['source']}",
+            f"conversation_id__{page.conversation_id}",
+            *(f"msg_{mid}" for mid in page.get_message_ids()),
+        ],
+    }
+
+
+# before generating the notes, we need to infer some attributes, specifically
+# - the title for the preceding note
+# - the date of the conversation
+# - the title of the proceding note
+# notes will generally correspond to a single exchange, so we will generate one note per exchange
+# thte title will be associated as an annotation on the exchange
+# teh date is an attribute on the exchange object, or the first message in the exchange
+# output filename will be the title of the exchange, with spaces replaced by underscores and .md extension
+def generate_notes(
+        conversation: Conversation,
+        template_name: str = 'article_body.md.jinja',
+        output_dir: str = 'data/staging'
+) -> List[str]:
+    """Generate Obsidian notes from a conversation."""
+    template = load_template(template_name)
+    notes = []
+
+    # need to infer the previous and next note titles before we can generate the notes
+    # this is done by iterating through the exchanges and using the annotations
+    # we will use the first message's created_date as the date of the exchange
+    # and the title from the exchange annotations, or a default title if not present    
+    # START BY ASSIGNING DEFAULT TITLES AND FILENAMES SO WE CAN REFER TO THEM WHEN WE NEED THE PREVIOUS AND NEXT TITLES
+    for exchange in conversation.exchanges:
+        date = exchange.messages[0].created_date if exchange.messages else None
+        #title = exchange.annotations.get('title', f'Exchange {exchange.exchange_id}')
+    
+        title = extract_title(exchange)
+                
+        #output_filename = f"{title.replace(' ', '_')}.md"
+        # need to actually sanitize the title to make it a valid filename
+        #output_filename = f"{title.replace(' ', '_').replace('/', '_').replace('\\', '_').replace(':', '_')[:200]}.md"
+        output_filename = sanitize_filename(title) + '.md'
+        #logger.info(f"output_filename: {output_filename}")
+        exchange.annotations['output_filename'] = output_filename
+        exchange.annotations['date'] = date
+        exchange.annotations['title'] = title
+        notes.append((exchange, output_filename))       
+
+    # NOW ASSOCIATE PREVIOUS AND NEXT TITLES
+    for i, (exchange, output_filename) in enumerate(notes):
+        # Set previous title if not the first exchange
+        if i > 0:
+            previous_exchange = notes[i - 1][0]
+            exchange.annotations['previous_title'] = previous_exchange.annotations['title']
+            exchange.annotations['previous_filename'] = previous_exchange.annotations['output_filename']
+        else:
+            exchange.annotations['previous_title'] = None
+            exchange.annotations['previous_filename'] = None
+        
+        # Set next title if not the last exchange
+        if i < len(notes) - 1:
+            next_exchange = notes[i + 1][0]
+            exchange.annotations['next_title'] = next_exchange.annotations['title']
+            exchange.annotations['next_filename'] = next_exchange.annotations['output_filename']
+        else:
+            exchange.annotations['next_title'] = None
+            exchange.annotations['next_filename'] = None
+
+    # NOW GENERATE THE (first draft) NOTES
+    # in retrospect, we should infer initial title, frontmatter, and content,
+    # then we can update wikilinks in notes as needed before writing to file
+    articles = {}
+    for exchange, output_filename in notes: 
+        content = template.render(page=exchange)
+        metadata = make_metadata(exchange)
+        # try:
+        #     metadata, content = frontmatter.parse(content)
+        # except (ParserError, ScannerError) as e:
+        #     print(f"Error parsing frontmatter for {output_filename}: {e}")
+        #     print(content)
+        #     raise
+        #title = exchange.annotations.get('title')
+        title = metadata['title']
+
+        # merge matching titles
+        if title not in articles:
+            articles[title] = {
+                "content": content,
+                "metadata": metadata,
+                "output_filename": output_filename,
+                "exchange":exchange,
+            }
+        else:
+            article = articles[title]
+            article['content'] += f"\n---\n{content}"
+            for k,v in metadata.items():
+                if k in article['metadata']:
+                    # ... do stuff
+                    if isinstance(metadata[k], list):
+                        article['metadata'][k] += metadata[k]
+                else:
+                    article['metadata'][k] = v
+
+    # find titles that appear in content, convert to wikilinks
+    # TODO: match unsanitized (or maybe extra sanitized?) titles
+    for title, article in list(articles.items()):
+        content = article['content']
+        # replace other titles with wikilinks (if not already a wikilink) 
+        for other_title, other_article in articles.items():
+            if other_title != title:
+                #TODO: wrap in a "wikilinkify" function
+                if not re.search(r'\[\[' + re.escape(other_title) + r'\]\]', content):
+                    # Replace only if not already a wikilink
+                    # Use word boundary to avoid partial matches
+                    didchange = False
+                    content_after = re.sub(rf'\b{re.escape(other_title)}\b', f'[[{other_title}]]', content)
+                    if content_after != content:
+                        content = content_after
+                        didchange = True
+                    articles[title]['content'] = content
+                    # can I just do `article['content'] = content`?
+                
+                    # while we're here, let's check if we're directly quoting separately from the inferred title
+                    if not didchange:
+                        # check if prompt starts with a blockquote
+                        exchange: Exchange = article['exchange']
+                        #prompt = exchange.get_user_texts()[0] # should probably just make this a propoerty, Exchange.prompt
+                        prompt = exchange.messages[0].content
+                        # remove USER commentary on quoted text
+                        quote = prompt
+                        if '\n' in prompt:
+                            quote, *_ = prompt.split('\n')
+                        # remove blockquote markdown
+                        if prompt.startswith('>'):
+                            while quote.startswith('>'):
+                                quote = quote[1:]
+                            #if quote in articles[other_title]['content']:
+                            # standardize before matching
+                            sanitized_other_content = other_article['content'][:]
+                            sanitized_other_content = sanitize_filename(sanitized_other_content)
+                            sanitized_other_content = sanitized_other_content.replace('#','')
+                            sanitized_quote = sanitize_filename(quote)
+                            sanitized_quote = sanitized_quote.replace('#','')
+                            if sanitized_quote.lower() in sanitized_other_content.lower():
+                                #articles[other_title]['content'] += f"\nsee also: [[{title}]]  "
+                                other_article['content'] += f"\nsee also: [[{title}]]  "
+
+
+                            
+                        
+
+
+    # Ensure output directory exists
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # ok, now we can write the articles to files
+    for title, article in articles.items():
+        content = article['content']
+        metadata = article['metadata']
+        output_filename = article['output_filename']
+
+        post = frontmatter.Post(content, **metadata)        
+        output_filepath = output_path / output_filename
+        with open(output_filepath, 'a') as f:
+            #frontmatter.dump(post, f)
+            f.write(frontmatter.dumps(post))
+
+
+---
+File: attic/src/conversation_tagger/core/message.py
+---
+from typing import Any
+# from datetime import datetime
+
+
+class Message:
+    def __init__(self, data: dict):
+        self.data = data
+    
+    @property
+    def content(self):
+        return self._get_content()
+    
+    @property
+    def created_date(self):
+        return self._get_created_date()
+    
+    @property
+    def author_role(self):
+        return self._get_author_role()
+
+    @property
+    def id(self):
+        return self._get_id()
+
+    def _get_id(self):
+        raise NotImplementedError
+
+    def _get_author_role(self):
+        raise NotImplementedError
+
+    def _get_content(self):
+        raise NotImplementedError
+    
+    def _get_created_date(self):
+        raise NotImplementedError
+    def __repr__(self):
+        #return f"Message(author_role={self.author_role}, content={self.content}, created_date={self.created_date})"
+        return f"\n{self.created_date} - {self.author_role.upper()}: {self.content[:200].strip()+'...' if len(self.content) > 200 else self.content.strip()}"
+    def __str__(self):
+        return f"\n{self.created_date} - {self.author_role.upper()}: {self.content.strip()}"
+
+
+def get_message_text_chatgpt(message: dict[str, Any]) -> str:
+    """Extract text content from a message."""
+    content = message.get('content', {})
+    text = content.get('text', '')
+    parts = content.get('parts', [])
+    joined = ' '.join(str(p) for p in parts if isinstance(p, str)).strip()
+    if joined:
+        text = f"{text} {joined}"
+    return text.strip()
+
+
+class MessageOpenAI(Message):
+    def _get_id(self):
+        return self.data.get('id')
+    def _get_content(self):
+        return get_message_text_chatgpt(self.data)
+    def _get_created_date(self):
+        return self.data.get('create_time', 0.0)
+    def _get_author_role(self):
+        return self.data.get('author', {}).get('role')
+
+
+class MessageClaude(Message):
+    def _get_id(self):
+        return self.data.get('uuid')
+    def _get_content(self):
+        return self.data.get('text', '')
+    
+    def _get_created_date(self):
+        # Claude uses ISO format: "2024-01-01T12:00:00Z"
+        created_at = self.data.get('created_at')
+        # if created_at:
+        #     return datetime.fromisoformat(created_at.replace('Z', '+00:00')).timestamp()
+        # return 0.0
+        return created_at
+    
+    def _get_author_role(self):
+        sender = self.data.get('sender')
+        if sender == 'human':
+            sender = 'user'
+        return sender
+
+# def is_oai_msg(msg):
+#     #return True
+#     return isinstance(msg, dict) and 'content' in msg and 'create_time' in msg and 'author' in msg
+
+# def is_anthropic_msg(msg):
+#     return isinstance(msg, dict) and 'text' in msg and 'created_at' in msg and 'author' in msg
+
+# def msg_factory(msg):
+#     if is_oai_msg(msg):
+#         return MessageOpenAI(data=msg)
+#     else:
+#         raise NotImplementedError
+
+
+---
+File: attic/src/conversation_tagger/core/tag.py
+---
+# conversation_tagger/core/tag.py
+"""
+Simplified annotation system using dictionaries instead of custom Tag objects.
+"""
+
+from typing import Any, Dict, Union
+
+
+def create_annotation(name: str, value: Union[bool, int, float, str, Dict[str, Any]] = True) -> Dict[str, Any]:
+    """Create a simple annotation as a dictionary entry."""
+    return {name: value}
+
+
+def merge_annotations(*annotation_dicts: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge multiple annotation dictionaries."""
+    result = {}
+    for annotations in annotation_dicts:
+        result.update(annotations)
+    return result
+
+
+def has_annotation(annotations: Dict[str, Any], name: str) -> bool:
+    """Check if an annotation exists."""
+    return name in annotations
+
+
+def get_annotation_value(annotations: Dict[str, Any], name: str, default: Any = None) -> Any:
+    """Get the value of an annotation."""
+    return annotations.get(name, default)
+
+
+# Legacy Tag class for backward compatibility during transition
+class Tag:
+    """A tag with optional key-value attributes - DEPRECATED: Use dictionaries instead."""
+    
+    def __init__(self, name: str, **attributes):
+        self.name = name
+        self.attributes = attributes
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format."""
+        if not self.attributes:
+            return {self.name: True}
+        elif len(self.attributes) == 1 and 'value' in self.attributes:
+            return {self.name: self.attributes['value']}
+        else:
+            return {self.name: self.attributes}
+    
+    def __str__(self):
+        if self.attributes:
+            attrs = ", ".join(f"{k}={v}" for k, v in self.attributes.items())
+            return f"{self.name}({attrs})"
+        return self.name
+    
+    def __repr__(self):
+        return f"Tag('{self.name}', {self.attributes})"
+    
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self.name == other
+        elif isinstance(other, Tag):
+            return self.name == other.name and self.attributes == other.attributes
+        return False
+    
+    def __hash__(self):
+        return hash((self.name, tuple(sorted(self.attributes.items()))))
+
+
+
+---
+File: attic/src/conversation_tagger/core/tagger.py
+---
+# src/conversation_tagger/core/tagger.py
+"""
+Main ConversationTagger that orchestrates the exchange-based analysis.
+Updated to use dictionary-based annotations.
+"""
+
+from typing import Dict, Any, List, Callable
+from .exchange_parser import ExchangeParser, ExchangeParserOAI
+from .exchange_tagger import ExchangeTagger
+from .conversation import Conversation
+from .exchange import Exchange
+from .tag import Tag
+
+
+class ConversationTagger:
+    """Main tagger that uses exchange-based analysis with annotations."""
+    
+    def __init__(self, exchange_parser: ExchangeParser | None = None):
+        if not exchange_parser:
+            exchange_parser = ExchangeParserOAI()
+        self.exchange_parser = exchange_parser
+        self.conversation_rules: Dict[str, Callable] = {}
+    
+    def add_exchange_rule(self, annotation_name: str, rule_function: Callable):
+        """Add rule for analyzing exchanges."""
+        self.exchange_parser.exchange_tagger.add_rule(annotation_name, rule_function)
+
+    def add_conversation_rule(self, annotation_name: str, rule_function: Callable):
+        """Add rule for analyzing entire conversations."""
+        self.conversation_rules[annotation_name] = rule_function
+    
+    def tag_conversation(self, conversation: Dict[str, Any]) -> Conversation:
+        """Tag a conversation using exchange-based analysis."""
+        # Parse into tagged exchanges and return Conversation object
+        conv = self.exchange_parser.parse_conversation(conversation)
+        
+        # Apply conversation-level tagging rules
+        for annotation_name, rule_func in self.conversation_rules.items():
+            try:
+                result = rule_func(conv)
+                if result:
+                    if isinstance(result, bool):
+                        conv.add_annotation(annotation_name, True)
+                    elif isinstance(result, dict):
+                        # Multiple annotations returned
+                        for name, value in result.items():
+                            conv.add_annotation(name, value)
+                    elif isinstance(result, Tag):
+                        # Legacy Tag object - convert to annotation
+                        conv.annotations.update(result.to_dict())
+                    elif isinstance(result, list):
+                        # Handle multiple tags returned from one rule
+                        for item in result:
+                            if isinstance(item, Tag):
+                                conv.annotations.update(item.to_dict())
+                            elif isinstance(item, dict):
+                                conv.annotations.update(item)
+                            else:
+                                # Treat other items as simple annotations
+                                conv.add_annotation(annotation_name, item)
+                    else:
+                        # Treat other truthy values as simple annotations
+                        conv.add_annotation(annotation_name, result)
+            except Exception as e:
+                # Skip failed rules - could add logging here later
+                pass
+        
+        return conv
+
+
+
+---
+File: attic/src/conversation_tagger/factory.py
+---
+# conversation_tagger/factory.py
+"""
+Factory to create configured tagger with improved exchange handling.
+"""
+#from ATTIC.conversation_tagger.core import exchange_parser
+from .core.tagger import ConversationTagger
+from .core.detection import EXCHANGE_RULES, CONVERSATION_RULES
+
+# todo: use enum for source types
+def create_default_tagger(source="oai") -> ConversationTagger:
+    """Create a basic tagger with example rules for the new exchange design."""
+
+    if source == "oai":
+        from .core.exchange_parser import ExchangeParserOAI
+        exchange_parser = ExchangeParserOAI()
+    elif source == "claude":
+        from .core.exchange_parser import ExchangeParserClaude
+        exchange_parser = ExchangeParserClaude()
+    else:
+        raise ValueError(f"Unsupported source: {source}")
+    
+    tagger = ConversationTagger(exchange_parser=exchange_parser)
+    for rule_name, rule_func in EXCHANGE_RULES.items():
+        tagger.add_exchange_rule(rule_name, rule_func)   
+    for rule_name, rule_func in CONVERSATION_RULES.items():
+        tagger.add_conversation_rule(rule_name, rule_func)
+    
+    return tagger
+
+

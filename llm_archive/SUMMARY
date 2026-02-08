@@ -1,0 +1,4176 @@
+---
+File: llm_archive/__init__.py
+---
+# llm_archive/__init__.py
+"""LLM conversation archive ingestion and analysis."""
+
+from llm_archive.config import DATABASE_URL
+
+__version__ = "0.1.0"
+__all__ = ["DATABASE_URL", "__version__"]
+
+
+---
+File: llm_archive/annotations/__init__.py
+---
+#from .core import AnnotationWriter, AnnotationReader, enums
+
+
+
+---
+File: llm_archive/annotations/core.py
+---
+# llm_archive/annotations/core.py
+"""
+Core annotation infrastructure for typed annotation tables.
+
+This module provides:
+- Enum types for annotation value types and entity types
+- AnnotationWriter for inserting annotations during ingestion/processing
+- Base classes for annotators that iterate over entities
+
+The schema uses separate tables per (entity_type, value_type) combination:
+- derived.{entity}_annotations_{value_type}
+- e.g., derived.message_annotations_string, derived.prompt_response_annotations_flag
+"""
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+from loguru import logger
+
+
+# ============================================================
+# Enums
+# ============================================================
+
+class EntityType(str, Enum):
+    """Supported entity types for annotations."""
+    CONTENT_PART = 'content_part'
+    MESSAGE = 'message'
+    PROMPT_RESPONSE = 'prompt_response'
+    DIALOGUE = 'dialogue'
+
+
+class ValueType(str, Enum):
+    """Annotation value types."""
+    FLAG = 'flag'       # Key presence = true, no value
+    STRING = 'string'   # Text value
+    NUMERIC = 'numeric' # Numeric value
+    JSON = 'json'       # JSONB value
+
+
+# ============================================================
+# Annotation Result (returned by annotators)
+# ============================================================
+
+@dataclass
+class AnnotationResult:
+    """
+    Result from annotation logic.
+    
+    For FLAG annotations: only key is required
+    For STRING/NUMERIC/JSON: key and value are required
+    """
+    key: str
+    value: Any = None  # None for flags, typed for others
+    value_type: ValueType = ValueType.STRING  # Inferred if not specified
+    confidence: float | None = None
+    reason: str | None = None
+    source: str = 'heuristic'
+    source_version: str | None = None
+    
+    def __eq__(self, other: object) -> bool:
+        """Equality check - compares key, value, and value_type."""
+        if not isinstance(other, AnnotationResult):
+            return NotImplemented
+        return (
+            self.key == other.key 
+            and self.value == other.value 
+            and self.value_type == other.value_type
+        )
+    
+    def __hash__(self) -> int:
+        """Hash based on key, value, and value_type."""
+        # Convert value to a hashable form if it's a dict/list
+        value_hash = self.value
+        if isinstance(self.value, dict):
+            value_hash = tuple(sorted(self.value.items()))
+        elif isinstance(self.value, list):
+            value_hash = tuple(self.value)
+        return hash((self.key, value_hash, self.value_type))
+    
+    def __repr__(self) -> str:
+        """Compact string representation."""
+        if self.value_type == ValueType.FLAG:
+            return f"AnnotationResult({self.key!r}, FLAG)"
+        return f"AnnotationResult({self.key!r}, {self.value!r}, {self.value_type.value})"
+
+
+# ============================================================
+# Annotation Writer (for ingestion and annotators)
+# ============================================================
+
+class AnnotationWriter:
+    """
+    Writes annotations to the appropriate typed tables.
+    
+    Used by:
+    - Extractors during ingestion (source='ingestion')
+    - Annotators during processing (source='heuristic', 'model', etc.)
+    
+    Handles table routing based on entity_type and value_type.
+    Uses upsert semantics (ON CONFLICT DO NOTHING for multi-value,
+    ON CONFLICT DO UPDATE for single-value tables).
+    """
+    
+    # Table name templates
+    TABLE_TEMPLATE = "derived.{entity}_annotations_{value_type}"
+    
+    # Tables where (entity_id, key) is unique (single value per key)
+    SINGLE_VALUE_TABLES = {ValueType.FLAG, ValueType.JSON}
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self._counts: dict[str, int] = {}
+    
+    def _table_name(self, entity_type: EntityType, value_type: ValueType) -> str:
+        """Get the table name for an entity/value type combination."""
+        return self.TABLE_TEMPLATE.format(
+            entity=entity_type.value,
+            value_type=value_type.value,
+        )
+    
+    def write_flag(
+        self,
+        entity_type: EntityType,
+        entity_id: UUID,
+        key: str,
+        confidence: float | None = None,
+        reason: str | None = None,
+        source: str = 'heuristic',
+        source_version: str | None = None,
+    ) -> bool:
+        """Write a flag annotation (key presence = true)."""
+        table = self._table_name(entity_type, ValueType.FLAG)
+        
+        result = self.session.execute(
+            text(f"""
+                INSERT INTO {table} 
+                    (entity_id, annotation_key, confidence, reason, source, source_version)
+                VALUES 
+                    (:entity_id, :key, :confidence, :reason, :source, :source_version)
+                ON CONFLICT (entity_id, annotation_key) DO NOTHING
+                RETURNING id
+            """),
+            {
+                'entity_id': entity_id,
+                'key': key,
+                'confidence': confidence,
+                'reason': reason,
+                'source': source,
+                'source_version': source_version,
+            }
+        )
+        created = result.scalar() is not None
+        self._track(table, created)
+        return created
+    
+    def write_string(
+        self,
+        entity_type: EntityType,
+        entity_id: UUID,
+        key: str,
+        value: str,
+        confidence: float | None = None,
+        reason: str | None = None,
+        source: str = 'heuristic',
+        source_version: str | None = None,
+    ) -> bool:
+        """Write a string annotation."""
+        table = self._table_name(entity_type, ValueType.STRING)
+        
+        result = self.session.execute(
+            text(f"""
+                INSERT INTO {table} 
+                    (entity_id, annotation_key, annotation_value, confidence, reason, source, source_version)
+                VALUES 
+                    (:entity_id, :key, :value, :confidence, :reason, :source, :source_version)
+                ON CONFLICT (entity_id, annotation_key, annotation_value) DO NOTHING
+                RETURNING id
+            """),
+            {
+                'entity_id': entity_id,
+                'key': key,
+                'value': value,
+                'confidence': confidence,
+                'reason': reason,
+                'source': source,
+                'source_version': source_version,
+            }
+        )
+        created = result.scalar() is not None
+        self._track(table, created)
+        return created
+    
+    def write_numeric(
+        self,
+        entity_type: EntityType,
+        entity_id: UUID,
+        key: str,
+        value: float | int,
+        confidence: float | None = None,
+        reason: str | None = None,
+        source: str = 'heuristic',
+        source_version: str | None = None,
+    ) -> bool:
+        """Write a numeric annotation."""
+        table = self._table_name(entity_type, ValueType.NUMERIC)
+        
+        result = self.session.execute(
+            text(f"""
+                INSERT INTO {table} 
+                    (entity_id, annotation_key, annotation_value, confidence, reason, source, source_version)
+                VALUES 
+                    (:entity_id, :key, :value, :confidence, :reason, :source, :source_version)
+                ON CONFLICT (entity_id, annotation_key, annotation_value) DO NOTHING
+                RETURNING id
+            """),
+            {
+                'entity_id': entity_id,
+                'key': key,
+                'value': value,
+                'confidence': confidence,
+                'reason': reason,
+                'source': source,
+                'source_version': source_version,
+            }
+        )
+        created = result.scalar() is not None
+        self._track(table, created)
+        return created
+    
+    def write_json(
+        self,
+        entity_type: EntityType,
+        entity_id: UUID,
+        key: str,
+        value: dict | list,
+        confidence: float | None = None,
+        reason: str | None = None,
+        source: str = 'heuristic',
+        source_version: str | None = None,
+    ) -> bool:
+        """Write a JSON annotation (single value per key, upserts)."""
+        import json
+        table = self._table_name(entity_type, ValueType.JSON)
+        
+        result = self.session.execute(
+            text(f"""
+                INSERT INTO {table} 
+                    (entity_id, annotation_key, annotation_value, confidence, reason, source, source_version)
+                VALUES 
+                    (:entity_id, :key, CAST(:value AS jsonb), :confidence, :reason, :source, :source_version)
+                ON CONFLICT (entity_id, annotation_key) DO UPDATE SET
+                    annotation_value = EXCLUDED.annotation_value,
+                    confidence = EXCLUDED.confidence,
+                    reason = EXCLUDED.reason,
+                    source = EXCLUDED.source,
+                    source_version = EXCLUDED.source_version,
+                    created_at = now()
+                RETURNING id
+            """),
+            {
+                'entity_id': entity_id,
+                'key': key,
+                'value': json.dumps(value),
+                'confidence': confidence,
+                'reason': reason,
+                'source': source,
+                'source_version': source_version,
+            }
+        )
+        created = result.scalar() is not None
+        self._track(table, created)
+        return created
+    
+    def write(self, entity_type: EntityType, entity_id: UUID, result: AnnotationResult) -> bool:
+        """
+        Write an annotation from an AnnotationResult.
+        
+        Dispatches to the appropriate typed write method.
+        """
+        if result.value_type == ValueType.FLAG:
+            return self.write_flag(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                key=result.key,
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source,
+                source_version=result.source_version,
+            )
+        elif result.value_type == ValueType.STRING:
+            return self.write_string(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                key=result.key,
+                value=str(result.value),
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source,
+                source_version=result.source_version,
+            )
+        elif result.value_type == ValueType.NUMERIC:
+            return self.write_numeric(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                key=result.key,
+                value=float(result.value),
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source,
+                source_version=result.source_version,
+            )
+        elif result.value_type == ValueType.JSON:
+            return self.write_json(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                key=result.key,
+                value=result.value,
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source,
+                source_version=result.source_version,
+            )
+        else:
+            raise ValueError(f"Unknown value type: {result.value_type}")
+    
+    def _track(self, table: str, created: bool):
+        """Track annotation counts."""
+        if table not in self._counts:
+            self._counts[table] = 0
+        if created:
+            self._counts[table] += 1
+    
+    @property
+    def counts(self) -> dict[str, int]:
+        """Get annotation counts by table."""
+        return self._counts.copy()
+
+
+# ============================================================
+# Annotation Reader (for querying)
+# ============================================================
+
+class AnnotationReader:
+    """
+    Reads annotations from the typed tables.
+    
+    Provides methods for:
+    - Checking if an annotation exists
+    - Getting annotation values
+    - Filtering entities by annotations
+    """
+    
+    TABLE_TEMPLATE = "derived.{entity}_annotations_{value_type}"
+    
+    def __init__(self, session: Session):
+        self.session = session
+    
+    def _table_name(self, entity_type: EntityType, value_type: ValueType) -> str:
+        return self.TABLE_TEMPLATE.format(
+            entity=entity_type.value,
+            value_type=value_type.value,
+        )
+    
+    def has_flag(self, entity_type: EntityType, entity_id: UUID, key: str) -> bool:
+        """Check if entity has a flag annotation."""
+        table = self._table_name(entity_type, ValueType.FLAG)
+        result = self.session.execute(
+            text(f"SELECT 1 FROM {table} WHERE entity_id = :id AND annotation_key = :key"),
+            {'id': entity_id, 'key': key}
+        )
+        return result.scalar() is not None
+    
+    def get_string(self, entity_type: EntityType, entity_id: UUID, key: str) -> list[str]:
+        """Get all string values for a key (multi-value)."""
+        table = self._table_name(entity_type, ValueType.STRING)
+        result = self.session.execute(
+            text(f"SELECT annotation_value FROM {table} WHERE entity_id = :id AND annotation_key = :key"),
+            {'id': entity_id, 'key': key}
+        )
+        return [row[0] for row in result]
+    
+    def get_string_single(self, entity_type: EntityType, entity_id: UUID, key: str) -> str | None:
+        """Get single string value (returns first if multiple)."""
+        values = self.get_string(entity_type, entity_id, key)
+        return values[0] if values else None
+    
+    def get_numeric(self, entity_type: EntityType, entity_id: UUID, key: str) -> list[float]:
+        """Get all numeric values for a key."""
+        table = self._table_name(entity_type, ValueType.NUMERIC)
+        result = self.session.execute(
+            text(f"SELECT annotation_value FROM {table} WHERE entity_id = :id AND annotation_key = :key"),
+            {'id': entity_id, 'key': key}
+        )
+        return [float(row[0]) for row in result]
+    
+    def get_json(self, entity_type: EntityType, entity_id: UUID, key: str) -> dict | list | None:
+        """Get JSON value for a key (single value)."""
+        table = self._table_name(entity_type, ValueType.JSON)
+        result = self.session.execute(
+            text(f"SELECT annotation_value FROM {table} WHERE entity_id = :id AND annotation_key = :key"),
+            {'id': entity_id, 'key': key}
+        )
+        row = result.fetchone()
+        return row[0] if row else None
+    
+    def get_all_keys(self, entity_type: EntityType, entity_id: UUID) -> dict[str, list[Any]]:
+        """Get all annotations for an entity, grouped by key."""
+        all_table = f"derived.{entity_type.value}_annotations_all"
+        result = self.session.execute(
+            text(f"SELECT annotation_key, annotation_value, value_type FROM {all_table} WHERE entity_id = :id"),
+            {'id': entity_id}
+        )
+        
+        annotations: dict[str, list[Any]] = {}
+        for key, value, value_type in result:
+            if key not in annotations:
+                annotations[key] = []
+            if value_type == 'flag':
+                annotations[key].append(True)
+            else:
+                annotations[key].append(value)
+        
+        return annotations
+    
+    def find_entities_with_flag(self, entity_type: EntityType, key: str) -> list[UUID]:
+        """Find all entity IDs that have a specific flag."""
+        table = self._table_name(entity_type, ValueType.FLAG)
+        result = self.session.execute(
+            text(f"SELECT entity_id FROM {table} WHERE annotation_key = :key"),
+            {'key': key}
+        )
+        return [row[0] for row in result]
+    
+    def find_entities_with_string(
+        self, 
+        entity_type: EntityType, 
+        key: str, 
+        value: str | None = None
+    ) -> list[UUID]:
+        """Find entity IDs with a string annotation (optionally matching value)."""
+        table = self._table_name(entity_type, ValueType.STRING)
+        if value is not None:
+            result = self.session.execute(
+                text(f"SELECT entity_id FROM {table} WHERE annotation_key = :key AND annotation_value = :value"),
+                {'key': key, 'value': value}
+            )
+        else:
+            result = self.session.execute(
+                text(f"SELECT DISTINCT entity_id FROM {table} WHERE annotation_key = :key"),
+                {'key': key}
+            )
+        return [row[0] for row in result]
+
+
+
+---
+File: llm_archive/annotators/__init__.py
+---
+# llm_archive/annotators/__init__.py
+"""Annotation infrastructure for entities.
+
+Annotators analyze entities and produce annotations stored in derived.annotations.
+
+Architecture Overview:
+---------------------
+
+**Annotation Keys vs Annotators (Strategy Pattern)**
+
+An ANNOTATION_KEY identifies what we're trying to detect (e.g., 'code', 'latex').
+Multiple annotators can target the same key using different strategies.
+Higher PRIORITY annotators run first; lower-priority ones can be skipped
+if the key is already satisfied.
+
+Example: Detecting code in an exchange
+  - ChatGPTCodeExecutionAnnotator (priority=100): Platform ground truth
+  - CodeBlockAnnotator (priority=90): Explicit ``` blocks  
+  - CodeStructureAnnotator (priority=70): Function/class patterns
+  - CodeKeywordDensityAnnotator (priority=30): Keyword density
+
+If code execution is detected (priority 100), lower-priority heuristics
+can check has_annotation_key() to skip redundant work.
+
+**Annotation Types**
+- tag: For filtering (topic:physics, quality:high)
+- feature: Detected features (has_code_blocks, has_latex)
+- metadata: Structural data (dialogue_length, prompt_stats)
+- title: Generated titles
+- summary: Brief descriptions
+
+**Entity Types**
+- message: Individual messages
+- exchange: User prompt + assistant response pair
+- dialogue: Entire conversation
+
+Creating Custom Annotators:
+--------------------------
+
+For MESSAGE annotations based on text content:
+
+    class MyMessageAnnotator(MessageTextAnnotator):
+        ANNOTATION_TYPE = 'feature'
+        ANNOTATION_KEY = 'my_feature'  # What we're detecting
+        PRIORITY = 50                   # When to run (higher = first)
+        VERSION = '1.0'
+        ROLE_FILTER = 'assistant'       # or 'user' or None for all
+        
+        def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
+            if 'keyword' in data.text:
+                return [AnnotationResult(value='has_keyword', confidence=0.9)]
+            return []
+
+For EXCHANGE annotations based on content:
+
+    class MyExchangeAnnotator(ExchangeAnnotator):
+        ANNOTATION_TYPE = 'tag'
+        ANNOTATION_KEY = 'my_tag'
+        PRIORITY = 50
+        VERSION = '1.0'
+        
+        def annotate(self, data: ExchangeData) -> list[AnnotationResult]:
+            if (data.assistant_word_count or 0) > 1000:
+                return [AnnotationResult(value='long_response', key='length')]
+            return []
+
+For EXCHANGE annotations based on platform features (e.g., ChatGPT):
+
+    class MyChatGPTAnnotator(ExchangePlatformAnnotator):
+        ANNOTATION_TYPE = 'feature'
+        ANNOTATION_KEY = 'platform_feature'
+        PRIORITY = 100  # Platform = ground truth
+        VERSION = '1.0'
+        
+        def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
+            # Query platform tables using data.message_ids
+            ...
+
+For DIALOGUE annotations with aggregate statistics:
+
+    class MyDialogueAnnotator(DialogueAnnotator):
+        ANNOTATION_TYPE = 'metadata'
+        ANNOTATION_KEY = 'my_stats'
+        PRIORITY = 50
+        VERSION = '1.0'
+        
+        def annotate(self, data: DialogueData) -> list[AnnotationResult]:
+            if data.exchange_count > 10:
+                return [AnnotationResult(value='extended', key='length')]
+            return []
+
+Priority Guidelines:
+- 100: Platform features (ground truth from database)
+- 90: Explicit syntax (```, shebangs)
+- 70: Structural patterns (function definitions)
+- 50: Keyword detection (default)
+- 30: Density/heuristic analysis
+
+Bump VERSION to reprocess all entities with new logic.
+"""
+
+from llm_archive.annotators.prompt_response import (
+    PromptResponseAnnotator,
+    PromptResponseData,
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
+)
+
+__all__ = [
+
+    # Prompt-response annotators
+    "PromptResponseAnnotator",
+    "PromptResponseData",
+    "WikiCandidateAnnotator",
+    "NaiveTitleAnnotator",
+]
+
+
+
+---
+File: llm_archive/annotators/content_part.py
+---
+# llm_archive/annotators/content_part.py
+"""
+Content-part level annotators.
+
+These annotators work on individual content_parts within messages,
+detecting features like code blocks, LaTeX, and other content types.
+"""
+
+import re
+from abc import abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Iterator
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from llm_archive.annotations.core import (
+    AnnotationWriter,
+    AnnotationReader,
+    AnnotationResult,
+    EntityType,
+    ValueType,
+)
+
+
+@dataclass
+class ContentPartData:
+    """Data passed to content-part annotation logic."""
+    content_part_id: UUID
+    message_id: UUID
+    dialogue_id: UUID
+    sequence: int
+    part_type: str
+    text_content: str | None
+    language: str | None
+    role: str
+    created_at: datetime | None
+
+
+class ContentPartAnnotator:
+    """
+    Base class for annotating content parts.
+    
+    Iterates over raw.content_parts joined with raw.messages.
+    Supports annotation prerequisites and skip conditions.
+    """
+    
+    ENTITY_TYPE = EntityType.CONTENT_PART
+    ANNOTATION_KEY: str = ''  # Subclass must define
+    VALUE_TYPE: ValueType = ValueType.FLAG
+    PRIORITY: int = 50  # Higher = runs first
+    
+    # Annotation filters
+    REQUIRES_FLAGS: list[str] = []
+    REQUIRES_STRINGS: list[tuple[str, str]] = []
+    SKIP_IF_FLAGS: list[str] = []
+    SKIP_IF_STRINGS: list[tuple[str, ...]] = []
+    
+    # Content filters
+    PART_TYPE_FILTER: str | None = None  # Limit to specific part_type
+    ROLE_FILTER: str | None = None  # Limit to 'user' or 'assistant'
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self.writer = AnnotationWriter(session)
+        self.reader = AnnotationReader(session)
+    
+    def compute(self) -> int:
+        """Run annotation over content parts."""
+        count = 0
+        for data in self._iter_content_parts():
+            results = self.annotate(data)
+            for result in results:
+                if self._write_result(data.content_part_id, result):
+                    count += 1
+        return count
+    
+    def _write_result(self, entity_id: UUID, result: AnnotationResult) -> bool:
+        """Write an annotation result to the appropriate table."""
+        return self.writer.write(EntityType.CONTENT_PART, entity_id, result)
+    
+    def _iter_content_parts(self) -> Iterator[ContentPartData]:
+        """Iterate over content parts, respecting filters."""
+        # Build base query
+        query = """
+            SELECT 
+                cp.id as content_part_id,
+                cp.message_id,
+                m.dialogue_id,
+                cp.sequence,
+                cp.part_type,
+                cp.text_content,
+                cp.language,
+                m.role,
+                m.created_at
+            FROM raw.content_parts cp
+            JOIN raw.messages m ON m.id = cp.message_id
+            WHERE m.deleted_at IS NULL
+        """
+        
+        params = {}
+        
+        # Add part_type filter
+        if self.PART_TYPE_FILTER:
+            query += " AND cp.part_type = :part_type"
+            params['part_type'] = self.PART_TYPE_FILTER
+        
+        # Add role filter
+        if self.ROLE_FILTER:
+            query += " AND m.role = :role"
+            params['role'] = self.ROLE_FILTER
+        
+        query += " ORDER BY m.dialogue_id, m.created_at, cp.sequence"
+        
+        result = self.session.execute(text(query), params)
+        
+        for row in result:
+            yield ContentPartData(
+                content_part_id=row.content_part_id,
+                message_id=row.message_id,
+                dialogue_id=row.dialogue_id,
+                sequence=row.sequence,
+                part_type=row.part_type,
+                text_content=row.text_content,
+                language=row.language,
+                role=row.role,
+                created_at=row.created_at,
+            )
+    
+    @abstractmethod
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        """
+        Analyze content part and return annotations to create.
+        
+        Args:
+            data: ContentPartData with content and metadata
+            
+        Returns:
+            List of AnnotationResult objects (empty list if no match)
+        """
+        pass
+
+
+# ============================================================
+# Code Detection Annotators
+# ============================================================
+
+class CodeBlockAnnotator(ContentPartAnnotator):
+    """
+    Detect explicit code blocks (```) in text content parts.
+    
+    Highest priority code detector - explicit markdown code blocks
+    are the most reliable signal.
+    
+    Produces:
+    - has_code_block FLAG
+    - code_block_count NUMERIC
+    - code_languages STRING (multi-value)
+    """
+    
+    ANNOTATION_KEY = 'has_code_block'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 90
+    PART_TYPE_FILTER = 'text'
+    ROLE_FILTER = 'assistant'
+    
+    # Pattern to match complete code blocks: ```lang\n...content...```
+    # Captures the optional language specifier
+    CODE_BLOCK_PATTERN = re.compile(r'```(\w*)\n?[\s\S]*?```')
+    
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        if not data.text_content:
+            return []
+        
+        # Find all complete code blocks
+        matches = list(self.CODE_BLOCK_PATTERN.finditer(data.text_content))
+        
+        if not matches:
+            return []
+        
+        results = []
+        
+        # Flag annotation
+        results.append(AnnotationResult(
+            key='has_code_block',
+            value_type=ValueType.FLAG,
+            reason='markdown_code_block',
+            confidence=1.0,
+        ))
+        
+        # Count annotation
+        block_count = len(matches)
+        results.append(AnnotationResult(
+            key='code_block_count',
+            value=block_count,
+            value_type=ValueType.NUMERIC,
+        ))
+        
+        # Language annotations (multi-value)
+        languages = set()
+        for match in matches:
+            lang = match.group(1).lower()
+            if lang:  # Skip empty language specs
+                languages.add(lang)
+        
+        for lang in languages:
+            results.append(AnnotationResult(
+                key='code_language',
+                value=lang,
+                value_type=ValueType.STRING,
+                reason='code_block_language_spec',
+            ))
+        
+        return results
+
+
+class ScriptHeaderAnnotator(ContentPartAnnotator):
+    """
+    Detect script headers and system includes (strong code evidence).
+    
+    Shebangs and #include are unambiguous code markers.
+    
+    Produces:
+    - has_script_header FLAG
+    - script_type STRING
+    """
+    
+    ANNOTATION_KEY = 'has_script_header'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 85
+    PART_TYPE_FILTER = 'text'
+    
+    SHEBANG_PATTERN = re.compile(r'^#!\s*/(?:usr/)?bin/(?:env\s+)?(\w+)', re.MULTILINE)
+    INCLUDE_PATTERN = re.compile(r'^#include\s*[<"]', re.MULTILINE)
+    PHP_PATTERN = re.compile(r'<\?php', re.IGNORECASE)
+    
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        if not data.text_content:
+            return []
+        
+        results = []
+        
+        # Check for shebang
+        shebang_match = self.SHEBANG_PATTERN.search(data.text_content)
+        if shebang_match:
+            results.append(AnnotationResult(
+                key='has_script_header',
+                value_type=ValueType.FLAG,
+                reason='shebang',
+                confidence=1.0,
+            ))
+            results.append(AnnotationResult(
+                key='script_type',
+                value=shebang_match.group(1),
+                value_type=ValueType.STRING,
+                reason='shebang_interpreter',
+            ))
+            return results
+        
+        # Check for C/C++ includes
+        if self.INCLUDE_PATTERN.search(data.text_content):
+            results.append(AnnotationResult(
+                key='has_script_header',
+                value_type=ValueType.FLAG,
+                reason='c_include',
+                confidence=1.0,
+            ))
+            results.append(AnnotationResult(
+                key='script_type',
+                value='c',
+                value_type=ValueType.STRING,
+            ))
+            return results
+        
+        # Check for PHP
+        if self.PHP_PATTERN.search(data.text_content):
+            results.append(AnnotationResult(
+                key='has_script_header',
+                value_type=ValueType.FLAG,
+                reason='php_tag',
+                confidence=1.0,
+            ))
+            results.append(AnnotationResult(
+                key='script_type',
+                value='php',
+                value_type=ValueType.STRING,
+            ))
+            return results
+        
+        return results
+
+
+# ============================================================
+# Content Type Annotators
+# ============================================================
+
+class LatexContentAnnotator(ContentPartAnnotator):
+    """
+    Detect LaTeX/MathJax mathematical notation in content parts.
+    
+    Produces:
+    - has_latex FLAG
+    - latex_type STRING ('display', 'inline', 'commands')
+    """
+    
+    ANNOTATION_KEY = 'has_latex'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 70
+    PART_TYPE_FILTER = 'text'
+    ROLE_FILTER = 'assistant'
+    
+    # Display math: $$ ... $$ or \[ ... \]
+    DISPLAY_MATH_PATTERN = re.compile(r'\$\$.+?\$\$|\\\[.+?\\\]', re.DOTALL)
+    
+    # Inline math: $ ... $ (but not $$)
+    INLINE_MATH_PATTERN = re.compile(r'(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$)')
+    
+    # LaTeX commands: \frac, \sum, \int, etc.
+    LATEX_COMMANDS_PATTERN = re.compile(
+        r'\\(?:frac|sum|int|prod|lim|sqrt|begin|end|alpha|beta|gamma|'
+        r'delta|epsilon|theta|lambda|sigma|omega|pi|infty|partial|nabla|'
+        r'mathbb|mathcal|mathbf|mathrm|text|left|right|cdot|times|div)'
+    )
+    
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        if not data.text_content:
+            return []
+        
+        results = []
+        latex_types = set()
+        
+        if self.DISPLAY_MATH_PATTERN.search(data.text_content):
+            latex_types.add('display')
+        
+        if self.INLINE_MATH_PATTERN.search(data.text_content):
+            latex_types.add('inline')
+        
+        if self.LATEX_COMMANDS_PATTERN.search(data.text_content):
+            latex_types.add('commands')
+        
+        if not latex_types:
+            return []
+        
+        # Main flag
+        results.append(AnnotationResult(
+            key='has_latex',
+            value_type=ValueType.FLAG,
+            confidence=0.95 if 'display' in latex_types else 0.8,
+            reason='latex_notation_detected',
+        ))
+        
+        # Type annotations
+        for latex_type in latex_types:
+            results.append(AnnotationResult(
+                key='latex_type',
+                value=latex_type,
+                value_type=ValueType.STRING,
+            ))
+        
+        return results
+
+
+class WikiLinkContentAnnotator(ContentPartAnnotator):
+    """
+    Detect Obsidian-style [[wiki links]] in content parts.
+    
+    This is a content-part level version for granular detection.
+    The prompt-response level WikiCandidateAnnotator aggregates this.
+    
+    Produces:
+    - has_wiki_links FLAG
+    - wiki_link_count NUMERIC
+    """
+    
+    ANNOTATION_KEY = 'has_wiki_links'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 75
+    PART_TYPE_FILTER = 'text'
+    ROLE_FILTER = 'assistant'
+    
+    WIKI_LINK_PATTERN = re.compile(r'\[\[([^\]]+)\]\]')
+    
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        if not data.text_content:
+            return []
+        
+        matches = self.WIKI_LINK_PATTERN.findall(data.text_content)
+        
+        if not matches:
+            return []
+        
+        return [
+            AnnotationResult(
+                key='has_wiki_links',
+                value_type=ValueType.FLAG,
+                confidence=1.0,
+                reason='wiki_links_detected',
+            ),
+            AnnotationResult(
+                key='wiki_link_count',
+                value=len(matches),
+                value_type=ValueType.NUMERIC,
+            ),
+        ]
+
+
+# ============================================================
+# Registry for running all annotators
+# ============================================================
+
+CONTENT_PART_ANNOTATORS = [
+    CodeBlockAnnotator,
+    ScriptHeaderAnnotator,
+    LatexContentAnnotator,
+    WikiLinkContentAnnotator,
+]
+
+
+def run_content_part_annotators(session: Session) -> dict[str, int]:
+    """
+    Run all content-part annotators in priority order.
+    
+    Returns dict mapping annotator name to annotation count.
+    """
+    # Sort by priority (descending)
+    sorted_annotators = sorted(
+        CONTENT_PART_ANNOTATORS,
+        key=lambda cls: cls.PRIORITY,
+        reverse=True,
+    )
+    
+    results = {}
+    for annotator_cls in sorted_annotators:
+        annotator = annotator_cls(session)
+        count = annotator.compute()
+        results[annotator_cls.__name__] = count
+    
+    session.commit()
+    return results
+
+
+
+---
+File: llm_archive/annotators/prompt_response.py
+---
+# llm_archive/annotators/prompt_response.py
+"""Prompt-response level annotators.
+
+These annotators work on the prompt_responses table, which is built
+without tree dependency. They support:
+- Wiki article candidate detection
+- Naive title extraction
+- Prerequisite/skip annotation filtering
+
+Uses the new typed annotation tables (derived.prompt_response_annotations_*).
+"""
+
+from abc import abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Iterator
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from llm_archive.annotations.core import (
+    AnnotationWriter, AnnotationReader, AnnotationResult,
+    EntityType, ValueType,
+)
+
+
+# ============================================================
+# Data Classes
+# ============================================================
+
+@dataclass
+class PromptResponseData:
+    """Data passed to prompt-response annotation logic."""
+    prompt_response_id: UUID
+    dialogue_id: UUID
+    prompt_message_id: UUID
+    response_message_id: UUID
+    prompt_text: str | None
+    response_text: str | None
+    prompt_word_count: int | None
+    response_word_count: int | None
+    prompt_role: str
+    response_role: str
+    created_at: datetime | None
+
+
+# ============================================================
+# Base PromptResponse Annotator
+# ============================================================
+
+class PromptResponseAnnotator:
+    """
+    Base class for annotating prompt-response pairs.
+    
+    Iterates over derived.prompt_response_content_v (view that joins
+    content from raw.content_parts - no denormalized storage).
+    
+    Supports annotation prerequisites and skip conditions using the
+    new typed annotation tables:
+    - REQUIRES_FLAGS: Only process entities with ALL of these flag annotations
+    - REQUIRES_STRINGS: Only process entities with ALL of these (key, value) string annotations
+    - SKIP_IF_FLAGS: Skip entities with ANY of these flag annotations
+    - SKIP_IF_STRINGS: Skip entities with ANY of these (key,) or (key, value) string annotations
+    
+    Example:
+        REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
+        SKIP_IF_FLAGS = ['has_preamble']
+    """
+    
+    ENTITY_TYPE = EntityType.PROMPT_RESPONSE
+    
+    # Annotator metadata
+    ANNOTATION_KEY: str = None  # Required: the key this annotator produces
+    VALUE_TYPE: ValueType = ValueType.STRING  # What type of annotation this produces
+    PRIORITY: int = 50  # Higher runs first
+    VERSION: str = '1.0'
+    SOURCE: str = 'heuristic'
+    
+    # Filtering - override in subclass
+    REQUIRES_FLAGS: list[str] = []
+    REQUIRES_STRINGS: list[tuple[str, str]] = []  # (key, value) pairs
+    SKIP_IF_FLAGS: list[str] = []
+    SKIP_IF_STRINGS: list[tuple[str, ...]] = []  # (key,) or (key, value)
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self.writer = AnnotationWriter(session)
+        self.reader = AnnotationReader(session)
+    
+    def compute(self) -> int:
+        """Run annotation over prompt-response pairs."""
+        count = 0
+        
+        for data in self._iter_prompt_responses():
+            results = self.annotate(data)
+            for result in results:
+                if self._write_result(data.prompt_response_id, result):
+                    count += 1
+        
+        return count
+    
+    def _write_result(self, entity_id: UUID, result: AnnotationResult) -> bool:
+        """Write an annotation result to the appropriate table."""
+        # Use the result's value_type if specified, otherwise use class default
+        value_type = result.value_type if result.value_type else self.VALUE_TYPE
+        
+        if value_type == ValueType.FLAG:
+            return self.writer.write_flag(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        elif value_type == ValueType.STRING:
+            return self.writer.write_string(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                value=str(result.value),
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        elif value_type == ValueType.NUMERIC:
+            return self.writer.write_numeric(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                value=float(result.value),
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        elif value_type == ValueType.JSON:
+            return self.writer.write_json(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                value=result.value,
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        return False
+    
+    def _iter_prompt_responses(self) -> Iterator[PromptResponseData]:
+        """Iterate over prompt-responses with content, respecting annotation filters."""
+        # Base query uses the content view
+        query_parts = ["""
+            SELECT 
+                prc.prompt_response_id,
+                prc.dialogue_id,
+                prc.prompt_message_id,
+                prc.response_message_id,
+                prc.prompt_text,
+                prc.response_text,
+                prc.prompt_word_count,
+                prc.response_word_count,
+                prc.prompt_role,
+                prc.response_role,
+                prc.created_at
+            FROM derived.prompt_response_content_v prc
+        """]
+        
+        params = {}
+        join_idx = 0
+        
+        # Add REQUIRES_FLAGS joins (must have these flags)
+        for flag_key in self.REQUIRES_FLAGS:
+            alias = f"req_flag_{join_idx}"
+            query_parts.append(f"""
+                JOIN derived.prompt_response_annotations_flag {alias} ON 
+                    {alias}.entity_id = prc.prompt_response_id
+                    AND {alias}.annotation_key = :req_flag_key_{join_idx}
+            """)
+            params[f'req_flag_key_{join_idx}'] = flag_key
+            join_idx += 1
+        
+        # Add REQUIRES_STRINGS joins (must have these key+value pairs)
+        for key, value in self.REQUIRES_STRINGS:
+            alias = f"req_str_{join_idx}"
+            query_parts.append(f"""
+                JOIN derived.prompt_response_annotations_string {alias} ON 
+                    {alias}.entity_id = prc.prompt_response_id
+                    AND {alias}.annotation_key = :req_str_key_{join_idx}
+                    AND {alias}.annotation_value = :req_str_val_{join_idx}
+            """)
+            params[f'req_str_key_{join_idx}'] = key
+            params[f'req_str_val_{join_idx}'] = value
+            join_idx += 1
+        
+        # Add SKIP_IF_FLAGS exclusions
+        skip_where_clauses = []
+        for flag_key in self.SKIP_IF_FLAGS:
+            alias = f"skip_flag_{join_idx}"
+            query_parts.append(f"""
+                LEFT JOIN derived.prompt_response_annotations_flag {alias} ON 
+                    {alias}.entity_id = prc.prompt_response_id
+                    AND {alias}.annotation_key = :skip_flag_key_{join_idx}
+            """)
+            params[f'skip_flag_key_{join_idx}'] = flag_key
+            skip_where_clauses.append(f"{alias}.id IS NULL")
+            join_idx += 1
+        
+        # Add SKIP_IF_STRINGS exclusions
+        for skip_spec in self.SKIP_IF_STRINGS:
+            alias = f"skip_str_{join_idx}"
+            if len(skip_spec) == 1:
+                # Skip if key exists (any value)
+                query_parts.append(f"""
+                    LEFT JOIN derived.prompt_response_annotations_string {alias} ON 
+                        {alias}.entity_id = prc.prompt_response_id
+                        AND {alias}.annotation_key = :skip_str_key_{join_idx}
+                """)
+                params[f'skip_str_key_{join_idx}'] = skip_spec[0]
+            else:
+                # Skip if key+value match
+                query_parts.append(f"""
+                    LEFT JOIN derived.prompt_response_annotations_string {alias} ON 
+                        {alias}.entity_id = prc.prompt_response_id
+                        AND {alias}.annotation_key = :skip_str_key_{join_idx}
+                        AND {alias}.annotation_value = :skip_str_val_{join_idx}
+                """)
+                params[f'skip_str_key_{join_idx}'] = skip_spec[0]
+                params[f'skip_str_val_{join_idx}'] = skip_spec[1]
+            skip_where_clauses.append(f"{alias}.id IS NULL")
+            join_idx += 1
+        
+        # WHERE clause for exclusions
+        if skip_where_clauses:
+            query_parts.append("WHERE " + " AND ".join(skip_where_clauses))
+        
+        query_parts.append("ORDER BY prc.created_at")
+        
+        query = text("\n".join(query_parts))
+        
+        for row in self.session.execute(query, params):
+            yield PromptResponseData(
+                prompt_response_id=row.prompt_response_id,
+                dialogue_id=row.dialogue_id,
+                prompt_message_id=row.prompt_message_id,
+                response_message_id=row.response_message_id,
+                prompt_text=row.prompt_text,
+                response_text=row.response_text,
+                prompt_word_count=row.prompt_word_count,
+                response_word_count=row.response_word_count,
+                prompt_role=row.prompt_role,
+                response_role=row.response_role,
+                created_at=row.created_at,
+            )
+    
+    @abstractmethod
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        """
+        Analyze prompt-response pair and return annotations to create.
+        
+        Args:
+            data: PromptResponseData with texts and metadata
+            
+        Returns:
+            List of AnnotationResult objects (empty list if no match)
+        """
+        pass
+
+
+# ============================================================
+# Wiki Article Detection
+# ============================================================
+
+class WikiCandidateAnnotator(PromptResponseAnnotator):
+    """
+    Detect wiki-style article candidates.
+    
+    Looks for [[wiki links]] in assistant responses, which indicate
+    the response was likely formatted as a wiki article.
+    
+    Produces a STRING annotation: exchange_type = 'wiki_article'
+    """
+    
+    ANNOTATION_KEY = 'exchange_type'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 60
+    VERSION = '1.0'
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if data.response_role != 'assistant':
+            return []
+        
+        response = data.response_text or ''
+        
+        # Count wiki links
+        wiki_link_count = response.count('[[')
+        
+        if wiki_link_count >= 1:
+            # High confidence if multiple links
+            confidence = 0.95 if wiki_link_count >= 3 else 0.8
+            
+            results = [
+                # String annotation for exchange type
+                AnnotationResult(
+                    key='exchange_type',
+                    value='wiki_article',
+                    value_type=ValueType.STRING,
+                    confidence=confidence,
+                    reason='wiki_links_detected',
+                ),
+                # Numeric annotation for link count
+                AnnotationResult(
+                    key='wiki_link_count',
+                    value=wiki_link_count,
+                    value_type=ValueType.NUMERIC,
+                    confidence=1.0,
+                    reason='counted',
+                ),
+            ]
+            return results
+        
+        return []
+
+
+# ============================================================
+# Title Extraction
+# ============================================================
+
+class NaiveTitleAnnotator(PromptResponseAnnotator):
+    """
+    Extract title from first line of response.
+    
+    Looks for:
+    - Markdown headers: # Title
+    - Bold headers: **Title**
+    
+    Should run AFTER wiki candidate detection.
+    Only runs on wiki_article candidates.
+    
+    Produces a STRING annotation: proposed_title = '<extracted title>'
+    """
+    
+    ANNOTATION_KEY = 'proposed_title'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 50
+    VERSION = '1.0'
+    
+    # Only process wiki article candidates
+    REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if data.response_role != 'assistant':
+            return []
+        
+        response = data.response_text or ''
+        title, reason = self._extract_title(response)
+        
+        if title:
+            return [AnnotationResult(
+                key='proposed_title',
+                value=title,
+                value_type=ValueType.STRING,
+                confidence=0.8,
+                reason=reason,
+            )]
+        
+        return []
+    
+    def _extract_title(self, text: str) -> tuple[str | None, str | None]:
+        """Extract title from first line of text. Returns (title, reason)."""
+        lines = text.strip().split('\n')
+        if not lines:
+            return None, None
+        
+        first_line = lines[0].strip()
+        
+        # Markdown header: # Title or ## Title
+        if first_line.startswith('#'):
+            title = first_line.lstrip('#').strip()
+            if title:
+                return title, 'markdown_header'
+        
+        # Bold header: **Title**
+        if first_line.startswith('**') and first_line.endswith('**'):
+            title = first_line.strip('*').strip()
+            if title:
+                return title, 'bold_header'
+        
+        # Bold header with trailing content: **Title** - some subtitle
+        if first_line.startswith('**') and '**' in first_line[2:]:
+            end_idx = first_line.index('**', 2)
+            title = first_line[2:end_idx].strip()
+            if title:
+                return title, 'bold_header_with_suffix'
+        
+        return None, None
+
+
+# ============================================================
+# Code Detection
+# ============================================================
+
+import re
+
+
+class HasCodeAnnotator(PromptResponseAnnotator):
+    """
+    Detect if prompt-response pair involves code.
+    
+    Aggregates evidence from multiple sources:
+    - Code blocks (```)
+    - Script headers (shebang, #include)
+    - Function definitions
+    - Import statements
+    
+    Produces:
+    - has_code FLAG
+    - code_evidence STRING (multi-value)
+    """
+    
+    ANNOTATION_KEY = 'has_code'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 55
+    VERSION = '1.0'
+    
+    SKIP_IF_FLAGS = ['has_code']  # Skip if already annotated
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if data.response_role != 'assistant':
+            return []
+        
+        if not data.response_text:
+            return []
+        
+        results = []
+        evidence_types = set()
+        
+        # Check for code blocks
+        if '```' in data.response_text:
+            evidence_types.add('code_block')
+        
+        # Check for script headers
+        if re.search(r'^#!\s*/(?:usr/)?bin/', data.response_text, re.MULTILINE):
+            evidence_types.add('shebang')
+        if re.search(r'^#include\s*[<"]', data.response_text, re.MULTILINE):
+            evidence_types.add('c_include')
+        
+        # Check for function definitions
+        if re.search(r'\bdef\s+\w+\s*\(', data.response_text):
+            evidence_types.add('python_function')
+        if re.search(r'function\s+\w+\s*\(', data.response_text):
+            evidence_types.add('js_function')
+        if re.search(r'const\s+\w+\s*=\s*\([^)]*\)\s*=>', data.response_text):
+            evidence_types.add('arrow_function')
+        
+        # Check for import statements
+        if re.search(r'^(?:import|from)\s+\w+', data.response_text, re.MULTILINE):
+            evidence_types.add('python_import')
+        if re.search(r'^(?:const|let|var)\s+.*=\s*require\s*\(', data.response_text, re.MULTILINE):
+            evidence_types.add('js_require')
+        
+        if not evidence_types:
+            return []
+        
+        # Main flag with confidence based on evidence strength
+        strong_evidence = {'code_block', 'shebang', 'c_include'}
+        is_strong = bool(evidence_types & strong_evidence)
+        
+        results.append(AnnotationResult(
+            key='has_code',
+            value_type=ValueType.FLAG,
+            confidence=0.95 if is_strong else 0.75,
+            reason=','.join(sorted(evidence_types)),
+        ))
+        
+        # Evidence type annotations (multi-value)
+        for evidence in evidence_types:
+            results.append(AnnotationResult(
+                key='code_evidence',
+                value=evidence,
+                value_type=ValueType.STRING,
+            ))
+        
+        return results
+
+
+# ============================================================
+# LaTeX Detection
+# ============================================================
+
+class HasLatexAnnotator(PromptResponseAnnotator):
+    """
+    Detect if prompt-response pair contains LaTeX/math notation.
+    
+    Produces:
+    - has_latex FLAG
+    - latex_type STRING (multi-value: 'display', 'inline', 'commands')
+    """
+    
+    ANNOTATION_KEY = 'has_latex'
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 54
+    VERSION = '1.0'
+    
+    SKIP_IF_FLAGS = ['has_latex']
+    
+    # Patterns
+    DISPLAY_MATH = re.compile(r'\$\$.+?\$\$|\\\[.+?\\\]', re.DOTALL)
+    INLINE_MATH = re.compile(r'(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$)')
+    LATEX_COMMANDS = re.compile(
+        r'\\(?:frac|sum|int|prod|lim|sqrt|begin|end|alpha|beta|gamma|'
+        r'delta|epsilon|theta|lambda|sigma|omega|pi|infty|partial|nabla|'
+        r'mathbb|mathcal|mathbf|mathrm|text|left|right|cdot|times|div)'
+    )
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if data.response_role != 'assistant':
+            return []
+        
+        if not data.response_text:
+            return []
+        
+        results = []
+        latex_types = set()
+        
+        if self.DISPLAY_MATH.search(data.response_text):
+            latex_types.add('display')
+        
+        if self.INLINE_MATH.search(data.response_text):
+            latex_types.add('inline')
+        
+        if self.LATEX_COMMANDS.search(data.response_text):
+            latex_types.add('commands')
+        
+        if not latex_types:
+            return []
+        
+        # Main flag
+        results.append(AnnotationResult(
+            key='has_latex',
+            value_type=ValueType.FLAG,
+            confidence=0.95 if 'display' in latex_types else 0.8,
+            reason='latex_detected',
+        ))
+        
+        # Type annotations
+        for latex_type in latex_types:
+            results.append(AnnotationResult(
+                key='latex_type',
+                value=latex_type,
+                value_type=ValueType.STRING,
+            ))
+        
+        return results
+
+
+# ============================================================
+# Annotator Registry
+# ============================================================
+
+PROMPT_RESPONSE_ANNOTATORS = [
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
+    HasCodeAnnotator,
+    HasLatexAnnotator,
+]
+
+
+def run_prompt_response_annotators(session: Session) -> dict[str, int]:
+    """
+    Run all prompt-response annotators in priority order.
+    
+    Returns dict mapping annotator name to annotation count.
+    """
+    # Sort by priority (descending)
+    sorted_annotators = sorted(
+        PROMPT_RESPONSE_ANNOTATORS,
+        key=lambda cls: cls.PRIORITY,
+        reverse=True,
+    )
+    
+    results = {}
+    for annotator_cls in sorted_annotators:
+        annotator = annotator_cls(session)
+        count = annotator.compute()
+        results[annotator_cls.__name__] = count
+    
+    session.commit()
+    return results
+
+
+
+---
+File: llm_archive/builders/__init__.py
+---
+# llm_archive/builders/__init__.py
+"""Derived data builders."""
+
+from llm_archive.builders.prompt_response import PromptResponseBuilder
+
+__all__ = ["PromptResponseBuilder"]
+
+
+
+---
+File: llm_archive/builders/prompt_response.py
+---
+# llm_archive/builders/prompt_response.py
+"""Prompt-response pair building - direct message associations without tree dependency."""
+
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from loguru import logger
+
+from llm_archive.models import Dialogue, Message, ContentPart
+
+
+class PromptResponseBuilder:
+    """
+    Builds prompt-response pairs directly from messages.
+    
+    Unlike ExchangeBuilder (which depends on tree analysis), this uses:
+    1. parent_id relationship when available (ChatGPT)
+    2. Sequential fallback (Claude, or when parent_id missing)
+    
+    Result: Each non-user message is paired with its eliciting user prompt.
+    """
+    
+    def __init__(self, session: Session):
+        self.session = session
+    
+    def build_all(self) -> dict[str, int]:
+        """Build prompt-response pairs for all dialogues."""
+        dialogues = self.session.query(Dialogue).all()
+        
+        counts = {
+            'dialogues': 0,
+            'prompt_responses': 0,
+            'content_records': 0,
+        }
+        
+        for dialogue in dialogues:
+            try:
+                result = self.build_for_dialogue(dialogue.id)
+                counts['dialogues'] += 1
+                counts['prompt_responses'] += result['prompt_responses']
+                counts['content_records'] += result['content_records']
+            except Exception as e:
+                logger.error(f"Failed to build prompt-responses for {dialogue.id}: {e}")
+                self.session.rollback()
+        
+        self.session.commit()
+        logger.info(f"Prompt-response building complete: {counts}")
+        return counts
+    
+    def build_for_dialogue(self, dialogue_id: UUID) -> dict[str, int]:
+        """Build prompt-response pairs for a single dialogue."""
+        # Clear existing data
+        self._clear_existing(dialogue_id)
+        
+        # Get messages ordered by created_at (with fallback to id for stable ordering)
+        messages = (
+            self.session.query(Message)
+            .filter(Message.dialogue_id == dialogue_id)
+            .filter(Message.deleted_at.is_(None))
+            .order_by(Message.created_at.nulls_first(), Message.id)
+            .all()
+        )
+        
+        if not messages:
+            return {'prompt_responses': 0, 'content_records': 0}
+        
+        # Build lookup by ID
+        msg_by_id = {m.id: m for m in messages}
+        position_by_id = {m.id: i for i, m in enumerate(messages)}
+        
+        # Track most recent user message for sequential fallback
+        last_user_msg: Message | None = None
+        
+        pr_count = 0
+        for msg in messages:
+            if msg.role == 'user':
+                last_user_msg = msg
+                continue
+            
+            # Find the prompt for this response
+            prompt_msg = self._find_prompt(msg, msg_by_id, last_user_msg)
+            
+            if prompt_msg is None:
+                # Response without a prompt (e.g., system greeting)
+                continue
+            
+            # Create prompt-response record
+            pr_id = self._create_prompt_response(
+                dialogue_id=dialogue_id,
+                prompt_msg=prompt_msg,
+                response_msg=msg,
+                prompt_position=position_by_id[prompt_msg.id],
+                response_position=position_by_id[msg.id],
+            )
+            pr_count += 1
+        
+        # Build content records
+        content_count = self._build_content(dialogue_id)
+        
+        self.session.flush()
+        
+        return {
+            'prompt_responses': pr_count,
+            'content_records': content_count,
+        }
+    
+    def _find_prompt(
+        self,
+        response_msg: Message,
+        msg_by_id: dict[UUID, Message],
+        last_user_msg: Message | None,
+    ) -> Message | None:
+        """Find the user prompt that elicited this response."""
+        # Strategy 1: Use parent_id if it points to a user message
+        if response_msg.parent_id and response_msg.parent_id in msg_by_id:
+            parent = msg_by_id[response_msg.parent_id]
+            if parent.role == 'user':
+                return parent
+            # Parent exists but isn't user - walk up to find user
+            # (handles cases like assistant -> tool_result -> assistant)
+            current = parent
+            visited = {response_msg.id}
+            while current and current.id not in visited:
+                visited.add(current.id)
+                if current.role == 'user':
+                    return current
+                if current.parent_id and current.parent_id in msg_by_id:
+                    current = msg_by_id[current.parent_id]
+                else:
+                    break
+        
+        # Strategy 2: Fall back to most recent user message
+        return last_user_msg
+    
+    def _create_prompt_response(
+        self,
+        dialogue_id: UUID,
+        prompt_msg: Message,
+        response_msg: Message,
+        prompt_position: int,
+        response_position: int,
+    ) -> UUID:
+        """Insert a prompt_response record and return its ID."""
+        result = self.session.execute(
+            text("""
+                INSERT INTO derived.prompt_responses 
+                    (dialogue_id, prompt_message_id, response_message_id, 
+                     prompt_position, response_position, prompt_role, response_role)
+                VALUES 
+                    (:dialogue_id, :prompt_id, :response_id,
+                     :prompt_pos, :response_pos, :prompt_role, :response_role)
+                RETURNING id
+            """),
+            {
+                'dialogue_id': dialogue_id,
+                'prompt_id': prompt_msg.id,
+                'response_id': response_msg.id,
+                'prompt_pos': prompt_position,
+                'response_pos': response_position,
+                'prompt_role': prompt_msg.role,
+                'response_role': response_msg.role,
+            }
+        )
+        return result.scalar_one()
+    
+    def _build_content(self, dialogue_id: UUID) -> int:
+        """Build content records for all prompt-responses in a dialogue."""
+        # Use SQL to aggregate text content efficiently
+        result = self.session.execute(
+            text("""
+                INSERT INTO derived.prompt_response_content 
+                    (prompt_response_id, prompt_text, response_text, 
+                     prompt_word_count, response_word_count)
+                SELECT 
+                    pr.id,
+                    prompt_content.text_content as prompt_text,
+                    response_content.text_content as response_text,
+                    COALESCE(array_length(regexp_split_to_array(prompt_content.text_content, '\\s+'), 1), 0),
+                    COALESCE(array_length(regexp_split_to_array(response_content.text_content, '\\s+'), 1), 0)
+                FROM derived.prompt_responses pr
+                LEFT JOIN LATERAL (
+                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.sequence) as text_content
+                    FROM raw.content_parts cp
+                    WHERE cp.message_id = pr.prompt_message_id
+                      AND cp.part_type = 'text'
+                ) prompt_content ON true
+                LEFT JOIN LATERAL (
+                    SELECT string_agg(cp.text_content, E'\\n' ORDER BY cp.sequence) as text_content
+                    FROM raw.content_parts cp
+                    WHERE cp.message_id = pr.response_message_id
+                      AND cp.part_type = 'text'
+                ) response_content ON true
+                WHERE pr.dialogue_id = :dialogue_id
+                ON CONFLICT (prompt_response_id) DO UPDATE SET
+                    prompt_text = EXCLUDED.prompt_text,
+                    response_text = EXCLUDED.response_text,
+                    prompt_word_count = EXCLUDED.prompt_word_count,
+                    response_word_count = EXCLUDED.response_word_count
+            """),
+            {'dialogue_id': dialogue_id}
+        )
+        return result.rowcount
+    
+    def _clear_existing(self, dialogue_id: UUID):
+        """Clear existing prompt-response data for a dialogue."""
+        self.session.execute(
+            text("""
+                DELETE FROM derived.prompt_responses 
+                WHERE dialogue_id = :dialogue_id
+            """),
+            {'dialogue_id': dialogue_id}
+        )
+
+
+
+---
+File: llm_archive/cli.py
+---
+# llm_archive/cli.py
+"""Command-line interface for LLM archive operations."""
+
+import json
+from pathlib import Path
+
+import fire
+from loguru import logger
+
+from llm_archive.config import DATABASE_URL
+from llm_archive.db import get_session, init_schema, reset_schema
+from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
+from llm_archive.builders import PromptResponseBuilder
+from llm_archive.annotators import (
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
+)
+
+
+class CLI:
+    """LLM Archive - Conversation ingestion and analysis."""
+    
+    def __init__(self, db_url: str | None = None):
+        self.db_url = db_url or DATABASE_URL
+    
+    # ================================================================
+    # Schema Management
+    # ================================================================
+    
+    def init(self, schema_dir: str = "schema"):
+        """Initialize database schema."""
+        init_schema(self.db_url, Path(schema_dir))
+        logger.info("Schema initialized")
+    
+    def reset(self, confirm: bool = False, schema_dir: str = "schema"):
+        """Reset database (drops and recreates schema)."""
+        if not confirm:
+            logger.warning("Pass --confirm to reset database")
+            return
+        reset_schema(self.db_url, Path(schema_dir))
+        logger.info("Database reset")
+    
+    # ================================================================
+    # Import
+    # ================================================================
+    
+    def import_chatgpt(
+        self, 
+        path: str,
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        """Import ChatGPT conversations.json export.
+        
+        Args:
+            path: Path to conversations.json file
+            assume_immutable: Skip content hash checks for existing messages.
+                Faster, but won't detect in-place message edits. Use when
+                the provider treats messages as immutable (edits create new IDs).
+            incremental: Don't soft-delete messages missing from this import.
+                Use when importing partial/delta exports.
+        """
+        data = self._load_json(path)
+        
+        with get_session(self.db_url) as session:
+            extractor = ChatGPTExtractor(
+                session,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
+            counts = extractor.extract_all(data)
+        
+        return counts
+    
+    def import_claude(
+        self, 
+        path: str,
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        """Import Claude conversations.json export.
+        
+        Args:
+            path: Path to conversations.json file
+            assume_immutable: Skip content hash checks for existing messages.
+                Faster, but won't detect in-place message edits. Use when
+                the provider treats messages as immutable (edits create new IDs).
+            incremental: Don't soft-delete messages missing from this import.
+                Use when importing partial/delta exports.
+        """
+        data = self._load_json(path)
+        
+        with get_session(self.db_url) as session:
+            extractor = ClaudeExtractor(
+                session,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
+            counts = extractor.extract_all(data)
+        
+        return counts
+    
+    def import_all(
+        self,
+        chatgpt_path: str | None = None,
+        claude_path: str | None = None,
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        """Import from multiple sources.
+        
+        Args:
+            chatgpt_path: Path to ChatGPT conversations.json
+            claude_path: Path to Claude conversations.json
+            assume_immutable: Skip content hash checks for existing messages
+            incremental: Don't soft-delete messages missing from this import
+        """
+        results = {}
+        
+        if chatgpt_path:
+            results['chatgpt'] = self.import_chatgpt(
+                chatgpt_path,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
+        
+        if claude_path:
+            results['claude'] = self.import_claude(
+                claude_path,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
+        
+        return results
+    
+    # ================================================================
+    # Build Derived Structures
+    # ================================================================
+    
+
+    def build_prompt_responses(self):
+        """Build prompt-response pairs (no tree dependency)."""
+        with get_session(self.db_url) as session:
+            builder = PromptResponseBuilder(session)
+            counts = builder.build_all()
+        return counts
+
+    def build_all(self):
+        """Build all derived structures."""
+        results = {}
+        results['prompt-responses'] = self.build_prompt_responses()
+        return results
+    
+    # ================================================================
+    # Annotations
+    # ================================================================
+    
+    def annotate(self):
+        """Run all annotators."""
+        results = {}
+        with get_session(self.db_url) as session:
+            results['wiki candidates'] = WikiCandidateAnnotator(session).compute()
+            results['naive titles'] = NaiveTitleAnnotator(session).compute()
+        
+        return results
+    
+    # ================================================================
+    # Analysis
+    # ================================================================
+    
+    def stats(self):
+        """Show database statistics."""
+        from sqlalchemy import text
+        
+        with get_session(self.db_url) as session:
+            stats = {}
+            
+            # Raw counts
+            stats['dialogues'] = session.execute(
+                text("SELECT COUNT(*) FROM raw.dialogues")
+            ).scalar()
+            
+            stats['messages'] = session.execute(
+                text("SELECT COUNT(*) FROM raw.messages")
+            ).scalar()
+            
+            stats['content_parts'] = session.execute(
+                text("SELECT COUNT(*) FROM raw.content_parts")
+            ).scalar()
+            
+            # By source
+            sources = session.execute(
+                text("SELECT source, COUNT(*) FROM raw.dialogues GROUP BY source")
+            ).fetchall()
+            stats['by_source'] = {s: c for s, c in sources}
+            
+            stats['annotations'] = session.execute(
+                text("SELECT COUNT(*) FROM derived.annotations WHERE superseded_at IS NULL")
+            ).scalar()
+            
+        
+        # Print nicely
+        print("\n=== LLM Archive Statistics ===\n")
+        print("Raw Data:")
+        print(f"  Dialogues: {stats['dialogues']}")
+        print(f"  Messages: {stats['messages']}")
+        print(f"  Content Parts: {stats['content_parts']}")
+        print(f"  By Source: {stats['by_source']}")
+        
+        print("\nDerived Data:")
+        print(f"  Annotations: {stats['annotations']}")
+        
+        return stats
+    
+    # ================================================================
+    # Full Pipeline
+    # ================================================================
+    
+    def run(
+        self,
+        chatgpt_path: str | None = None,
+        claude_path: str | None = None,
+        init_db: bool = False,
+        schema_dir: str = "schema",
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        """Run full pipeline: import, build, annotate.
+        
+        Args:
+            chatgpt_path: Path to ChatGPT conversations.json
+            claude_path: Path to Claude conversations.json
+            init_db: Initialize database schema before import
+            schema_dir: Directory containing schema files
+            assume_immutable: Skip content hash checks for existing messages
+            incremental: Don't soft-delete messages missing from this import
+        """
+        results = {}
+        
+        if init_db:
+            self.init(schema_dir)
+        
+        # Import
+        if chatgpt_path or claude_path:
+            results['import'] = self.import_all(
+                chatgpt_path=chatgpt_path,
+                claude_path=claude_path,
+                assume_immutable=assume_immutable,
+                incremental=incremental,
+            )
+        
+        # Build
+        results['build'] = self.build_all()
+        
+        # Annotate
+        results['annotate'] = self.annotate()
+        
+        # Stats
+        self.stats()
+        
+        return results
+    
+    # ================================================================
+    # Helpers
+    # ================================================================
+    
+    def _load_json(self, path: str) -> list[dict]:
+        """Load JSON file."""
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        
+        logger.info(f"Loading {path}")
+        with p.open() as f:
+            data = json.load(f)
+        
+        if not isinstance(data, list):
+            raise ValueError("Expected JSON array")
+        
+        logger.info(f"Loaded {len(data)} items")
+        return data
+
+
+def main():
+    """Entry point."""
+    fire.Fire(CLI)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+---
+File: llm_archive/config.py
+---
+# llm_archive/config.py
+"""Configuration management via environment variables."""
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from project root
+_env_path = Path(__file__).parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
+
+
+def get_database_url() -> str:
+    """Construct database URL from environment variables."""
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "llm_archive")
+    user = os.getenv("POSTGRES_USER", "postgres")
+    password = os.getenv("POSTGRES_PASSWORD", "postgres")
+    
+    return f"postgresql://{user}:{password}@{host}:{port}/{db}"
+
+
+# Default URL for imports
+DATABASE_URL = get_database_url()
+
+
+---
+File: llm_archive/db.py
+---
+# llm_archive/db.py
+"""Database connection and session management."""
+
+from contextlib import contextmanager
+from pathlib import Path
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker, Session
+from loguru import logger
+
+
+def get_engine(db_url: str):
+    """Create database engine."""
+    return create_engine(db_url, echo=False)
+
+
+def get_session_factory(db_url: str) -> sessionmaker:
+    """Create a session factory."""
+    engine = get_engine(db_url)
+    return sessionmaker(bind=engine)
+
+
+@contextmanager
+def get_session(db_url: str):
+    """Context manager for database sessions."""
+    factory = get_session_factory(db_url)
+    session = factory()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def init_schema(db_url: str, schema_dir: Path | str):
+    """Initialize database schema from SQL files."""
+    schema_dir = Path(schema_dir)
+    engine = get_engine(db_url)
+    
+    sql_files = sorted(schema_dir.glob("*.sql"))
+    
+    if not sql_files:
+        logger.warning(f"No SQL files found in {schema_dir}")
+        return
+    
+    with engine.connect() as conn:
+        for sql_file in sql_files:
+            logger.info(f"Executing {sql_file.name}")
+            sql = sql_file.read_text()
+            
+            statements = [s.strip() for s in sql.split(';') if s.strip()]
+            for stmt in statements:
+                try:
+                    conn.execute(text(stmt))
+                except Exception as e:
+                    logger.debug(f"Statement note: {e}")
+            
+            conn.commit()
+    
+    logger.info("Schema initialization complete")
+
+
+def reset_schema(db_url: str, schema_dir: Path | str | None = None):
+    """Drop and recreate schemas (destructive!)."""
+    engine = get_engine(db_url)
+    
+    with engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
+        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
+        conn.commit()
+    
+    logger.info("Schemas dropped")
+    
+    if schema_dir:
+        init_schema(db_url, schema_dir)
+
+
+---
+File: llm_archive/extractors/__init__.py
+---
+# llm_archive/extractors/__init__.py
+"""Source-specific extractors for importing dialogue data."""
+
+from llm_archive.extractors.base import BaseExtractor, parse_timestamp, normalize_role
+from llm_archive.extractors.chatgpt import ChatGPTExtractor
+from llm_archive.extractors.claude import ClaudeExtractor
+
+__all__ = [
+    "BaseExtractor",
+    "parse_timestamp",
+    "normalize_role",
+    "ChatGPTExtractor",
+    "ClaudeExtractor",
+]
+
+
+---
+File: llm_archive/extractors/base.py
+---
+# llm_archive/extractors/base.py
+"""Shared extraction utilities and base classes."""
+
+import hashlib
+import json
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+from loguru import logger
+
+from llm_archive.models import Dialogue, Message, ContentPart
+
+
+def parse_timestamp(value: int | float | str | None) -> datetime | None:
+    """
+    Parse timestamp from various formats to timezone-aware datetime.
+    
+    Handles:
+    - Epoch floats/ints (ChatGPT)
+    - ISO 8601 strings (Claude)
+    """
+    if value is None:
+        return None
+    
+    if isinstance(value, str):
+        # ISO 8601 format
+        try:
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            return None
+    
+    if isinstance(value, (int, float)):
+        # Epoch seconds
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (ValueError, OSError):
+            return None
+    
+    return None
+
+
+def normalize_role(role: str, source: str) -> str:
+    """
+    Normalize role/sender to standard vocabulary.
+    
+    Standard roles: 'user', 'assistant', 'system', 'tool'
+    """
+    if role is None:
+        return 'unknown'
+    
+    role_lower = role.lower()
+    
+    # Claude uses 'human' instead of 'user'
+    if role_lower == 'human':
+        return 'user'
+    
+    return role_lower
+
+
+def safe_get(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    """Safely traverse nested dict."""
+    current = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key, default)
+        if current is None:
+            return default
+    return current
+
+
+def compute_content_hash(source_json: dict | list | str) -> str:
+    """Compute a stable hash of message content for change detection."""
+    # Serialize to JSON with sorted keys for stability
+    if isinstance(source_json, str):
+        content = source_json
+    else:
+        content = json.dumps(source_json, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(content.encode()).hexdigest()
+
+
+class BaseExtractor(ABC):
+    """
+    Base class for source extractors.
+    
+    Supports idempotent ingestion with incremental updates:
+    - Skip dialogues that haven't changed (by updated_at timestamp)
+    - Preserve message UUIDs for unchanged messages
+    - Soft-delete messages removed from source (unless incremental=True)
+    - Only rebuild content_parts for actually changed messages
+    
+    Args:
+        session: SQLAlchemy session
+        assume_immutable: If True, assume message content never changes once created.
+            This skips content hash comparison for existing messages, which is faster
+            but won't detect in-place edits. Use for providers where edits create new
+            message UUIDs rather than modifying existing ones. Default: False.
+        incremental: If True, treat the import as a delta/partial update. Messages
+            not present in the current import will NOT be soft-deleted. Use when
+            importing partial exports or streaming updates. Default: False.
+    """
+    
+    SOURCE_ID: str = None  # Override in subclass
+    
+    def __init__(
+        self, 
+        session: Session, 
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        self.session = session
+        self.assume_immutable = assume_immutable
+        self.incremental = incremental
+        self._message_id_map: dict[str, UUID] = {}  # source_id -> native UUID
+        self.counts: dict[str, int] = {}  # Populated by extract_all
+    
+    def _increment_count(self, key: str, amount: int = 1):
+        """Safely increment a count (no-op if counts not initialized)."""
+        if key in self.counts:
+            self.counts[key] += amount
+    
+    @abstractmethod
+    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+        """
+        Extract a single dialogue and all its contents.
+        
+        Returns:
+            'new' - new dialogue created
+            'updated' - existing dialogue updated  
+            'skipped' - existing dialogue unchanged
+            None - extraction failed
+        """
+        pass
+    
+    def extract_all(self, data: list[dict[str, Any]]) -> dict[str, int]:
+        """Extract all dialogues from a data list."""
+        self.counts = {
+            'dialogues_new': 0,
+            'dialogues_updated': 0,
+            'dialogues_skipped': 0,
+            'messages_new': 0,
+            'messages_updated': 0,
+            'messages_unchanged': 0,
+            'messages_restored': 0,
+            'messages_soft_deleted': 0,
+            'content_parts': 0,
+            'failed': 0,
+        }
+        
+        for i, raw in enumerate(data):
+            try:
+                result = self.extract_dialogue(raw)
+                if result == 'new':
+                    self.counts['dialogues_new'] += 1
+                elif result == 'updated':
+                    self.counts['dialogues_updated'] += 1
+                elif result == 'skipped':
+                    self.counts['dialogues_skipped'] += 1
+                elif result is None:
+                    self.counts['failed'] += 1
+            except Exception as e:
+                logger.error(f"Failed to extract dialogue {i}: {e}")
+                self.counts['failed'] += 1
+                self.session.rollback()
+        
+        self.session.commit()
+        total = self.counts['dialogues_new'] + self.counts['dialogues_updated']
+        logger.info(f"{self.SOURCE_ID} extraction complete: {total} processed ({self.counts})")
+        return self.counts
+    
+    def get_existing_dialogue(self, source_id: str) -> Dialogue | None:
+        """Check if dialogue already exists."""
+        return (
+            self.session.query(Dialogue)
+            .filter(Dialogue.source == self.SOURCE_ID)
+            .filter(Dialogue.source_id == source_id)
+            .first()
+        )
+    
+    def get_existing_messages(self, dialogue_id: UUID) -> dict[str, Message]:
+        """Get all existing messages for a dialogue, keyed by source_id."""
+        messages = (
+            self.session.query(Message)
+            .filter(Message.dialogue_id == dialogue_id)
+            .all()
+        )
+        return {m.source_id: m for m in messages}
+    
+    def should_update(self, existing: Dialogue, new_updated_at: datetime | None) -> bool:
+        """Determine if existing dialogue should be updated."""
+        if new_updated_at is None:
+            return False
+        if existing.updated_at is None:
+            return True
+        return new_updated_at > existing.updated_at
+    
+    def register_message_id(self, source_id: str, native_id: UUID):
+        """Register a mapping from source message ID to native UUID."""
+        self._message_id_map[source_id] = native_id
+    
+    def resolve_message_id(self, source_id: str | None) -> UUID | None:
+        """Resolve a source message ID to native UUID."""
+        if source_id is None:
+            return None
+        return self._message_id_map.get(source_id)
+    
+    def _delete_message_content(self, message_id: UUID):
+        """Delete content parts and related data for a message."""
+        # Content parts cascade delete citations
+        self.session.query(ContentPart).filter(
+            ContentPart.message_id == message_id
+        ).delete()
+    
+    def _soft_delete_messages(self, messages: list[Message]) -> int:
+        """Soft delete messages that are no longer in source."""
+        now = datetime.now(timezone.utc)
+        count = 0
+        for msg in messages:
+            if msg.deleted_at is None:
+                msg.deleted_at = now
+                count += 1
+        return count
+    
+    def _restore_message(self, message: Message):
+        """Restore a soft-deleted message."""
+        message.deleted_at = None
+
+
+---
+File: llm_archive/extractors/chatgpt.py
+---
+# llm_archive/extractors/chatgpt.py
+"""ChatGPT conversation extractor."""
+
+from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+from loguru import logger
+
+from llm_archive.models import (
+    Dialogue, Message, ContentPart, Citation, Attachment,
+    ChatGPTMessageMeta, ChatGPTSearchGroup, ChatGPTSearchEntry,
+    ChatGPTCodeExecution, ChatGPTCodeOutput, ChatGPTDalleGeneration,
+    ChatGPTCanvasDoc,
+)
+from llm_archive.extractors.base import (
+    BaseExtractor, parse_timestamp, normalize_role, safe_get, compute_content_hash
+)
+from llm_archive.annotations.core import AnnotationWriter, EntityType
+
+
+class ChatGPTExtractor(BaseExtractor):
+    """Extracts ChatGPT conversations into the raw schema."""
+    
+    SOURCE_ID = 'chatgpt'
+    
+    def __init__(
+        self, 
+        session: Session, 
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        super().__init__(session, assume_immutable=assume_immutable, incremental=incremental)
+        self.annotation_writer = AnnotationWriter(session)
+    
+    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+        """
+        Extract a complete ChatGPT conversation with incremental updates.
+        
+        Returns:
+            'new' - new dialogue created
+            'updated' - existing dialogue updated
+            'skipped' - existing dialogue unchanged
+            None - extraction failed
+        """
+        source_id = raw.get('conversation_id') or raw.get('id')
+        if not source_id:
+            logger.warning("Conversation missing ID, skipping")
+            return None
+        
+        updated_at = parse_timestamp(raw.get('update_time'))
+        
+        # Check for existing dialogue
+        existing = self.get_existing_dialogue(source_id)
+        
+        if existing:
+            if self.should_update(existing, updated_at):
+                # Update existing dialogue metadata
+                logger.debug(f"Updating dialogue {source_id}")
+                existing.title = raw.get('title')
+                existing.updated_at = updated_at
+                existing.source_json = raw
+                dialogue_id = existing.id
+                
+                # Incremental message sync
+                self._message_id_map = {}
+                mapping = raw.get('mapping', {})
+                self._sync_messages(dialogue_id, mapping)
+                
+                return 'updated'
+            else:
+                # Skip - no changes
+                logger.debug(f"Skipping unchanged dialogue {source_id}")
+                return 'skipped'
+        else:
+            # Create new dialogue
+            dialogue = Dialogue(
+                source=self.SOURCE_ID,
+                source_id=source_id,
+                title=raw.get('title'),
+                created_at=parse_timestamp(raw.get('create_time')),
+                updated_at=updated_at,
+                source_json=raw,
+            )
+            self.session.add(dialogue)
+            self.session.flush()
+            dialogue_id = dialogue.id
+            
+            # Clear message ID map and extract all messages
+            self._message_id_map = {}
+            mapping = raw.get('mapping', {})
+            self._extract_messages_new(dialogue_id, mapping)
+            
+            return 'new'
+    
+    def _sync_messages(self, dialogue_id: UUID, mapping: dict[str, Any]):
+        """
+        Incrementally sync messages - preserve UUIDs for unchanged messages.
+        
+        This method:
+        1. Compares existing messages with new data (unless assume_immutable=True)
+        2. Updates changed messages in place
+        3. Creates new messages
+        4. Soft-deletes messages removed from source
+        
+        When assume_immutable=True, existing messages are assumed unchanged and
+        skipped without hash comparison. This is faster but won't detect edits.
+        """
+        existing_messages = self.get_existing_messages(dialogue_id)
+        seen_source_ids = set()
+        
+        # First pass: collect message data
+        message_data = {}
+        for node_id, node in mapping.items():
+            msg_data = node.get('message')
+            if not msg_data:
+                continue
+            
+            msg_source_id = msg_data.get('id')
+            if not msg_source_id:
+                continue
+            
+            message_data[msg_source_id] = {
+                'node': node,
+                'msg_data': msg_data,
+            }
+            seen_source_ids.add(msg_source_id)
+        
+        # Second pass: sync each message
+        for source_id, data in message_data.items():
+            msg_data = data['msg_data']
+            
+            if source_id in existing_messages:
+                existing = existing_messages[source_id]
+                
+                if self.assume_immutable:
+                    # Fast path: assume content unchanged, just restore if deleted
+                    if existing.deleted_at is not None:
+                        existing.deleted_at = None
+                        logger.debug(f"Restored message {source_id}")
+                        self._increment_count('messages_restored')
+                    else:
+                        self._increment_count('messages_unchanged')
+                    self.register_message_id(source_id, existing.id)
+                else:
+                    # Full check: compute hash and compare
+                    new_hash = compute_content_hash(msg_data)
+                    
+                    if existing.content_hash == new_hash and existing.deleted_at is None:
+                        # Unchanged - just register the ID mapping
+                        self.register_message_id(source_id, existing.id)
+                        self._increment_count('messages_unchanged')
+                    else:
+                        # Changed or was soft-deleted - update in place
+                        was_deleted = existing.deleted_at is not None
+                        self._update_message(existing, msg_data, new_hash)
+                        self.register_message_id(source_id, existing.id)
+                        if was_deleted:
+                            self._increment_count('messages_restored')
+                        else:
+                            self._increment_count('messages_updated')
+            else:
+                # New message - always compute hash for storage
+                new_hash = compute_content_hash(msg_data)
+                msg_id = self._create_message(dialogue_id, msg_data, new_hash)
+                if msg_id:
+                    self.register_message_id(source_id, msg_id)
+                    self._increment_count('messages_new')
+        
+        # Third pass: update parent links (now that all messages exist)
+        for source_id, data in message_data.items():
+            node = data['node']
+            parent_node_id = node.get('parent')
+            
+            # Look up parent node and get its message ID
+            if parent_node_id and parent_node_id in mapping:
+                parent_node = mapping[parent_node_id]
+                parent_msg_data = parent_node.get('message')
+                
+                if parent_msg_data:
+                    parent_source_id = parent_msg_data.get('id')
+                    
+                    native_id = self.resolve_message_id(source_id)
+                    parent_native_id = self.resolve_message_id(parent_source_id)
+                    
+                    if native_id:
+                        msg = self.session.get(Message, native_id)
+                        if msg and msg.parent_id != parent_native_id:
+                            msg.parent_id = parent_native_id
+        
+        # Fourth pass: soft-delete messages no longer in source (unless incremental mode)
+        if not self.incremental:
+            for source_id, existing in existing_messages.items():
+                if source_id not in seen_source_ids and existing.deleted_at is None:
+                    existing.deleted_at = datetime.now(timezone.utc)
+                    logger.debug(f"Soft-deleted message {source_id}")
+                    self._increment_count('messages_soft_deleted')
+    
+    def _update_message(self, message: Message, msg_data: dict[str, Any], content_hash: str):
+        """Update an existing message in place."""
+        # Update message fields
+        message.role = normalize_role(safe_get(msg_data, 'author', 'role'), self.SOURCE_ID)
+        message.author_id = safe_get(msg_data, 'author', 'metadata', 'user_id')
+        message.author_name = safe_get(msg_data, 'author', 'name')
+        message.created_at = parse_timestamp(msg_data.get('create_time'))
+        message.updated_at = parse_timestamp(msg_data.get('update_time'))
+        message.content_hash = content_hash
+        message.source_json = msg_data
+        
+        # Restore if was soft-deleted
+        if message.deleted_at is not None:
+            message.deleted_at = None
+            logger.debug(f"Restored message {message.source_id}")
+        
+        # Delete related data before re-extracting
+        self._delete_message_content(message.id)
+        self._delete_message_metadata(message.id)
+        self._delete_message_annotations(message.id)
+        
+        # Re-extract related data
+        self._extract_content_parts(message.id, msg_data)
+        self._extract_attachments(message.id, msg_data)
+        self._extract_chatgpt_meta(message.id, msg_data)
+    
+    def _delete_message_metadata(self, message_id: UUID):
+        """Delete ChatGPT-specific metadata for a message."""
+        self.session.query(ChatGPTMessageMeta).filter(
+            ChatGPTMessageMeta.message_id == message_id
+        ).delete()
+        self.session.query(Attachment).filter(
+            Attachment.message_id == message_id
+        ).delete()
+    
+    def _delete_message_annotations(self, message_id: UUID):
+        """Delete annotations for a message (for re-extraction)."""
+        # Delete from all message annotation tables
+        for value_type in ['flag', 'string', 'numeric', 'json']:
+            self.session.execute(
+                text(f"DELETE FROM derived.message_annotations_{value_type} WHERE entity_id = :id"),
+                {'id': message_id}
+            )
+    
+    def _create_message(self, dialogue_id: UUID, msg_data: dict[str, Any], content_hash: str) -> UUID | None:
+        """Create a new message."""
+        source_id = msg_data.get('id')
+        if not source_id:
+            return None
+        
+        message = Message(
+            dialogue_id=dialogue_id,
+            source_id=source_id,
+            parent_id=None,  # Set in later pass
+            role=normalize_role(safe_get(msg_data, 'author', 'role'), self.SOURCE_ID),
+            author_id=safe_get(msg_data, 'author', 'metadata', 'user_id'),
+            author_name=safe_get(msg_data, 'author', 'name'),
+            created_at=parse_timestamp(msg_data.get('create_time')),
+            updated_at=parse_timestamp(msg_data.get('update_time')),
+            content_hash=content_hash,
+            source_json=msg_data,
+        )
+        self.session.add(message)
+        self.session.flush()
+        
+        # Extract content parts and metadata
+        self._extract_content_parts(message.id, msg_data)
+        self._extract_attachments(message.id, msg_data)
+        self._extract_chatgpt_meta(message.id, msg_data)
+        
+        return message.id
+    
+    def _extract_messages_new(self, dialogue_id: UUID, mapping: dict[str, Any]):
+        """Extract all messages for a new dialogue."""
+        # First pass: create all messages without parent links
+        for node_id, node in mapping.items():
+            msg_data = node.get('message')
+            if not msg_data:
+                continue
+            
+            content_hash = compute_content_hash(msg_data)
+            msg_id = self._create_message(dialogue_id, msg_data, content_hash)
+            if msg_id:
+                self.register_message_id(msg_data.get('id'), msg_id)
+                self._increment_count('messages_new')
+        
+        # Second pass: set parent links
+        for node_id, node in mapping.items():
+            msg_data = node.get('message')
+            if not msg_data:
+                continue
+            
+            source_id = msg_data.get('id')
+            parent_node_id = node.get('parent')
+            
+            # Look up parent node and get its message ID
+            if parent_node_id and parent_node_id in mapping:
+                parent_node = mapping[parent_node_id]
+                parent_msg_data = parent_node.get('message')
+                
+                if parent_msg_data:
+                    parent_source_id = parent_msg_data.get('id')
+                    
+                    native_id = self.resolve_message_id(source_id)
+                    parent_native_id = self.resolve_message_id(parent_source_id)
+                    
+                    if native_id and parent_native_id:
+                        msg = self.session.get(Message, native_id)
+                        if msg:
+                            msg.parent_id = parent_native_id
+    
+    def _extract_content_parts(self, message_id: UUID, msg_data: dict[str, Any]):
+        """Extract content parts from a message."""
+        content = msg_data.get('content', {})
+        parts = content.get('parts', [])
+        
+        for seq, part in enumerate(parts):
+            part_info = self._classify_content_part(part)
+            
+            content_part = ContentPart(
+                message_id=message_id,
+                sequence=seq,
+                part_type=part_info.get('part_type', 'unknown'),
+                text_content=part_info.get('text_content'),
+                language=part_info.get('language'),
+                media_type=part_info.get('media_type'),
+                url=part_info.get('url'),
+                source_json=part_info.get('source_json', {}),
+            )
+            self.session.add(content_part)
+            self.session.flush()
+            self._increment_count('content_parts')
+            
+            # Extract DALL-E generations if present
+            if isinstance(part, dict):
+                self._extract_dalle_generation(content_part.id, part)
+        
+        # Extract citations from metadata
+        metadata = msg_data.get('metadata', {})
+        citations = metadata.get('citations', [])
+        
+        # Link citations to first text content part (if any)
+        if citations and parts:
+            first_part = self.session.query(ContentPart).filter(
+                ContentPart.message_id == message_id,
+                ContentPart.sequence == 0
+            ).first()
+            
+            if first_part:
+                self._extract_citations(first_part.id, citations)
+    
+    def _classify_content_part(self, part: str | dict[str, Any]) -> dict[str, Any]:
+        """
+        Classify a content part and extract all relevant fields.
+        
+        Returns dict with: part_type, text_content, language, media_type, url, source_json
+        """
+        if isinstance(part, str):
+            return {
+                'part_type': 'text',
+                'text_content': part,
+                'source_json': {'text': part},
+            }
+        
+        if not isinstance(part, dict):
+            return {
+                'part_type': 'unknown',
+                'source_json': {'raw': str(part)},
+            }
+        
+        content_type = part.get('content_type', '')
+        result = {'source_json': part}
+        
+        # Image content
+        if 'image' in content_type:
+            result['part_type'] = 'image'
+            result['media_type'] = part.get('content_type')
+            
+            # Try to find URL in various places
+            asset_pointer = part.get('asset_pointer', '')
+            if asset_pointer and asset_pointer.startswith('file-service://'):
+                result['url'] = asset_pointer
+            elif part.get('url'):
+                result['url'] = part.get('url')
+            
+            return result
+        
+        # Audio content
+        if 'audio' in content_type:
+            result['part_type'] = 'audio'
+            result['media_type'] = part.get('content_type')
+            result['url'] = part.get('url') or part.get('asset_pointer')
+            return result
+        
+        # Video content
+        if 'video' in content_type:
+            result['part_type'] = 'video'
+            result['media_type'] = part.get('content_type')
+            result['url'] = part.get('url') or part.get('asset_pointer')
+            return result
+        
+        # Code content (from code interpreter)
+        if content_type == 'code' or part.get('language'):
+            result['part_type'] = 'code'
+            result['language'] = part.get('language')
+            result['text_content'] = part.get('text') or part.get('code')
+            return result
+        
+        # Text content - might be in various places
+        text = part.get('text') or part.get('result') or part.get('content')
+        if text and isinstance(text, str):
+            result['part_type'] = 'text'
+            result['text_content'] = text
+            return result
+        
+        # Fallback
+        result['part_type'] = content_type or 'unknown'
+        return result
+    
+    def _extract_citations(self, content_part_id: UUID, citations: list[dict[str, Any]]):
+        """Extract citations from metadata."""
+        for cit in citations:
+            meta = cit.get('metadata', {})
+            
+            citation = Citation(
+                content_part_id=content_part_id,
+                source_id=None,
+                url=meta.get('url'),
+                title=meta.get('title'),
+                snippet=meta.get('text'),
+                published_at=parse_timestamp(meta.get('pub_date')),
+                start_index=cit.get('start_ix'),
+                end_index=cit.get('end_ix'),
+                citation_type=meta.get('type'),
+                source_json=cit,
+            )
+            self.session.add(citation)
+    
+    def _extract_attachments(self, message_id: UUID, msg_data: dict[str, Any]):
+        """Extract attachments from message metadata."""
+        metadata = msg_data.get('metadata', {})
+        attachments = metadata.get('attachments', [])
+        
+        for att in attachments:
+            attachment = Attachment(
+                message_id=message_id,
+                file_name=att.get('name'),
+                file_type=att.get('mime_type') or att.get('mimeType'),
+                file_size=att.get('size'),
+                extracted_text=None,  # ChatGPT doesn't provide this
+                source_json=att,
+            )
+            self.session.add(attachment)
+    
+    def _extract_chatgpt_meta(self, message_id: UUID, msg_data: dict[str, Any]):
+        """
+        Extract ChatGPT-specific metadata and write annotations.
+        
+        Writes:
+        - gizmo_id as message string annotation
+        - has_gizmo as message flag annotation
+        - model_slug as message string annotation
+        
+        Also creates ChatGPTMessageMeta record for backwards compatibility.
+        """
+        metadata = msg_data.get('metadata', {})
+        
+        # Write gizmo_id as message annotation (if present)
+        gizmo_id = metadata.get('gizmo_id')
+        if gizmo_id:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='gizmo_id',
+                value=gizmo_id,
+                source='ingestion',
+                source_version='chatgpt_extractor_1.0',
+            )
+            # Also write a flag for "has gizmo" for easier filtering
+            self.annotation_writer.write_flag(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='has_gizmo',
+                source='ingestion',
+            )
+        
+        # Write model_slug as annotation (useful for filtering by model)
+        model_slug = metadata.get('model_slug')
+        if model_slug:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.MESSAGE,
+                entity_id=message_id,
+                key='model_slug',
+                value=model_slug,
+                source='ingestion',
+            )
+        
+        # Create ChatGPTMessageMeta record (backwards compatibility)
+        meta = ChatGPTMessageMeta(
+            message_id=message_id,
+            model_slug=model_slug,
+            status=msg_data.get('status'),
+            end_turn=msg_data.get('end_turn'),
+            gizmo_id=gizmo_id,
+            source_json=metadata,
+        )
+        self.session.add(meta)
+        
+        # Search result groups
+        search_groups = metadata.get('search_result_groups', [])
+        for group_data in search_groups:
+            self._extract_search_group(message_id, group_data)
+        
+        # Code executions
+        agg_result = metadata.get('aggregate_result')
+        if agg_result:
+            self._extract_code_execution(message_id, agg_result)
+        
+        # Canvas documents
+        canvas = metadata.get('canvas')
+        if canvas:
+            self._extract_canvas_doc(message_id, canvas)
+    
+    def _extract_search_group(self, message_id: UUID, group_data: dict[str, Any]):
+        """Extract a search result group and its entries."""
+        group = ChatGPTSearchGroup(
+            message_id=message_id,
+            group_type=group_data.get('type'),
+            domain=group_data.get('domain'),
+            source_json=group_data,
+        )
+        self.session.add(group)
+        self.session.flush()
+        
+        entries = group_data.get('entries', [])
+        for seq, entry_data in enumerate(entries):
+            entry = ChatGPTSearchEntry(
+                group_id=group.id,
+                sequence=seq,
+                url=entry_data.get('url'),
+                title=entry_data.get('title'),
+                snippet=entry_data.get('snippet'),
+                published_at=parse_timestamp(entry_data.get('pub_date')),
+                attribution=entry_data.get('attribution'),
+                source_json=entry_data,
+            )
+            self.session.add(entry)
+    
+    def _extract_code_execution(self, message_id: UUID, agg_result: dict[str, Any]):
+        """Extract code execution data."""
+        exception = agg_result.get('in_kernel_exception') or {}
+        
+        execution = ChatGPTCodeExecution(
+            message_id=message_id,
+            run_id=agg_result.get('run_id'),
+            status=agg_result.get('status'),
+            code=agg_result.get('code'),
+            started_at=parse_timestamp(agg_result.get('start_time')),
+            ended_at=parse_timestamp(agg_result.get('end_time')),
+            final_output=agg_result.get('final_expression_output'),
+            exception_name=exception.get('name'),
+            exception_traceback='\n'.join(exception.get('traceback', [])) or None,
+            source_json=agg_result,
+        )
+        self.session.add(execution)
+        self.session.flush()
+        
+        # Extract outputs
+        messages = agg_result.get('messages', [])
+        for seq, msg in enumerate(messages):
+            output = ChatGPTCodeOutput(
+                execution_id=execution.id,
+                sequence=seq,
+                output_type=msg.get('message_type'),
+                stream_name=msg.get('stream_name'),
+                text_content=msg.get('text'),
+                image_url=msg.get('image_url'),
+                source_json=msg,
+            )
+            self.session.add(output)
+    
+    def _extract_dalle_generation(self, content_part_id: UUID, part: dict[str, Any]):
+        """Extract DALL-E generation data from a content part."""
+        metadata = part.get('metadata') or {}
+        dalle = metadata.get('dalle') or metadata.get('generation')
+        
+        if not dalle:
+            return
+        
+        generation = ChatGPTDalleGeneration(
+            content_part_id=content_part_id,
+            gen_id=dalle.get('gen_id'),
+            prompt=dalle.get('prompt'),
+            seed=dalle.get('seed'),
+            parent_gen_id=dalle.get('parent_gen_id'),
+            edit_op=dalle.get('edit_op'),
+            width=dalle.get('width') or part.get('width'),
+            height=dalle.get('height') or part.get('height'),
+            source_json=dalle,
+        )
+        self.session.add(generation)
+    
+    def _extract_canvas_doc(self, message_id: UUID, canvas: dict[str, Any]):
+        """
+        Extract canvas document as content_part + annotations.
+        
+        Creates:
+        - content_part with part_type='canvas' containing the canvas content
+        - String annotation for canvas title
+        - String annotation for textdoc_id (for version tracking)
+        - Numeric annotation for version number
+        - ChatGPTCanvasDoc record for backwards compatibility
+        """
+        textdoc_id = canvas.get('textdoc_id')
+        version = canvas.get('version')
+        title = canvas.get('title')
+        
+        # Get canvas content (may be in different fields depending on export format)
+        canvas_content = canvas.get('content') or canvas.get('textdoc_content')
+        
+        # Get current max sequence for this message
+        max_seq_result = self.session.execute(
+            text("""
+                SELECT COALESCE(MAX(sequence), -1) 
+                FROM raw.content_parts 
+                WHERE message_id = :msg_id
+            """),
+            {'msg_id': message_id}
+        )
+        max_seq = max_seq_result.scalar() or -1
+        
+        # Create content_part for canvas
+        content_part = ContentPart(
+            message_id=message_id,
+            sequence=max_seq + 1,
+            part_type='canvas',
+            text_content=canvas_content,
+            source_json=canvas,
+        )
+        self.session.add(content_part)
+        self.session.flush()
+        
+        # Write canvas title as content_part annotation
+        if title:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='title',
+                value=title,
+                source='ingestion',
+                reason='canvas_metadata',
+            )
+        
+        # Write textdoc_id for version tracking
+        if textdoc_id:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='textdoc_id',
+                value=textdoc_id,
+                source='ingestion',
+            )
+        
+        # Write version number
+        if version is not None:
+            self.annotation_writer.write_numeric(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='canvas_version',
+                value=version,
+                source='ingestion',
+            )
+        
+        # Write document type
+        textdoc_type = canvas.get('textdoc_type')
+        if textdoc_type:
+            self.annotation_writer.write_string(
+                entity_type=EntityType.CONTENT_PART,
+                entity_id=content_part.id,
+                key='textdoc_type',
+                value=textdoc_type,
+                source='ingestion',
+            )
+        
+        # Create ChatGPTCanvasDoc record for backwards compatibility
+        doc = ChatGPTCanvasDoc(
+            message_id=message_id,
+            textdoc_id=textdoc_id,
+            textdoc_type=textdoc_type,
+            version=version,
+            title=title,
+            from_version=canvas.get('from_version'),
+            content_length=canvas.get('textdoc_content_length'),
+            has_user_edit=canvas.get('has_user_edit'),
+            source_json=canvas,
+        )
+        self.session.add(doc)
+
+
+# ============================================================
+# Post-extraction utilities
+# ============================================================
+
+def mark_latest_canvas_versions(session: Session) -> int:
+    """
+    Mark the latest version of each canvas document.
+    
+    Run this after extraction is complete. For each textdoc_id,
+    finds the content_part with the highest version number and
+    marks it with 'is_latest_canvas_version' flag.
+    
+    Returns:
+        Count of canvas documents marked as latest.
+    
+    Usage:
+        extractor.extract_all(data)
+        session.commit()
+        mark_latest_canvas_versions(session)
+    """
+    writer = AnnotationWriter(session)
+    
+    # Find latest version for each textdoc_id
+    latest_versions = session.execute(
+        text("""
+            WITH canvas_versions AS (
+                SELECT 
+                    cp.id as content_part_id,
+                    s.annotation_value as textdoc_id,
+                    n.annotation_value as version_num,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.annotation_value 
+                        ORDER BY n.annotation_value DESC
+                    ) as rn
+                FROM raw.content_parts cp
+                JOIN derived.content_part_annotations_string s 
+                    ON s.entity_id = cp.id AND s.annotation_key = 'textdoc_id'
+                JOIN derived.content_part_annotations_numeric n
+                    ON n.entity_id = cp.id AND n.annotation_key = 'canvas_version'
+            )
+            SELECT content_part_id, textdoc_id
+            FROM canvas_versions
+            WHERE rn = 1
+        """)
+    )
+    
+    count = 0
+    for row in latest_versions:
+        writer.write_flag(
+            entity_type=EntityType.CONTENT_PART,
+            entity_id=row.content_part_id,
+            key='is_latest_canvas_version',
+            source='ingestion',
+            reason='highest_version_number',
+        )
+        count += 1
+    
+    session.commit()
+    return count
+
+
+def find_wiki_gizmo_messages(session: Session, gizmo_id: str) -> list[UUID]:
+    """
+    Find all message IDs that used a specific gizmo.
+    
+    Useful for identifying likely wiki article candidates
+    if you know which gizmo was used to generate them.
+    
+    Args:
+        session: Database session
+        gizmo_id: The gizmo ID to search for (e.g., 'g-xxxxx')
+        
+    Returns:
+        List of message UUIDs
+    """
+    result = session.execute(
+        text("""
+            SELECT entity_id 
+            FROM derived.message_annotations_string 
+            WHERE annotation_key = 'gizmo_id' 
+              AND annotation_value = :gizmo_id
+        """),
+        {'gizmo_id': gizmo_id}
+    )
+    return [row[0] for row in result]
+
+
+
+---
+File: llm_archive/extractors/claude.py
+---
+# llm_archive/extractors/claude.py
+"""Claude conversation extractor."""
+
+from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+from loguru import logger
+
+from llm_archive.models import (
+    Dialogue, Message, ContentPart, Citation, Attachment,
+    ClaudeMessageMeta,
+)
+from llm_archive.extractors.base import (
+    BaseExtractor, parse_timestamp, normalize_role, safe_get, compute_content_hash
+)
+
+
+class ClaudeExtractor(BaseExtractor):
+    """Extracts Claude conversations into the raw schema."""
+    
+    SOURCE_ID = 'claude'
+    
+    def __init__(
+        self, 
+        session: Session, 
+        assume_immutable: bool = False,
+        incremental: bool = False,
+    ):
+        super().__init__(session, assume_immutable=assume_immutable, incremental=incremental)
+    
+    def extract_dialogue(self, raw: dict[str, Any]) -> str | None:
+        """
+        Extract a complete Claude conversation with incremental updates.
+        
+        Returns:
+            'new' - new dialogue created
+            'updated' - existing dialogue updated
+            'skipped' - existing dialogue unchanged
+            None - extraction failed
+        """
+        source_id = raw.get('uuid')
+        if not source_id:
+            logger.warning("Conversation missing UUID, skipping")
+            return None
+        
+        updated_at = parse_timestamp(raw.get('updated_at'))
+        
+        # Check for existing dialogue
+        existing = self.get_existing_dialogue(source_id)
+        
+        if existing:
+            if self.should_update(existing, updated_at):
+                # Update existing dialogue metadata
+                logger.debug(f"Updating dialogue {source_id}")
+                existing.title = raw.get('name')
+                existing.updated_at = updated_at
+                existing.source_json = raw
+                dialogue_id = existing.id
+                
+                # Incremental message sync
+                self._message_id_map = {}
+                chat_messages = raw.get('chat_messages', [])
+                self._sync_messages(dialogue_id, chat_messages)
+                
+                return 'updated'
+            else:
+                # Skip - no changes
+                logger.debug(f"Skipping unchanged dialogue {source_id}")
+                return 'skipped'
+        else:
+            # Create new dialogue
+            dialogue = Dialogue(
+                source=self.SOURCE_ID,
+                source_id=source_id,
+                title=raw.get('name'),
+                created_at=parse_timestamp(raw.get('created_at')),
+                updated_at=updated_at,
+                source_json=raw,
+            )
+            self.session.add(dialogue)
+            self.session.flush()
+            dialogue_id = dialogue.id
+            
+            # Clear message ID map and extract all messages
+            self._message_id_map = {}
+            chat_messages = raw.get('chat_messages', [])
+            self._extract_messages_new(dialogue_id, chat_messages)
+            
+            return 'new'
+    
+    def _sync_messages(self, dialogue_id: UUID, chat_messages: list[dict[str, Any]]):
+        """
+        Incrementally sync messages - preserve UUIDs for unchanged messages.
+        
+        Claude conversations are linear, so we maintain the chain structure.
+        
+        When assume_immutable=True, existing messages are assumed unchanged and
+        skipped without hash comparison. This is faster but won't detect edits.
+        """
+        existing_messages = self.get_existing_messages(dialogue_id)
+        seen_source_ids = set()
+        
+        prev_message_id = None
+        
+        for msg_data in chat_messages:
+            source_id = msg_data.get('uuid')
+            if not source_id:
+                continue
+            
+            seen_source_ids.add(source_id)
+            
+            if source_id in existing_messages:
+                existing = existing_messages[source_id]
+                
+                if self.assume_immutable:
+                    # Fast path: assume content unchanged, just restore if deleted
+                    if existing.deleted_at is not None:
+                        existing.deleted_at = None
+                        logger.debug(f"Restored message {source_id}")
+                        self._increment_count('messages_restored')
+                    else:
+                        self._increment_count('messages_unchanged')
+                    # Update parent link if needed (chain structure may have changed)
+                    if existing.parent_id != prev_message_id:
+                        existing.parent_id = prev_message_id
+                    self.register_message_id(source_id, existing.id)
+                    prev_message_id = existing.id
+                else:
+                    # Full check: compute hash and compare
+                    content_hash = compute_content_hash(msg_data)
+                    
+                    if existing.content_hash == content_hash and existing.deleted_at is None:
+                        # Unchanged - just update parent link if needed and register
+                        if existing.parent_id != prev_message_id:
+                            existing.parent_id = prev_message_id
+                        self.register_message_id(source_id, existing.id)
+                        prev_message_id = existing.id
+                        self._increment_count('messages_unchanged')
+                    else:
+                        # Changed or was soft-deleted - update in place
+                        was_deleted = existing.deleted_at is not None
+                        self._update_message(existing, msg_data, content_hash, prev_message_id)
+                        self.register_message_id(source_id, existing.id)
+                        prev_message_id = existing.id
+                        if was_deleted:
+                            self._increment_count('messages_restored')
+                        else:
+                            self._increment_count('messages_updated')
+            else:
+                # New message - always compute hash for storage
+                content_hash = compute_content_hash(msg_data)
+                msg_id = self._create_message(dialogue_id, msg_data, content_hash, prev_message_id)
+                if msg_id:
+                    self.register_message_id(source_id, msg_id)
+                    prev_message_id = msg_id
+                    self._increment_count('messages_new')
+        
+        # Soft-delete messages no longer in source (unless incremental mode)
+        if not self.incremental:
+            for source_id, existing in existing_messages.items():
+                if source_id not in seen_source_ids and existing.deleted_at is None:
+                    existing.deleted_at = datetime.now(timezone.utc)
+                    logger.debug(f"Soft-deleted message {source_id}")
+                    self._increment_count('messages_soft_deleted')
+    
+    def _update_message(
+        self, 
+        message: Message, 
+        msg_data: dict[str, Any], 
+        content_hash: str,
+        parent_id: UUID | None
+    ):
+        """Update an existing message in place."""
+        sender = msg_data.get('sender', 'unknown')
+        
+        message.parent_id = parent_id
+        message.role = normalize_role(sender, self.SOURCE_ID)
+        message.created_at = parse_timestamp(msg_data.get('created_at'))
+        message.updated_at = parse_timestamp(msg_data.get('updated_at'))
+        message.content_hash = content_hash
+        message.source_json = msg_data
+        
+        # Restore if was soft-deleted
+        if message.deleted_at is not None:
+            message.deleted_at = None
+            logger.debug(f"Restored message {message.source_id}")
+        
+        # Delete related data before re-extracting
+        self._delete_message_content(message.id)
+        self._delete_message_metadata(message.id)
+        
+        # Re-extract related data
+        self._extract_content_parts(message.id, msg_data)
+        self._extract_attachments(message.id, msg_data)
+        self._extract_claude_meta(message.id, msg_data)
+    
+    def _delete_message_metadata(self, message_id: UUID):
+        """Delete Claude-specific metadata for a message."""
+        self.session.query(ClaudeMessageMeta).filter(
+            ClaudeMessageMeta.message_id == message_id
+        ).delete()
+        self.session.query(Attachment).filter(
+            Attachment.message_id == message_id
+        ).delete()
+    
+    def _create_message(
+        self, 
+        dialogue_id: UUID, 
+        msg_data: dict[str, Any],
+        content_hash: str,
+        parent_id: UUID | None
+    ) -> UUID | None:
+        """Create a new message."""
+        source_id = msg_data.get('uuid')
+        if not source_id:
+            return None
+        
+        sender = msg_data.get('sender', 'unknown')
+        
+        message = Message(
+            dialogue_id=dialogue_id,
+            source_id=source_id,
+            parent_id=parent_id,
+            role=normalize_role(sender, self.SOURCE_ID),
+            author_id=None,
+            author_name=None,
+            created_at=parse_timestamp(msg_data.get('created_at')),
+            updated_at=parse_timestamp(msg_data.get('updated_at')),
+            content_hash=content_hash,
+            source_json=msg_data,
+        )
+        self.session.add(message)
+        self.session.flush()
+        
+        self.register_message_id(source_id, message.id)
+        
+        # Extract content parts and metadata
+        self._extract_content_parts(message.id, msg_data)
+        self._extract_attachments(message.id, msg_data)
+        self._extract_claude_meta(message.id, msg_data)
+        
+        return message.id
+    
+    def _extract_messages_new(self, dialogue_id: UUID, chat_messages: list[dict[str, Any]]):
+        """Extract all messages for a new dialogue."""
+        prev_message_id = None
+        
+        for msg_data in chat_messages:
+            content_hash = compute_content_hash(msg_data)
+            message_id = self._create_message(dialogue_id, msg_data, content_hash, prev_message_id)
+            if message_id:
+                prev_message_id = message_id
+                self._increment_count('messages_new')
+    
+    def _extract_content_parts(self, message_id: UUID, msg_data: dict[str, Any]):
+        """Extract content parts from a Claude message."""
+        # Claude has top-level 'text' field and structured 'content' array
+        
+        # First, add the main text as a content part
+        main_text = msg_data.get('text')
+        content_array = msg_data.get('content', [])
+        
+        # If there's structured content, use that
+        if content_array:
+            for seq, part in enumerate(content_array):
+                part_info = self._classify_content_part(part)
+                
+                content_part = ContentPart(
+                    message_id=message_id,
+                    sequence=seq,
+                    part_type=part_info.get('part_type', 'unknown'),
+                    text_content=part_info.get('text_content'),
+                    language=part_info.get('language'),
+                    media_type=part_info.get('media_type'),
+                    url=part_info.get('url'),
+                    tool_name=part_info.get('tool_name'),
+                    tool_use_id=part_info.get('tool_use_id'),
+                    tool_input=part_info.get('tool_input'),
+                    started_at=parse_timestamp(part.get('start_timestamp')),
+                    ended_at=parse_timestamp(part.get('stop_timestamp')),
+                    is_error=part_info.get('is_error') or part.get('is_error', False),
+                    source_json=part,
+                )
+                self.session.add(content_part)
+                self.session.flush()
+                self._increment_count('content_parts')
+                
+                # Extract citations within this content part
+                citations = part.get('citations', [])
+                if citations:
+                    self._extract_citations(content_part.id, citations)
+        
+        elif main_text:
+            # Fall back to main text field
+            content_part = ContentPart(
+                message_id=message_id,
+                sequence=0,
+                part_type='text',
+                text_content=main_text,
+                source_json={'text': main_text},
+            )
+            self.session.add(content_part)
+            self._increment_count('content_parts')
+    
+    def _classify_content_part(self, part: dict[str, Any]) -> dict[str, Any]:
+        """
+        Classify a Claude content part and extract all relevant fields.
+        
+        Returns dict with: part_type, text_content, tool_name, tool_use_id, tool_input, media_type, url
+        """
+        part_type = part.get('type', 'unknown').lower()
+        
+        # Map Claude types to our taxonomy
+        type_map = {
+            'text': 'text',
+            'tool_use': 'tool_use',
+            'tool_result': 'tool_result',
+            'thinking': 'thinking',
+            'image': 'image',
+        }
+        
+        result = {
+            'part_type': type_map.get(part_type, part_type),
+        }
+        
+        # Extract fields based on type
+        if part_type == 'text':
+            result['text_content'] = part.get('text')
+        
+        elif part_type == 'thinking':
+            result['text_content'] = part.get('thinking')
+        
+        elif part_type == 'tool_use':
+            result['tool_name'] = part.get('name')
+            result['tool_use_id'] = part.get('id')
+            result['tool_input'] = part.get('input')
+            # Some tools have text output
+            if isinstance(part.get('input'), dict):
+                # Try to capture any query or text input
+                result['text_content'] = part['input'].get('query') or part['input'].get('text')
+        
+        elif part_type == 'tool_result':
+            result['tool_use_id'] = part.get('tool_use_id')
+            result['is_error'] = part.get('is_error', False)
+            
+            # Tool results might have text in various places
+            content = part.get('content')
+            if isinstance(content, str):
+                result['text_content'] = content
+            elif isinstance(content, list):
+                # Concatenate text from nested content
+                texts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get('text'):
+                        texts.append(item['text'])
+                    elif isinstance(item, str):
+                        texts.append(item)
+                result['text_content'] = '\n'.join(texts) if texts else None
+        
+        elif part_type == 'image':
+            result['media_type'] = part.get('media_type')
+            # Claude images might have URL or base64 source
+            source = part.get('source', {})
+            if source.get('type') == 'url':
+                result['url'] = source.get('url')
+            # base64 data stays in source_json
+        
+        return result
+    
+    def _extract_citations(self, content_part_id: UUID, citations: list[dict[str, Any]]):
+        """Extract citations from a content part."""
+        for cit in citations:
+            details = cit.get('details', {})
+            
+            citation = Citation(
+                content_part_id=content_part_id,
+                source_id=cit.get('uuid'),
+                url=details.get('url'),
+                title=None,  # Claude citations don't include title
+                snippet=None,
+                published_at=None,
+                start_index=cit.get('start_index'),
+                end_index=cit.get('end_index'),
+                citation_type=details.get('type'),
+                source_json=cit,
+            )
+            self.session.add(citation)
+    
+    def _extract_attachments(self, message_id: UUID, msg_data: dict[str, Any]):
+        """Extract attachments from a Claude message."""
+        attachments = msg_data.get('attachments', [])
+        
+        for att in attachments:
+            attachment = Attachment(
+                message_id=message_id,
+                file_name=att.get('file_name'),
+                file_type=att.get('file_type'),
+                file_size=att.get('file_size'),
+                extracted_text=att.get('extracted_content'),
+                source_json=att,
+            )
+            self.session.add(attachment)
+        
+        # Also check 'files' array
+        files = msg_data.get('files', [])
+        for f in files:
+            # Files array is simpler, just has file_name
+            if isinstance(f, dict) and f.get('file_name'):
+                attachment = Attachment(
+                    message_id=message_id,
+                    file_name=f.get('file_name'),
+                    source_json=f,
+                )
+                self.session.add(attachment)
+    
+    def _extract_claude_meta(self, message_id: UUID, msg_data: dict[str, Any]):
+        """Extract Claude-specific metadata."""
+        # For now, just store the raw message data
+        # We can add specific fields as we discover what's useful
+        meta = ClaudeMessageMeta(
+            message_id=message_id,
+            source_json=msg_data,
+        )
+        self.session.add(meta)
+
+
+---
+File: llm_archive/models/__init__.py
+---
+# llm_archive/models/__init__.py
+"""SQLAlchemy models for raw and derived schemas."""
+
+from llm_archive.models.raw import (
+    Base,
+    Source,
+    Dialogue,
+    Message,
+    ContentPart,
+    Citation,
+    Attachment,
+    ChatGPTMessageMeta,
+    ChatGPTSearchGroup,
+    ChatGPTSearchEntry,
+    ChatGPTCodeExecution,
+    ChatGPTCodeOutput,
+    ChatGPTDalleGeneration,
+    ChatGPTCanvasDoc,
+    ClaudeMessageMeta,
+)
+
+from llm_archive.models.derived import (
+    PromptResponse,
+)
+
+__all__ = [
+    # Base
+    "Base",
+    # Raw core
+    "Source",
+    "Dialogue",
+    "Message",
+    "ContentPart",
+    "Citation",
+    "Attachment",
+    # Raw ChatGPT extensions
+    "ChatGPTMessageMeta",
+    "ChatGPTSearchGroup",
+    "ChatGPTSearchEntry",
+    "ChatGPTCodeExecution",
+    "ChatGPTCodeOutput",
+    "ChatGPTDalleGeneration",
+    "ChatGPTCanvasDoc",
+    # Raw Claude extensions
+    "ClaudeMessageMeta",
+    # Derived
+    "PromptResponse",
+    "PromptResponseContent",
+]
+
+
+
+---
+File: llm_archive/models/derived.py
+---
+# llm_archive/models/derived.py
+"""SQLAlchemy models for derived.* schema tables."""
+
+from sqlalchemy import (
+    Column, String, Integer, Boolean, DateTime, Float, ForeignKey, Text,
+    ARRAY, func
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
+from sqlalchemy.orm import relationship
+
+from llm_archive.models.raw import Base
+
+
+# ----------------------------------------------------------------------
+# Prompt-Response Pairs (unique by response)
+# ----------------------------------------------------------------------
+
+class PromptResponse(Base):
+    """
+    Direct prompt-response association without tree dependency.
+    
+    Each record pairs a user prompt with one of its responses.
+    A prompt can have multiple responses (regenerations).
+    Each response appears in exactly one record.
+    """
+    __tablename__ = "prompt_responses"
+    __table_args__ = {"schema": "derived"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    dialogue_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.dialogues.id", ondelete="CASCADE"), nullable=False)
+    
+    prompt_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
+    response_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
+    
+    prompt_position = Column(Integer, nullable=False)
+    response_position = Column(Integer, nullable=False)
+    
+    prompt_role = Column(String, nullable=False)
+    response_role = Column(String, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+
+---
+File: llm_archive/models/raw.py
+---
+# llm_archive/models/raw.py
+"""SQLAlchemy models for raw.* schema tables."""
+
+from datetime import datetime
+from uuid import UUID
+
+from sqlalchemy import (
+    Column, String, Integer, Boolean, DateTime, ForeignKey, Text, BigInteger,
+    ARRAY, func
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
+from sqlalchemy.orm import declarative_base, relationship
+
+Base = declarative_base()
+
+
+# ============================================================
+# Core Tables
+# ============================================================
+
+class Source(Base):
+    """Registry of dialogue sources."""
+    __tablename__ = "sources"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(String, primary_key=True)
+    display_name = Column(String, nullable=False)
+    has_native_trees = Column(Boolean, nullable=False)
+    role_vocabulary = Column(ARRAY(String), nullable=False)
+    source_metadata = Column(JSONB, name="metadata")  # 'metadata' reserved by SQLAlchemy
+    
+    dialogues = relationship("Dialogue", back_populates="source_rel")
+
+
+class Dialogue(Base):
+    """Universal dialogue container."""
+    __tablename__ = "dialogues"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    source = Column(String, ForeignKey("raw.sources.id"), nullable=False)
+    source_id = Column(String, nullable=False)
+    
+    title = Column(String)
+    
+    # Source timestamps (from archive)
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    source_rel = relationship("Source", back_populates="dialogues")
+    messages = relationship("Message", back_populates="dialogue", cascade="all, delete-orphan")
+
+
+class Message(Base):
+    """Universal message with tree structure support."""
+    __tablename__ = "messages"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    dialogue_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.dialogues.id", ondelete="CASCADE"), nullable=False)
+    source_id = Column(String, nullable=False)
+    
+    parent_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
+    
+    role = Column(String, nullable=False)
+    author_id = Column(String)
+    author_name = Column(String)
+    
+    # Source timestamps (from archive)
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
+    
+    # Change tracking
+    content_hash = Column(String)  # hash of content for change detection
+    deleted_at = Column(DateTime(timezone=True))  # soft delete (removed from source)
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    dialogue = relationship("Dialogue", back_populates="messages")
+    parent = relationship("Message", remote_side=[id], backref="children")
+    content_parts = relationship("ContentPart", back_populates="message", cascade="all, delete-orphan")
+    attachments = relationship("Attachment", back_populates="message", cascade="all, delete-orphan")
+
+
+class ContentPart(Base):
+    """Content segments within a message."""
+    __tablename__ = "content_parts"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    
+    part_type = Column(String, nullable=False)
+    text_content = Column(Text)
+    
+    # Code-specific fields
+    language = Column(String)  # programming language for code blocks
+    
+    # Media fields
+    media_type = Column(String)  # MIME type (image/png, audio/mp3, etc.)
+    url = Column(String)  # URL for external resources
+    
+    # Tool use fields (Claude)
+    tool_name = Column(String)  # name of tool being used
+    tool_use_id = Column(String)  # links tool_result back to tool_use
+    tool_input = Column(JSONB)  # tool input parameters
+    
+    # Timing and status
+    started_at = Column(DateTime(timezone=True))
+    ended_at = Column(DateTime(timezone=True))
+    is_error = Column(Boolean, default=False)
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    message = relationship("Message", back_populates="content_parts")
+    citations = relationship("Citation", back_populates="content_part", cascade="all, delete-orphan")
+
+
+class Citation(Base):
+    """Citations within content parts."""
+    __tablename__ = "citations"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    content_part_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.content_parts.id", ondelete="CASCADE"), nullable=False)
+    source_id = Column(String)
+    
+    url = Column(String)
+    title = Column(String)
+    snippet = Column(Text)
+    published_at = Column(DateTime(timezone=True))
+    
+    start_index = Column(Integer)
+    end_index = Column(Integer)
+    citation_type = Column(String)
+    
+    source_json = Column(JSONB)
+    
+    content_part = relationship("ContentPart", back_populates="citations")
+
+
+class Attachment(Base):
+    """File attachments on messages."""
+    __tablename__ = "attachments"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    
+    file_name = Column(String)
+    file_type = Column(String)
+    file_size = Column(Integer)
+    extracted_text = Column(Text)
+    
+    source_json = Column(JSONB)
+    
+    message = relationship("Message", back_populates="attachments")
+
+
+# ============================================================
+# ChatGPT Extensions
+# ============================================================
+
+class ChatGPTMessageMeta(Base):
+    """ChatGPT-specific message metadata."""
+    __tablename__ = "chatgpt_message_meta"
+    __table_args__ = {"schema": "raw"}
+    
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), primary_key=True)
+    model_slug = Column(String)
+    status = Column(String)
+    end_turn = Column(Boolean)
+    gizmo_id = Column(String)
+    source_json = Column(JSONB, nullable=False)
+
+
+class ChatGPTSearchGroup(Base):
+    """ChatGPT search result groups."""
+    __tablename__ = "chatgpt_search_groups"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    group_type = Column(String)
+    domain = Column(String)
+    source_json = Column(JSONB, nullable=False)
+    
+    entries = relationship("ChatGPTSearchEntry", back_populates="group", cascade="all, delete-orphan")
+
+
+class ChatGPTSearchEntry(Base):
+    """ChatGPT search result entries."""
+    __tablename__ = "chatgpt_search_entries"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    group_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.chatgpt_search_groups.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    url = Column(String)
+    title = Column(String)
+    snippet = Column(Text)
+    published_at = Column(DateTime(timezone=True))
+    attribution = Column(String)
+    source_json = Column(JSONB, nullable=False)
+    
+    group = relationship("ChatGPTSearchGroup", back_populates="entries")
+
+
+class ChatGPTCodeExecution(Base):
+    """ChatGPT code execution records."""
+    __tablename__ = "chatgpt_code_executions"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String)
+    status = Column(String)
+    code = Column(Text)
+    started_at = Column(DateTime(timezone=True))
+    ended_at = Column(DateTime(timezone=True))
+    final_output = Column(Text)
+    exception_name = Column(String)
+    exception_traceback = Column(Text)
+    source_json = Column(JSONB, nullable=False)
+    
+    outputs = relationship("ChatGPTCodeOutput", back_populates="execution", cascade="all, delete-orphan")
+
+
+class ChatGPTCodeOutput(Base):
+    """ChatGPT code execution outputs."""
+    __tablename__ = "chatgpt_code_outputs"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    execution_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.chatgpt_code_executions.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    output_type = Column(String)
+    stream_name = Column(String)
+    text_content = Column(Text)
+    image_url = Column(String)
+    source_json = Column(JSONB, nullable=False)
+    
+    execution = relationship("ChatGPTCodeExecution", back_populates="outputs")
+
+
+class ChatGPTDalleGeneration(Base):
+    """ChatGPT DALL-E image generations."""
+    __tablename__ = "chatgpt_dalle_generations"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    content_part_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.content_parts.id", ondelete="CASCADE"), nullable=False)
+    gen_id = Column(String)
+    prompt = Column(Text)
+    seed = Column(BigInteger)
+    parent_gen_id = Column(String)
+    edit_op = Column(String)
+    width = Column(Integer)
+    height = Column(Integer)
+    source_json = Column(JSONB, nullable=False)
+
+
+class ChatGPTCanvasDoc(Base):
+    """ChatGPT canvas document operations."""
+    __tablename__ = "chatgpt_canvas_docs"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    textdoc_id = Column(String)
+    textdoc_type = Column(String)
+    version = Column(Integer)
+    title = Column(String)
+    from_version = Column(Integer)
+    content_length = Column(Integer)
+    has_user_edit = Column(Boolean)
+    source_json = Column(JSONB, nullable=False)
+
+
+# ============================================================
+# Claude Extensions
+# ============================================================
+
+class ClaudeMessageMeta(Base):
+    """Claude-specific message metadata."""
+    __tablename__ = "claude_message_meta"
+    __table_args__ = {"schema": "raw"}
+    
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), primary_key=True)
+    source_json = Column(JSONB, nullable=False)
+
