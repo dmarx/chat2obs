@@ -21,6 +21,7 @@ from llm_archive.models.raw import (
 
 from llm_archive.models.derived import (
     PromptResponse,
+    AnnotatorCursor,
 )
 
 __all__ = [
@@ -45,5 +46,5 @@ __all__ = [
     "ClaudeMessageMeta",
     # Derived
     "PromptResponse",
-    "PromptResponseContent",
+    "AnnotatorCursor",
 ]
