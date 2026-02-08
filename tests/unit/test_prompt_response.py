@@ -48,6 +48,8 @@ def make_pr_data(
         created_at=datetime.now(timezone.utc),
         prompt_position=-1,
         response_position=-1,
+        prompt_position=-1,
+        response_position=-1,
     )
 
 
