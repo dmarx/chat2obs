@@ -129,6 +129,10 @@ class ContentPart(Base):
     tool_name = Column(String)
     tool_use_id = Column(String)
     tool_input = Column(JSONB)
+    is_error = Column(Boolean)
+    
+    # Preserve original source data
+    source_json = Column(JSONB)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
