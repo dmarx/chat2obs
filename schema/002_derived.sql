@@ -27,6 +27,7 @@ create table if not exists derived.annotator_cursors (
     -- Stats for this cursor
     entities_processed      int not null default 0,
     annotations_created     int not null default 0,
+    cumulative_runtime_seconds  float not null default 0,
     
     updated_at              timestamptz default now(),
     
