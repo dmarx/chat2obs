@@ -1,4 +1,4 @@
--- schema/005_prompt_response_views.sql
+-- schema/006_prompt_response_views.sql
 -- Prompt-response views (aggregating content and word counts from annotations)
 
 -- ============================================================
