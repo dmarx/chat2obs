@@ -45,9 +45,9 @@ def make_pr_data(
         response_word_count=len(response_text.split()) if response_text else 0,
         prompt_role=prompt_role,
         response_role=response_role,
-        created_at=datetime.now(timezone.utc),
         prompt_position=-1,
         response_position=-1,
+        created_at=datetime.now(timezone.utc),
     )
 
 
