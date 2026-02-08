@@ -10,8 +10,8 @@ from llm_archive.annotators.prompt_response import (
     PromptResponseAnnotator,
     WikiCandidateAnnotator,
     NaiveTitleAnnotator,
-    HasCodeAnnotator,
-    HasLatexAnnotator,
+    # HasCodeAnnotator,
+    # HasLatexAnnotator,
 )
 from llm_archive.annotations.core import ValueType, EntityType, AnnotationResult
 
