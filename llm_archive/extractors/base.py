@@ -140,7 +140,9 @@ class BaseExtractor(ABC):
         """Safely increment a count (no-op if counts not initialized)."""
         if key in self.counts:
             self.counts[key] += amount
-    
+    def register_message_id(self, source_id: str, native_id: UUID):
+        """Register a mapping from source message ID to native UUID."""
+        self._message_id_map[source_id] = native_id
     def create_content_part_with_annotation(
         self,
         message_id: UUID,
