@@ -233,7 +233,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
     PRIORITY = 50
     VERSION = "1.0"
 
-    REQUIRES_STRINGS = [("exchange_type", "wiki_article")]
+    REQUIRES_STRINGS = [("wiki_candidate")]
 
     def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
         if not data.response_text:
