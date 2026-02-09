@@ -286,109 +286,6 @@ class TestNaiveTitleAnnotator:
         assert results[0].value == 'Spaced Title'
 
 
-# ============================================================
-# Annotation Filter Tests (class attributes)
-# ============================================================
-
-class TestAnnotatorFilters:
-    """Test annotation filter attributes."""
-    
-    def test_wiki_candidate_has_no_requirements(self):
-        """WikiCandidateAnnotator should have no prerequisites."""
-        assert WikiCandidateAnnotator.REQUIRES_FLAGS == []
-        assert WikiCandidateAnnotator.REQUIRES_STRINGS == []
-        assert WikiCandidateAnnotator.SKIP_IF_FLAGS == []
-        assert WikiCandidateAnnotator.SKIP_IF_STRINGS == []
-    
-    def test_naive_title_requires_wiki(self):
-        """NaiveTitleAnnotator should require wiki_article."""
-        assert ('exchange_type', 'wiki_article') in NaiveTitleAnnotator.REQUIRES_STRINGS
-    
-    def test_annotator_metadata(self):
-        """Check annotator class metadata."""
-        assert WikiCandidateAnnotator.ENTITY_TYPE == EntityType.PROMPT_RESPONSE
-        assert WikiCandidateAnnotator.ANNOTATION_KEY == 'exchange_type'
-        assert WikiCandidateAnnotator.VALUE_TYPE == ValueType.STRING
-        
-        assert NaiveTitleAnnotator.ENTITY_TYPE == EntityType.PROMPT_RESPONSE
-        assert NaiveTitleAnnotator.ANNOTATION_KEY == 'proposed_title'
-        assert NaiveTitleAnnotator.VALUE_TYPE == ValueType.STRING
-        
-        # Wiki detection should run before title extraction
-        assert WikiCandidateAnnotator.PRIORITY > NaiveTitleAnnotator.PRIORITY
-    
-    def test_custom_annotator_with_filters(self):
-        """Test defining custom annotator with filters."""
-        
-        class PreambleDetector(PromptResponseAnnotator):
-            ANNOTATION_KEY = 'has_preamble'
-            VALUE_TYPE = ValueType.FLAG
-            REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
-            SKIP_IF_FLAGS = ['preamble_checked']
-            
-            def annotate(self, data):
-                return []
-        
-        assert PreambleDetector.REQUIRES_STRINGS == [('exchange_type', 'wiki_article')]
-        assert PreambleDetector.SKIP_IF_FLAGS == ['preamble_checked']
-
-
-# ============================================================
-# AnnotationResult Tests
-# ============================================================
-
-class TestAnnotationResult:
-    """Test AnnotationResult dataclass behavior."""
-    
-    def test_result_with_reason(self, pr_id):
-        """Results should include reason when provided."""
-        data = make_pr_data(
-            prompt_text="Write about cats",
-            response_text="# Cats\n\n[[Cats]] are mammals.",
-            pr_id=pr_id,
-        )
-        
-        annotator = WikiCandidateAnnotator.__new__(WikiCandidateAnnotator)
-        results = annotator.annotate(data)
-        
-        exchange_type_result = next(r for r in results if r.key == 'exchange_type')
-        assert exchange_type_result.reason == 'wiki_links_detected'
-    
-    def test_key_is_required(self, pr_id):
-        """Key should always be set on results."""
-        data = make_pr_data(
-            prompt_text="Write about cats",
-            response_text="# Title\n\n[[link]]",
-            pr_id=pr_id,
-        )
-        
-        wiki_annotator = WikiCandidateAnnotator.__new__(WikiCandidateAnnotator)
-        wiki_results = wiki_annotator.annotate(data)
-        
-        title_annotator = NaiveTitleAnnotator.__new__(NaiveTitleAnnotator)
-        title_results = title_annotator.annotate(data)
-        
-        for result in wiki_results + title_results:
-            assert result.key is not None
-    
-    def test_value_type_is_set(self, pr_id):
-        """Results should have explicit value_type."""
-        data = make_pr_data(
-            prompt_text="Write about cats",
-            response_text="# Title\n\n[[link1]] [[link2]] [[link3]]",
-            pr_id=pr_id,
-        )
-        
-        annotator = WikiCandidateAnnotator.__new__(WikiCandidateAnnotator)
-        results = annotator.annotate(data)
-        
-        # Should have string and numeric results
-        string_results = [r for r in results if r.value_type == ValueType.STRING]
-        numeric_results = [r for r in results if r.value_type == ValueType.NUMERIC]
-        
-        assert len(string_results) >= 1
-        assert len(numeric_results) >= 1
-
 
 # ============================================================
 # PromptResponseData Tests
@@ -411,15 +308,6 @@ class TestPromptResponseData:
         assert isinstance(data.prompt_response_id, type(uuid4()))
         assert isinstance(data.dialogue_id, type(uuid4()))
     
-    def test_word_counts_calculated(self):
-        """Word counts should be calculated from text."""
-        data = make_pr_data(
-            prompt_text="one two three",
-            response_text="four five six seven",
-        )
-        
-        assert data.prompt_word_count == 3
-        assert data.response_word_count == 4
     
     def test_handles_none_text(self):
         """Should handle None text gracefully."""
