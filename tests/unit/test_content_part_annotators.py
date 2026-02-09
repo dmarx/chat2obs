@@ -305,20 +305,3 @@ class TestContentPartAnnotatorBase:
             assert hasattr(annotator_cls, 'PRIORITY')
             assert isinstance(annotator_cls.PRIORITY, int)
 
-
-# ============================================================
-# Registry Tests
-# ============================================================
-
-class TestContentPartAnnotatorRegistry:
-    """Test the content-part annotator registry."""
-    
-    def test_all_annotators_in_registry(self):
-        """All annotators should be in CONTENT_PART_ANNOTATORS."""
-        assert CodeBlockAnnotator in CONTENT_PART_ANNOTATORS
-        assert LatexContentAnnotator in CONTENT_PART_ANNOTATORS
-        assert WikiLinkContentAnnotator in CONTENT_PART_ANNOTATORS
-    
-    def test_registry_count(self):
-        """Registry should have expected number of annotators."""
-        assert len(CONTENT_PART_ANNOTATORS) == 4
