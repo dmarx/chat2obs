@@ -5,11 +5,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import sessionmaker
 from loguru import logger
 
 
-def get_engine(db_url: str):
+def get_engine(db_url: str) -> Engine:
     """Create database engine."""
     return create_engine(db_url, echo=False)
 
@@ -35,7 +36,11 @@ def get_session(db_url: str):
         session.close()
 
 
-def _create_pg_schemas(engine) -> None:
+# ============================================================
+# Engine-based schema helpers
+# ============================================================
+
+def create_pg_schemas(engine: Engine) -> None:
     """Create PostgreSQL schema namespaces and extensions."""
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -44,7 +49,7 @@ def _create_pg_schemas(engine) -> None:
         conn.commit()
 
 
-def _create_tables(engine) -> None:
+def create_tables(engine: Engine) -> None:
     """Create all ORM-defined tables via Base.metadata.create_all."""
     from llm_archive.models import Base
     import llm_archive.models.annotations  # noqa: F401 — register factory models
@@ -52,26 +57,25 @@ def _create_tables(engine) -> None:
     Base.metadata.create_all(engine)
 
 
-def _seed_sources(engine) -> None:
+def seed_sources(engine: Engine) -> None:
     """Seed raw.sources if empty."""
     with engine.connect() as conn:
         count = conn.execute(text("SELECT count(*) FROM raw.sources")).scalar()
         if count == 0:
             conn.execute(text("""
-                INSERT INTO raw.sources (id, display_name, has_native_trees, role_vocabulary)
+                INSERT INTO raw.sources
+                    (id, display_name, has_native_trees, role_vocabulary)
                 VALUES
-                    ('chatgpt', 'ChatGPT', true, ARRAY['user', 'assistant', 'system', 'tool']),
-                    ('claude', 'Claude', false, ARRAY['user', 'assistant'])
+                    ('chatgpt', 'ChatGPT', true,
+                     ARRAY['user', 'assistant', 'system', 'tool']),
+                    ('claude', 'Claude', false,
+                     ARRAY['user', 'assistant'])
             """))
         conn.commit()
 
 
-def _create_annotation_union_views(engine) -> None:
-    """Generate *_annotations_all union views for each entity type.
-
-    These convenience views union all 4 value-type tables per entity,
-    providing a single queryable view of all annotations.
-    """
+def create_annotation_union_views(engine: Engine) -> None:
+    """Generate *_annotations_all union views for each entity type."""
     from llm_archive.annotations.core import EntityType, ValueType
 
     with engine.connect() as conn:
@@ -106,10 +110,10 @@ def _create_annotation_union_views(engine) -> None:
         conn.commit()
 
 
-def _execute_view_files(engine, schema_dir: Path) -> None:
-    """Execute SQL files that define views (not tables).
+def execute_view_files(engine: Engine, schema_dir: Path) -> None:
+    """Execute SQL files that contain view definitions.
 
-    Skips files that only define tables/extensions/seeds (handled by ORM).
+    Skips files with only tables/extensions/seeds (handled by ORM).
     """
     if not schema_dir.exists():
         return
@@ -118,7 +122,6 @@ def _execute_view_files(engine, schema_dir: Path) -> None:
         sql = sql_file.read_text()
         sql_upper = sql.upper()
 
-        # Only execute files containing view definitions
         if "CREATE OR REPLACE VIEW" not in sql_upper and "CREATE VIEW" not in sql_upper:
             continue
 
@@ -137,36 +140,52 @@ def _execute_view_files(engine, schema_dir: Path) -> None:
             conn.commit()
 
 
-def init_schema(db_url: str, schema_dir: Path | str | None = None) -> None:
-    """Initialize database schema.
+def drop_schemas(engine: Engine) -> None:
+    """Drop raw and derived schemas (destructive!)."""
+    with engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
+        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
+        conn.commit()
+    logger.info("Schemas dropped")
 
-    1. Create PostgreSQL schema namespaces (raw, derived) + extensions
+
+def init_schema_with_engine(
+    engine: Engine,
+    schema_dir: Path | None = None,
+) -> None:
+    """Initialize database schema using an existing engine.
+
+    1. Create PostgreSQL schema namespaces + extensions
     2. Create all ORM-defined tables
     3. Seed raw.sources lookup table
     4. Create annotation union views (*_annotations_all)
     5. Execute additional view SQL files from schema_dir
     """
-    engine = get_engine(db_url)
-
-    _create_pg_schemas(engine)
-    _create_tables(engine)
-    _seed_sources(engine)
-    _create_annotation_union_views(engine)
+    create_pg_schemas(engine)
+    create_tables(engine)
+    seed_sources(engine)
+    create_annotation_union_views(engine)
 
     if schema_dir:
-        _execute_view_files(engine, Path(schema_dir))
+        execute_view_files(engine, schema_dir)
 
     logger.info("Schema initialization complete")
+
+
+# ============================================================
+# URL-based convenience wrappers
+# ============================================================
+
+def init_schema(db_url: str, schema_dir: Path | str | None = None) -> None:
+    """Initialize database schema from a URL string."""
+    engine = get_engine(db_url)
+    sd = Path(schema_dir) if schema_dir else None
+    init_schema_with_engine(engine, sd)
 
 
 def reset_schema(db_url: str, schema_dir: Path | str | None = None) -> None:
     """Drop and recreate schemas (destructive!)."""
     engine = get_engine(db_url)
-
-    with engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
-        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
-        conn.commit()
-
-    logger.info("Schemas dropped")
-    init_schema(db_url, schema_dir)
+    drop_schemas(engine)
+    sd = Path(schema_dir) if schema_dir else None
+    init_schema_with_engine(engine, sd)
