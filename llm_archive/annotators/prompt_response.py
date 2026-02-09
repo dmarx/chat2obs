@@ -272,8 +272,8 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                         )
                     ]
 
-            if line.startswith('**') and first_line.endswith('**'):
-                title = first_line.strip('*').strip()
+            if line.startswith('**') and line.endswith('**'):
+                title = line.strip('*').strip()
                 if title:
                     return [
                         AnnotationResult(
@@ -287,9 +287,9 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                     
             
             # Bold header with trailing content: **Title** - some subtitle
-            if line.startswith('**') and '**' in first_line[2:]:
-                end_idx = first_line.index('**', 2)
-                title = first_line[2:end_idx].strip()
+            if line.startswith('**') and '**' in line[2:]:
+                end_idx = line.index('**', 2)
+                title = line[2:end_idx].strip()
                 if title:
                     return [
                         AnnotationResult(
