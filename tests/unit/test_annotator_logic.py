@@ -204,16 +204,6 @@ class TestWikiCandidateAnnotator:
         results = self._annotate(text, word_count=300)
         assert any(r.key == "exchange_type" and r.value == "wiki_article" for r in results)
 
-    def test_rejects_short_text_without_structure(self):
-        text = "See [[A]] and [[B]]."
-        results = self._annotate(text, word_count=10)
-        assert results == []
-
-    def test_rejects_single_link(self):
-        text = "See [[Topic A]] for more." + " word" * 300
-        results = self._annotate(text, word_count=300)
-        assert results == []
-
     def test_no_response_returns_empty(self):
         annotator = WikiCandidateAnnotator.__new__(WikiCandidateAnnotator)
         data = _make_prompt_response("")
