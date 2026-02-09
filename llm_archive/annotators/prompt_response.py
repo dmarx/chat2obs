@@ -259,8 +259,8 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
 
         lines = data.response_text.split("\n")
         for line in lines[:5]:
-            if line.startswith("# "):
-                title = line[2:].strip()
+            if line.startswith("#"):
+                title = line.lstrip('#').strip()
                 if title:
                     return [
                         AnnotationResult(
@@ -268,21 +268,50 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                             value=title,
                             value_type=ValueType.STRING,
                             confidence=0.9,
-                            reason="Found markdown H1",
+                            reason="markdown_header",
                         )
                     ]
 
-        first_line = lines[0].strip() if lines else ""
-        if 5 <= len(first_line.split()) <= 10:
-            return [
-                AnnotationResult(
-                    key="proposed_title",
-                    value=first_line,
-                    value_type=ValueType.STRING,
-                    confidence=0.6,
-                    reason="Used first line",
-                )
-            ]
+            if line.startswith('**') and first_line.endswith('**'):
+                title = first_line.strip('*').strip()
+                if title:
+                    return [
+                        AnnotationResult(
+                            key="proposed_title",
+                            value=title,
+                            value_type=ValueType.STRING,
+                            confidence=0.9,
+                            reason="bold_header",
+                        )
+                    ]
+                    
+            
+            # Bold header with trailing content: **Title** - some subtitle
+            if line.startswith('**') and '**' in first_line[2:]:
+                end_idx = first_line.index('**', 2)
+                title = first_line[2:end_idx].strip()
+                if title:
+                    return [
+                        AnnotationResult(
+                            key="proposed_title",
+                            value=title,
+                            value_type=ValueType.STRING,
+                            confidence=0.9,
+                            reason="bold_header_with_suffix",
+                        )
+                    ]
+        
+        # first_line = lines[0].strip() if lines else ""
+        # if 5 <= len(first_line.split()) <= 10:
+        #     return [
+        #         AnnotationResult(
+        #             key="proposed_title",
+        #             value=first_line,
+        #             value_type=ValueType.STRING,
+        #             confidence=0.6,
+        #             reason="Used first line",
+        #         )
+        #     ]
 
         return []
 
