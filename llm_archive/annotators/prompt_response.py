@@ -240,7 +240,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
             return []
 
         reason_suffix = ""
-        if data.role == "user":
+        if data.response_role == "user":
             reason_suffix = " in prompt"
 
         lines = data.response_text.split("\n")
