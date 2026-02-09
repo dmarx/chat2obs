@@ -9,7 +9,6 @@ from llm_archive.annotators.content_part import (
     ContentPartData,
     ContentPartAnnotator,
     CodeBlockAnnotator,
-    ScriptHeaderAnnotator,
     LatexContentAnnotator,
     WikiLinkContentAnnotator,
     CONTENT_PART_ANNOTATORS,
@@ -152,96 +151,6 @@ class TestCodeBlockAnnotator:
         data.text_content = None
         
         annotator = CodeBlockAnnotator.__new__(CodeBlockAnnotator)
-        results = annotator.annotate(data)
-        
-        assert len(results) == 0
-
-
-# ============================================================
-# ScriptHeaderAnnotator Tests
-# ============================================================
-
-class TestScriptHeaderAnnotator:
-    """Test script header detection."""
-    
-    def test_detects_python_shebang(self, content_part_id):
-        """Should detect Python shebang."""
-        data = make_content_part_data(
-            text_content="#!/usr/bin/env python3\nimport sys",
-            content_part_id=content_part_id,
-        )
-        
-        annotator = ScriptHeaderAnnotator.__new__(ScriptHeaderAnnotator)
-        results = annotator.annotate(data)
-        
-        assert any(r.key == 'has_script_header' for r in results)
-        
-        type_result = next(r for r in results if r.key == 'script_type')
-        assert type_result.value == 'python3'
-    
-    def test_detects_bash_shebang(self, content_part_id):
-        """Should detect Bash shebang."""
-        data = make_content_part_data(
-            text_content="#!/bin/bash\necho hello",
-            content_part_id=content_part_id,
-        )
-        
-        annotator = ScriptHeaderAnnotator.__new__(ScriptHeaderAnnotator)
-        results = annotator.annotate(data)
-        
-        type_result = next(r for r in results if r.key == 'script_type')
-        assert type_result.value == 'bash'
-    
-    def test_detects_c_include(self, content_part_id):
-        """Should detect C/C++ includes."""
-        data = make_content_part_data(
-            text_content='#include <stdio.h>\nint main() {}',
-            content_part_id=content_part_id,
-        )
-        
-        annotator = ScriptHeaderAnnotator.__new__(ScriptHeaderAnnotator)
-        results = annotator.annotate(data)
-        
-        assert any(r.key == 'has_script_header' for r in results)
-        
-        type_result = next(r for r in results if r.key == 'script_type')
-        assert type_result.value == 'c'
-    
-    def test_detects_c_include_quotes(self, content_part_id):
-        """Should detect C includes with quotes."""
-        data = make_content_part_data(
-            text_content='#include "myheader.h"',
-            content_part_id=content_part_id,
-        )
-        
-        annotator = ScriptHeaderAnnotator.__new__(ScriptHeaderAnnotator)
-        results = annotator.annotate(data)
-        
-        assert any(r.key == 'has_script_header' for r in results)
-    
-    def test_detects_php_tag(self, content_part_id):
-        """Should detect PHP opening tag."""
-        data = make_content_part_data(
-            text_content="<?php\necho 'Hello';",
-            content_part_id=content_part_id,
-        )
-        
-        annotator = ScriptHeaderAnnotator.__new__(ScriptHeaderAnnotator)
-        results = annotator.annotate(data)
-        
-        assert any(r.key == 'has_script_header' for r in results)
-        
-        type_result = next(r for r in results if r.key == 'script_type')
-        assert type_result.value == 'php'
-    
-    def test_no_script_header(self, content_part_id):
-        """Should not detect in plain text."""
-        data = make_content_part_data(
-            text_content="Just some plain text about programming.",
-            content_part_id=content_part_id,
-        )
-        
-        annotator = ScriptHeaderAnnotator.__new__(ScriptHeaderAnnotator)
         results = annotator.annotate(data)
         
         assert len(results) == 0
@@ -396,21 +305,3 @@ class TestContentPartAnnotatorBase:
             assert hasattr(annotator_cls, 'PRIORITY')
             assert isinstance(annotator_cls.PRIORITY, int)
 
-
-# ============================================================
-# Registry Tests
-# ============================================================
-
-class TestContentPartAnnotatorRegistry:
-    """Test the content-part annotator registry."""
-    
-    def test_all_annotators_in_registry(self):
-        """All annotators should be in CONTENT_PART_ANNOTATORS."""
-        assert CodeBlockAnnotator in CONTENT_PART_ANNOTATORS
-        assert ScriptHeaderAnnotator in CONTENT_PART_ANNOTATORS
-        assert LatexContentAnnotator in CONTENT_PART_ANNOTATORS
-        assert WikiLinkContentAnnotator in CONTENT_PART_ANNOTATORS
-    
-    def test_registry_count(self):
-        """Registry should have expected number of annotators."""
-        assert len(CONTENT_PART_ANNOTATORS) == 4

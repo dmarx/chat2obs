@@ -55,6 +55,7 @@ class Dialogue(Base):
     
     source_rel = relationship("Source", back_populates="dialogues")
     messages = relationship("Message", back_populates="dialogue", cascade="all, delete-orphan")
+    prompt_responses = relationship('PromptResponse', back_populates='dialogue')
 
 
 class Message(Base):

@@ -21,6 +21,17 @@ from llm_archive.models.raw import (
 
 from llm_archive.models.derived import (
     PromptResponse,
+    PromptResponseContent,
+    AnnotatorCursor,
+)
+
+from llm_archive.models.annotations import (
+    get_annotation_model,
+    get_all_annotation_models,
+    ContentPartAnnotationFlag,
+    ContentPartAnnotationString,
+    PromptResponseAnnotationFlag,
+    PromptResponseAnnotationString,
 )
 
 __all__ = [
@@ -46,4 +57,13 @@ __all__ = [
     # Derived
     "PromptResponse",
     "PromptResponseContent",
+    "AnnotatorCursor",
+    # Annotation model helpers
+    "get_annotation_model",
+    "get_all_annotation_models",
+    # Common annotation models
+    "ContentPartAnnotationFlag",
+    "ContentPartAnnotationString",
+    "PromptResponseAnnotationFlag",
+    "PromptResponseAnnotationString",
 ]

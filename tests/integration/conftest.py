@@ -1,19 +1,19 @@
 # tests/integration/conftest.py
-"""Pytest configuration for integration tests - CORRECTED FIXTURES."""
+"""Pytest configuration for integration tests."""
 
 import os
+from pathlib import Path
 from typing import Generator
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 
 def get_test_db_url() -> str:
     """Get test database URL from environment."""
-    url = os.getenv('TEST_DATABASE_URL', 'postgresql://localhost:5432/llm_archive_test')
-    return url
+    return os.getenv('TEST_DATABASE_URL', 'postgresql://localhost:5432/llm_archive_test')
 
 
 @pytest.fixture(scope="session")
@@ -27,44 +27,22 @@ def db_engine() -> Generator[Engine, None, None]:
 
 @pytest.fixture(scope="session")
 def setup_schemas(db_engine):
-    """Initialize schemas once per test session."""
-    from pathlib import Path
-    
-    # Find schema directory relative to this file
+    """Initialize schemas once per test session via ORM."""
+    from llm_archive.db import drop_schemas, init_schema_with_engine
+
     tests_dir = Path(__file__).parent.parent
     project_dir = tests_dir.parent
     schema_dir = project_dir / "schema"
-    
-    with db_engine.connect() as conn:
-        # Drop and recreate schemas
-        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
-        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
-        conn.commit()
-        
-        # Execute schema files in order
-        for sql_file in sorted(schema_dir.glob("*.sql")):
-            print(f"Executing {sql_file.name}")
-            sql = sql_file.read_text()
-            
-            try:
-                conn.execute(text(sql))
-                conn.commit()
-            except Exception as e:
-                if "already exists" in str(e).lower():
-                    conn.rollback()
-                    print(f"Note: {sql_file.name} - {e}")
-                else:
-                    print(f"ERROR in {sql_file.name}: {e}")
-                    conn.rollback()
-                    raise
-    
+
+    drop_schemas(db_engine)
+    init_schema_with_engine(
+        db_engine,
+        schema_dir if schema_dir.exists() else None,
+    )
+
     yield
-    
-    # Cleanup
-    with db_engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
-        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
-        conn.commit()
+
+    drop_schemas(db_engine)
 
 
 @pytest.fixture
@@ -74,9 +52,9 @@ def db_session(db_engine, setup_schemas) -> Generator[Session, None, None]:
     transaction = connection.begin()
     SessionFactory = sessionmaker(bind=connection)
     session = SessionFactory()
-    
+
     yield session
-    
+
     session.close()
     transaction.rollback()
     connection.close()
@@ -117,9 +95,9 @@ def chatgpt_simple_conversation() -> dict:
                     "create_time": 1700000100.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Hello, how are you?"]
-                    }
-                }
+                        "parts": ["Hello, how are you?"],
+                    },
+                },
             },
             "node-2": {
                 "id": "node-2",
@@ -131,9 +109,9 @@ def chatgpt_simple_conversation() -> dict:
                     "create_time": 1700000200.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["I'm doing well, thank you!"]
-                    }
-                }
+                        "parts": ["I'm doing well, thank you!"],
+                    },
+                },
             },
             "node-3": {
                 "id": "node-3",
@@ -145,9 +123,9 @@ def chatgpt_simple_conversation() -> dict:
                     "create_time": 1700000300.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["What's the weather like?"]
-                    }
-                }
+                        "parts": ["What's the weather like?"],
+                    },
+                },
             },
             "node-4": {
                 "id": "node-4",
@@ -159,109 +137,106 @@ def chatgpt_simple_conversation() -> dict:
                     "create_time": 1700000400.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["It's sunny and warm today."]
-                    }
-                }
-            }
-        }
+                        "parts": ["It's sunny and warm today."],
+                    },
+                },
+            },
+        },
     }
 
 
 @pytest.fixture
 def chatgpt_branched_conversation() -> dict:
-    """ChatGPT conversation: 1 user message with 2 assistant responses that each have continuation messages."""
+    """ChatGPT conversation with branching (regenerated response)."""
     return {
         "conversation_id": "conv-branched-001",
         "title": "Branched Test Conversation",
-        "create_time": 1700000000.0,
+        "create_time": 1700002000.0,
         "update_time": 1700002000.0,
         "mapping": {
             "root": {
                 "id": "root",
                 "parent": None,
-                "children": ["user1"],
+                "children": ["node-1"],
                 "message": None,
             },
-            # THE ONLY USER MESSAGE - has 2 assistant children (regenerations)
-            "user1": {
-                "id": "user1",
+            "node-1": {
+                "id": "node-1",
                 "parent": "root",
-                "children": ["asst1a", "asst1b"],  # BRANCH POINT
+                "children": ["node-2a", "node-2b"],
                 "message": {
-                    "id": "msg-user1",
+                    "id": "msg-b-1",
                     "author": {"role": "user"},
-                    "create_time": 1700000100.0,
+                    "create_time": 1700002100.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Tell me a story"]
-                    }
-                }
+                        "parts": ["Tell me a joke"],
+                    },
+                },
             },
-            # First branch
-            "asst1a": {
-                "id": "asst1a",
-                "parent": "user1",
-                "children": ["asst2a"],
+            "node-2a": {
+                "id": "node-2a",
+                "parent": "node-1",
+                "children": ["node-3a"],
                 "message": {
-                    "id": "msg-asst1a",
+                    "id": "msg-b-2a",
                     "author": {"role": "assistant"},
-                    "create_time": 1700000200.0,
+                    "create_time": 1700002200.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Once upon a time..."]
-                    }
-                }
+                        "parts": ["Why did the chicken cross the road?"],
+                    },
+                },
             },
-            "asst2a": {
-                "id": "asst2a",
-                "parent": "asst1a",
+            "node-3a": {
+                "id": "node-3a",
+                "parent": "node-2a",
                 "children": [],
                 "message": {
-                    "id": "msg-asst2a",
-                    "author": {"role": "assistant"},
-                    "create_time": 1700000300.0,
+                    "id": "msg-b-3a",
+                    "author": {"role": "user"},
+                    "create_time": 1700002300.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["There was a brave knight..."]
-                    }
-                }
+                        "parts": ["Why?"],
+                    },
+                },
             },
-            # Second branch  
-            "asst1b": {
-                "id": "asst1b",
-                "parent": "user1",
-                "children": ["asst2b"],
+            "node-2b": {
+                "id": "node-2b",
+                "parent": "node-1",
+                "children": ["node-3b"],
                 "message": {
-                    "id": "msg-asst1b",
+                    "id": "msg-b-2b",
                     "author": {"role": "assistant"},
-                    "create_time": 1700000250.0,
+                    "create_time": 1700002250.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["In a galaxy far away..."]
-                    }
-                }
+                        "parts": ["What do you call a fake noodle? An impasta!"],
+                    },
+                },
             },
-            "asst2b": {
-                "id": "asst2b",
-                "parent": "asst1b",
+            "node-3b": {
+                "id": "node-3b",
+                "parent": "node-2b",
                 "children": [],
                 "message": {
-                    "id": "msg-asst2b",
-                    "author": {"role": "assistant"},
-                    "create_time": 1700000350.0,
+                    "id": "msg-b-3b",
+                    "author": {"role": "user"},
+                    "create_time": 1700002350.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["A spaceship landed..."]
-                    }
-                }
-            }
-        }
+                        "parts": ["Ha! Good one."],
+                    },
+                },
+            },
+        },
     }
 
 
 @pytest.fixture
 def chatgpt_conversation_with_code() -> dict:
-    """ChatGPT conversation with code content - uses nested parts structure."""
+    """ChatGPT conversation with code content — nested parts structure."""
     return {
         "conversation_id": "conv-code-001",
         "title": "Code Example",
@@ -284,9 +259,11 @@ def chatgpt_conversation_with_code() -> dict:
                     "create_time": 1700000100.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["Write a Python function to calculate fibonacci numbers"]
-                    }
-                }
+                        "parts": [
+                            "Write a Python function to calculate fibonacci numbers"
+                        ],
+                    },
+                },
             },
             "node-2": {
                 "id": "node-2",
@@ -303,20 +280,25 @@ def chatgpt_conversation_with_code() -> dict:
                             {
                                 "content_type": "code",
                                 "language": "python",
-                                "text": "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)"
+                                "text": (
+                                    "def fibonacci(n):\n"
+                                    "    if n <= 1:\n"
+                                    "        return n\n"
+                                    "    return fibonacci(n-1) + fibonacci(n-2)"
+                                ),
                             },
-                            "This is a recursive implementation."
-                        ]
-                    }
-                }
-            }
-        }
+                            "This is a recursive implementation.",
+                        ],
+                    },
+                },
+            },
+        },
     }
 
 
 @pytest.fixture
 def chatgpt_conversation_with_image() -> dict:
-    """ChatGPT conversation with image content - uses nested parts structure."""
+    """ChatGPT conversation with image content — multimodal parts."""
     return {
         "conversation_id": "conv-image-001",
         "title": "Image Example",
@@ -343,11 +325,11 @@ def chatgpt_conversation_with_image() -> dict:
                             "What's in this image?",
                             {
                                 "content_type": "image/png",
-                                "asset_pointer": "file-service://dalle-gen-abc123"
-                            }
-                        ]
-                    }
-                }
+                                "asset_pointer": "file-service://dalle-gen-abc123",
+                            },
+                        ],
+                    },
+                },
             },
             "node-2": {
                 "id": "node-2",
@@ -359,11 +341,11 @@ def chatgpt_conversation_with_image() -> dict:
                     "create_time": 1700000200.0,
                     "content": {
                         "content_type": "text",
-                        "parts": ["This image shows a cat."]
-                    }
-                }
-            }
-        }
+                        "parts": ["This image shows a cat."],
+                    },
+                },
+            },
+        },
     }
 
 
@@ -373,38 +355,37 @@ def chatgpt_conversations(
     chatgpt_branched_conversation,
 ) -> list[dict]:
     """List of ChatGPT test conversations."""
-    third_conversation = {
-        "conversation_id": "conv-third-001",
-        "title": "Third Conversation",
-        "create_time": 1700003000.0,
-        "update_time": 1700003000.0,
-        "mapping": {
-            "root": {
-                "id": "root",
-                "parent": None,
-                "children": ["node-1"],
-                "message": None,
-            },
-            "node-1": {
-                "id": "node-1",
-                "parent": "root",
-                "children": [],
-                "message": {
-                    "id": "msg-third-1",
-                    "author": {"role": "user"},
-                    "create_time": 1700003100.0,
-                    "content": {
-                        "content_type": "text",
-                        "parts": ["Hello"]
-                    }
-                }
-            }
-        }
-    }
     return [
         chatgpt_simple_conversation,
         chatgpt_branched_conversation,
-        third_conversation,
+        {
+            "conversation_id": "conv-third-001",
+            "title": "Third Conversation",
+            "create_time": 1700003000.0,
+            "update_time": 1700003000.0,
+            "mapping": {
+                "root": {
+                    "id": "root",
+                    "parent": None,
+                    "children": ["node-1"],
+                    "message": None,
+                },
+                "node-1": {
+                    "id": "node-1",
+                    "parent": "root",
+                    "children": [],
+                    "message": {
+                        "id": "msg-third-1",
+                        "author": {"role": "user"},
+                        "create_time": 1700003100.0,
+                        "content": {
+                            "content_type": "text",
+                            "parts": ["Hello"],
+                        },
+                    },
+                },
+            },
+        },
     ]
 
 
@@ -425,9 +406,7 @@ def claude_simple_conversation() -> dict:
                 "uuid": "claude-msg-001",
                 "sender": "human",
                 "created_at": "2024-01-15T10:00:00Z",
-                "content": [
-                    {"type": "text", "text": "Hello Claude"}
-                ]
+                "content": [{"type": "text", "text": "Hello Claude"}],
             },
             {
                 "uuid": "claude-msg-002",
@@ -435,25 +414,21 @@ def claude_simple_conversation() -> dict:
                 "created_at": "2024-01-15T10:01:00Z",
                 "content": [
                     {"type": "text", "text": "Hello! How can I help you today?"}
-                ]
+                ],
             },
             {
                 "uuid": "claude-msg-003",
                 "sender": "human",
                 "created_at": "2024-01-15T10:05:00Z",
-                "content": [
-                    {"type": "text", "text": "What's 5 + 3?"}
-                ]
+                "content": [{"type": "text", "text": "What's 5 + 3?"}],
             },
             {
                 "uuid": "claude-msg-004",
                 "sender": "assistant",
                 "created_at": "2024-01-15T10:06:00Z",
-                "content": [
-                    {"type": "text", "text": "5 + 3 = 8"}
-                ]
-            }
-        ]
+                "content": [{"type": "text", "text": "5 + 3 = 8"}],
+            },
+        ],
     }
 
 
@@ -470,20 +445,21 @@ def claude_conversation_with_thinking() -> dict:
                 "uuid": "claude-msg-005",
                 "sender": "human",
                 "created_at": "2024-01-15T11:00:00Z",
-                "content": [
-                    {"type": "text", "text": "What is 15 * 23?"}
-                ]
+                "content": [{"type": "text", "text": "What is 15 * 23?"}],
             },
             {
                 "uuid": "claude-msg-006",
                 "sender": "assistant",
                 "created_at": "2024-01-15T11:01:00Z",
                 "content": [
-                    {"type": "thinking", "thinking": "Let me calculate: 15 * 23 = 345"},
-                    {"type": "text", "text": "15 multiplied by 23 equals 345."}
-                ]
-            }
-        ]
+                    {
+                        "type": "thinking",
+                        "thinking": "Let me calculate: 15 * 23 = 345",
+                    },
+                    {"type": "text", "text": "15 multiplied by 23 equals 345."},
+                ],
+            },
+        ],
     }
 
 
@@ -502,7 +478,7 @@ def claude_conversation_with_tool_use() -> dict:
                 "created_at": "2024-01-15T12:00:00Z",
                 "content": [
                     {"type": "text", "text": "Search for recent news about AI."}
-                ]
+                ],
             },
             {
                 "uuid": "claude-msg-008",
@@ -513,9 +489,9 @@ def claude_conversation_with_tool_use() -> dict:
                         "type": "tool_use",
                         "id": "tool-001",
                         "name": "web_search",
-                        "input": {"query": "recent AI news 2024"}
+                        "input": {"query": "recent AI news 2024"},
                     }
-                ]
+                ],
             },
             {
                 "uuid": "claude-msg-009",
@@ -525,19 +501,22 @@ def claude_conversation_with_tool_use() -> dict:
                     {
                         "type": "tool_result",
                         "tool_use_id": "tool-001",
-                        "content": "AI advances in 2024 include..."
+                        "content": "AI advances in 2024 include...",
                     }
-                ]
+                ],
             },
             {
                 "uuid": "claude-msg-010",
                 "sender": "assistant",
                 "created_at": "2024-01-15T12:03:00Z",
                 "content": [
-                    {"type": "text", "text": "Based on my search, here are the recent developments in AI..."}
-                ]
-            }
-        ]
+                    {
+                        "type": "text",
+                        "text": "Based on my search, here are the recent developments in AI...",
+                    }
+                ],
+            },
+        ],
     }
 
 
@@ -563,11 +542,11 @@ def claude_conversations(
 def populated_chatgpt_db(clean_db_session, chatgpt_simple_conversation):
     """Database with a single ChatGPT conversation imported."""
     from llm_archive.extractors import ChatGPTExtractor
-    
+
     extractor = ChatGPTExtractor(clean_db_session)
     extractor.extract_dialogue(chatgpt_simple_conversation)
     clean_db_session.commit()
-    
+
     return clean_db_session
 
 
@@ -575,11 +554,11 @@ def populated_chatgpt_db(clean_db_session, chatgpt_simple_conversation):
 def populated_claude_db(clean_db_session, claude_simple_conversation):
     """Database with a single Claude conversation imported."""
     from llm_archive.extractors import ClaudeExtractor
-    
+
     extractor = ClaudeExtractor(clean_db_session)
     extractor.extract_dialogue(claude_simple_conversation)
     clean_db_session.commit()
-    
+
     return clean_db_session
 
 
@@ -593,19 +572,19 @@ def fully_populated_db(
     """Database with multiple conversations and derived data."""
     from llm_archive.extractors import ChatGPTExtractor, ClaudeExtractor
     from llm_archive.builders.prompt_response import PromptResponseBuilder
-    
+
     chatgpt_extractor = ChatGPTExtractor(clean_db_session)
     chatgpt_extractor.extract_dialogue(chatgpt_simple_conversation)
     chatgpt_extractor.extract_dialogue(chatgpt_branched_conversation)
-    
+
     claude_extractor = ClaudeExtractor(clean_db_session)
     claude_extractor.extract_dialogue(claude_simple_conversation)
-    
+
     clean_db_session.commit()
-    
+
     pr_builder = PromptResponseBuilder(clean_db_session)
     pr_builder.build_all()
-    
+
     clean_db_session.commit()
-    
+
     return clean_db_session

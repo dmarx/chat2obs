@@ -1,9 +1,13 @@
 # llm_archive/annotators/content_part.py
-"""
-Content-part level annotators.
+"""Content-part level annotators.
 
-These annotators work on individual content_parts within messages,
-detecting features like code blocks, LaTeX, and other content types.
+Annotators work on individual content_parts within messages,
+detecting features like code blocks, LaTeX, and wiki links.
+
+All annotators extend ContentPartAnnotator which extends BaseAnnotator,
+gaining cursor-based incremental processing automatically.
+
+Entity iteration uses ORM queries (ContentPart + Message models).
 """
 
 import re
@@ -13,17 +17,16 @@ from datetime import datetime
 from typing import Iterator
 from uuid import UUID
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from llm_archive.annotations.core import (
-    AnnotationWriter,
-    AnnotationReader,
-    AnnotationResult,
-    EntityType,
-    ValueType,
-)
+from llm_archive.annotations.core import AnnotationResult, EntityType, ValueType
+from llm_archive.annotators.base import BaseAnnotator
+from llm_archive.models.raw import ContentPart, Message
 
+
+# ============================================================
+# Data Classes
+# ============================================================
 
 @dataclass
 class ContentPartData:
@@ -39,108 +42,81 @@ class ContentPartData:
     created_at: datetime | None
 
 
-class ContentPartAnnotator:
+# ============================================================
+# Base Content-Part Annotator
+# ============================================================
+
+class ContentPartAnnotator(BaseAnnotator[ContentPartData]):
+    """Base class for annotating content parts.
+
+    Iterates over ContentPart joined with Message using ORM queries.
+    Supports optional content filters (PART_TYPE_FILTER, ROLE_FILTER).
+
+    Subclass and implement ``annotate()`` to create a new content-part
+    annotator.  Everything else (cursor tracking, result writing,
+    incremental processing) is handled automatically.
     """
-    Base class for annotating content parts.
-    
-    Iterates over raw.content_parts joined with raw.messages.
-    Supports annotation prerequisites and skip conditions.
-    """
-    
+
     ENTITY_TYPE = EntityType.CONTENT_PART
-    ANNOTATION_KEY: str = ''  # Subclass must define
-    VALUE_TYPE: ValueType = ValueType.FLAG
-    PRIORITY: int = 50  # Higher = runs first
-    
-    # Annotation filters
-    REQUIRES_FLAGS: list[str] = []
-    REQUIRES_STRINGS: list[tuple[str, str]] = []
-    SKIP_IF_FLAGS: list[str] = []
-    SKIP_IF_STRINGS: list[tuple[str, ...]] = []
-    
-    # Content filters
-    PART_TYPE_FILTER: str | None = None  # Limit to specific part_type
-    ROLE_FILTER: str | None = None  # Limit to 'user' or 'assistant'
-    
-    def __init__(self, session: Session):
-        self.session = session
-        self.writer = AnnotationWriter(session)
-        self.reader = AnnotationReader(session)
-    
-    def compute(self) -> int:
-        """Run annotation over content parts."""
-        count = 0
-        for data in self._iter_content_parts():
-            results = self.annotate(data)
-            for result in results:
-                if self._write_result(data.content_part_id, result):
-                    count += 1
-        return count
-    
-    def _write_result(self, entity_id: UUID, result: AnnotationResult) -> bool:
-        """Write an annotation result to the appropriate table."""
-        return self.writer.write(EntityType.CONTENT_PART, entity_id, result)
-    
-    def _iter_content_parts(self) -> Iterator[ContentPartData]:
-        """Iterate over content parts, respecting filters."""
-        # Build base query
-        query = """
-            SELECT 
-                cp.id as content_part_id,
-                cp.message_id,
-                m.dialogue_id,
-                cp.sequence,
-                cp.part_type,
-                cp.text_content,
-                cp.language,
-                m.role,
-                m.created_at
-            FROM raw.content_parts cp
-            JOIN raw.messages m ON m.id = cp.message_id
-            WHERE m.deleted_at IS NULL
-        """
-        
-        params = {}
-        
-        # Add part_type filter
-        if self.PART_TYPE_FILTER:
-            query += " AND cp.part_type = :part_type"
-            params['part_type'] = self.PART_TYPE_FILTER
-        
-        # Add role filter
-        if self.ROLE_FILTER:
-            query += " AND m.role = :role"
-            params['role'] = self.ROLE_FILTER
-        
-        query += " ORDER BY m.dialogue_id, m.created_at, cp.sequence"
-        
-        result = self.session.execute(text(query), params)
-        
-        for row in result:
-            yield ContentPartData(
-                content_part_id=row.content_part_id,
-                message_id=row.message_id,
-                dialogue_id=row.dialogue_id,
-                sequence=row.sequence,
-                part_type=row.part_type,
-                text_content=row.text_content,
-                language=row.language,
-                role=row.role,
-                created_at=row.created_at,
+
+    # Content filters — override in subclass
+    PART_TYPE_FILTER: str | None = None   # e.g. 'text', 'code'
+    ROLE_FILTER: str | None = None        # e.g. 'assistant', 'user'
+
+    # ------------------------------------------------------------------
+    # BaseAnnotator interface
+    # ------------------------------------------------------------------
+
+    def _iter_entities_after(self, after: datetime) -> Iterator[ContentPartData]:
+        """Yield content parts whose message.created_at > *after*."""
+        query = (
+            self.session.query(
+                ContentPart.id,
+                ContentPart.message_id,
+                Message.dialogue_id,
+                ContentPart.sequence,
+                ContentPart.part_type,
+                ContentPart.text_content,
+                ContentPart.language,
+                Message.role,
+                Message.created_at,
             )
-    
+            .join(ContentPart.message)
+            .filter(Message.deleted_at.is_(None))
+            .filter(Message.created_at > after)
+        )
+
+        if self.PART_TYPE_FILTER:
+            query = query.filter(ContentPart.part_type == self.PART_TYPE_FILTER)
+
+        if self.ROLE_FILTER:
+            query = query.filter(Message.role == self.ROLE_FILTER)
+
+        query = query.order_by(Message.created_at, ContentPart.sequence)
+
+        for row in query:
+            yield ContentPartData(
+                content_part_id=row[0],
+                message_id=row[1],
+                dialogue_id=row[2],
+                sequence=row[3],
+                part_type=row[4],
+                text_content=row[5],
+                language=row[6],
+                role=row[7],
+                created_at=row[8],
+            )
+
+    def _entity_id(self, data: ContentPartData) -> UUID:
+        return data.content_part_id
+
+    def _created_at(self, data: ContentPartData) -> datetime | None:
+        return data.created_at
+
     @abstractmethod
     def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
-        """
-        Analyze content part and return annotations to create.
-        
-        Args:
-            data: ContentPartData with content and metadata
-            
-        Returns:
-            List of AnnotationResult objects (empty list if no match)
-        """
-        pass
+        """Analyze content part and return annotations to create."""
+        ...
 
 
 # ============================================================
@@ -148,258 +124,146 @@ class ContentPartAnnotator:
 # ============================================================
 
 class CodeBlockAnnotator(ContentPartAnnotator):
-    """
-    Detect explicit code blocks (```) in text content parts.
-    
-    Highest priority code detector - explicit markdown code blocks
-    are the most reliable signal.
-    
+    """Detect explicit code blocks (```) in text content parts.
+
     Produces:
     - has_code_block FLAG
     - code_block_count NUMERIC
-    - code_languages STRING (multi-value)
+    - code_language STRING (multi-value, one per detected language)
     """
-    
-    ANNOTATION_KEY = 'has_code_block'
+
+    ANNOTATION_KEY = "has_code_block"
     VALUE_TYPE = ValueType.FLAG
     PRIORITY = 90
-    PART_TYPE_FILTER = 'text'
-    ROLE_FILTER = 'assistant'
-    
-    # Pattern to match complete code blocks: ```lang\n...content...```
-    # Captures the optional language specifier
-    CODE_BLOCK_PATTERN = re.compile(r'```(\w*)\n?[\s\S]*?```')
-    
+    PART_TYPE_FILTER = "text"
+    ROLE_FILTER = "assistant"
+
+    CODE_BLOCK_PATTERN = re.compile(r"```(\w*)\n?.*?```", re.DOTALL)
+
     def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
         if not data.text_content:
             return []
-        
-        # Find all complete code blocks
-        matches = list(self.CODE_BLOCK_PATTERN.finditer(data.text_content))
-        
+
+        matches = self.CODE_BLOCK_PATTERN.findall(data.text_content)
         if not matches:
             return []
-        
-        results = []
-        
-        # Flag annotation
-        results.append(AnnotationResult(
-            key='has_code_block',
-            value_type=ValueType.FLAG,
-            reason='markdown_code_block',
-            confidence=1.0,
-        ))
-        
-        # Count annotation
-        block_count = len(matches)
-        results.append(AnnotationResult(
-            key='code_block_count',
-            value=block_count,
-            value_type=ValueType.NUMERIC,
-        ))
-        
-        # Language annotations (multi-value)
-        languages = set()
-        for match in matches:
-            lang = match.group(1).lower()
-            if lang:  # Skip empty language specs
-                languages.add(lang)
-        
-        for lang in languages:
-            results.append(AnnotationResult(
-                key='code_language',
-                value=lang,
-                value_type=ValueType.STRING,
-                reason='code_block_language_spec',
-            ))
-        
-        return results
 
+        results: list[AnnotationResult] = [
+            AnnotationResult(
+                key="has_code_block",
+                value_type=ValueType.FLAG,
+                confidence=1.0,
+            ),
+            AnnotationResult(
+                key="code_block_count",
+                value=len(matches),
+                value_type=ValueType.NUMERIC,
+            ),
+        ]
 
-class ScriptHeaderAnnotator(ContentPartAnnotator):
-    """
-    Detect script headers and system includes (strong code evidence).
-    
-    Shebangs and #include are unambiguous code markers.
-    
-    Produces:
-    - has_script_header FLAG
-    - script_type STRING
-    """
-    
-    ANNOTATION_KEY = 'has_script_header'
-    VALUE_TYPE = ValueType.FLAG
-    PRIORITY = 85
-    PART_TYPE_FILTER = 'text'
-    
-    SHEBANG_PATTERN = re.compile(r'^#!\s*/(?:usr/)?bin/(?:env\s+)?(\w+)', re.MULTILINE)
-    INCLUDE_PATTERN = re.compile(r'^#include\s*[<"]', re.MULTILINE)
-    PHP_PATTERN = re.compile(r'<\?php', re.IGNORECASE)
-    
-    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
-        if not data.text_content:
-            return []
-        
-        results = []
-        
-        # Check for shebang
-        shebang_match = self.SHEBANG_PATTERN.search(data.text_content)
-        if shebang_match:
-            results.append(AnnotationResult(
-                key='has_script_header',
-                value_type=ValueType.FLAG,
-                reason='shebang',
-                confidence=1.0,
-            ))
-            results.append(AnnotationResult(
-                key='script_type',
-                value=shebang_match.group(1),
-                value_type=ValueType.STRING,
-                reason='shebang_interpreter',
-            ))
-            return results
-        
-        # Check for C/C++ includes
-        if self.INCLUDE_PATTERN.search(data.text_content):
-            results.append(AnnotationResult(
-                key='has_script_header',
-                value_type=ValueType.FLAG,
-                reason='c_include',
-                confidence=1.0,
-            ))
-            results.append(AnnotationResult(
-                key='script_type',
-                value='c',
-                value_type=ValueType.STRING,
-            ))
-            return results
-        
-        # Check for PHP
-        if self.PHP_PATTERN.search(data.text_content):
-            results.append(AnnotationResult(
-                key='has_script_header',
-                value_type=ValueType.FLAG,
-                reason='php_tag',
-                confidence=1.0,
-            ))
-            results.append(AnnotationResult(
-                key='script_type',
-                value='php',
-                value_type=ValueType.STRING,
-            ))
-            return results
-        
+        languages = {lang.lower() for lang in matches if lang}
+        for lang in sorted(languages):
+            results.append(
+                AnnotationResult(
+                    key="code_language",
+                    value=lang,
+                    value_type=ValueType.STRING,
+                    confidence=1.0,
+                )
+            )
+
         return results
 
 
 # ============================================================
-# Content Type Annotators
+# Script Header Annotator
+# ============================================================
+
+
+# ============================================================
+# LaTeX Content Annotator
 # ============================================================
 
 class LatexContentAnnotator(ContentPartAnnotator):
-    """
-    Detect LaTeX/MathJax mathematical notation in content parts.
-    
+    """Detect LaTeX content in text.
+
     Produces:
     - has_latex FLAG
-    - latex_type STRING ('display', 'inline', 'commands')
+    - latex_type STRING ('inline' | 'display' | 'commands')
     """
-    
-    ANNOTATION_KEY = 'has_latex'
+
+    ANNOTATION_KEY = "has_latex"
     VALUE_TYPE = ValueType.FLAG
     PRIORITY = 70
-    PART_TYPE_FILTER = 'text'
-    ROLE_FILTER = 'assistant'
-    
-    # Display math: $$ ... $$ or \[ ... \]
-    DISPLAY_MATH_PATTERN = re.compile(r'\$\$.+?\$\$|\\\[.+?\\\]', re.DOTALL)
-    
-    # Inline math: $ ... $ (but not $$)
-    INLINE_MATH_PATTERN = re.compile(r'(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$)')
-    
-    # LaTeX commands: \frac, \sum, \int, etc.
-    LATEX_COMMANDS_PATTERN = re.compile(
-        r'\\(?:frac|sum|int|prod|lim|sqrt|begin|end|alpha|beta|gamma|'
-        r'delta|epsilon|theta|lambda|sigma|omega|pi|infty|partial|nabla|'
-        r'mathbb|mathcal|mathbf|mathrm|text|left|right|cdot|times|div)'
-    )
-    
+    PART_TYPE_FILTER = "text"
+
+    INLINE_MATH = re.compile(r"(?<!\$)\$(?!\$)(?!\d)[^$\n]+?\$(?!\$)")
+    DISPLAY_MATH = re.compile(r"\$\$[^$]+?\$\$", re.DOTALL)
+    LATEX_COMMANDS = re.compile(r"\\(?:frac|sqrt|sum|int|prod|lim|begin|end)\b")
+
     def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
         if not data.text_content:
             return []
-        
-        results = []
-        latex_types = set()
-        
-        if self.DISPLAY_MATH_PATTERN.search(data.text_content):
-            latex_types.add('display')
-        
-        if self.INLINE_MATH_PATTERN.search(data.text_content):
-            latex_types.add('inline')
-        
-        if self.LATEX_COMMANDS_PATTERN.search(data.text_content):
-            latex_types.add('commands')
-        
-        if not latex_types:
+
+        detected: list[str] = []
+
+        if self.DISPLAY_MATH.search(data.text_content):
+            detected.append("display")
+        if self.INLINE_MATH.search(data.text_content):
+            detected.append("inline")
+        if self.LATEX_COMMANDS.search(data.text_content):
+            detected.append("commands")
+
+        if not detected:
             return []
-        
-        # Main flag
-        results.append(AnnotationResult(
-            key='has_latex',
-            value_type=ValueType.FLAG,
-            confidence=0.95 if 'display' in latex_types else 0.8,
-            reason='latex_notation_detected',
-        ))
-        
-        # Type annotations
-        for latex_type in latex_types:
-            results.append(AnnotationResult(
-                key='latex_type',
-                value=latex_type,
-                value_type=ValueType.STRING,
-            ))
-        
+
+        results: list[AnnotationResult] = [
+            AnnotationResult(key="has_latex", value_type=ValueType.FLAG, confidence=1.0),
+        ]
+        for latex_type in detected:
+            results.append(
+                AnnotationResult(key="latex_type", value=latex_type, value_type=ValueType.STRING)
+            )
         return results
 
 
+# ============================================================
+# Wiki Link Annotator
+# ============================================================
+
 class WikiLinkContentAnnotator(ContentPartAnnotator):
-    """
-    Detect Obsidian-style [[wiki links]] in content parts.
-    
-    This is a content-part level version for granular detection.
-    The prompt-response level WikiCandidateAnnotator aggregates this.
-    
+    """Detect [[wiki links]] in content.
+
     Produces:
     - has_wiki_links FLAG
     - wiki_link_count NUMERIC
     """
-    
-    ANNOTATION_KEY = 'has_wiki_links'
+
+    ANNOTATION_KEY = "has_wiki_links"
     VALUE_TYPE = ValueType.FLAG
     PRIORITY = 75
-    PART_TYPE_FILTER = 'text'
-    ROLE_FILTER = 'assistant'
-    
-    WIKI_LINK_PATTERN = re.compile(r'\[\[([^\]]+)\]\]')
-    
+    PART_TYPE_FILTER = "text"
+    ROLE_FILTER = "assistant"
+
+    WIKI_LINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
+
     def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
         if not data.text_content:
             return []
-        
+
         matches = self.WIKI_LINK_PATTERN.findall(data.text_content)
-        
         if not matches:
             return []
-        
+
         return [
             AnnotationResult(
-                key='has_wiki_links',
+                key="has_wiki_links",
                 value_type=ValueType.FLAG,
                 confidence=1.0,
-                reason='wiki_links_detected',
+                reason="wiki_links_detected",
             ),
             AnnotationResult(
-                key='wiki_link_count',
+                key="wiki_link_count",
                 value=len(matches),
                 value_type=ValueType.NUMERIC,
             ),
@@ -407,35 +271,11 @@ class WikiLinkContentAnnotator(ContentPartAnnotator):
 
 
 # ============================================================
-# Registry for running all annotators
+# Registry
 # ============================================================
 
-CONTENT_PART_ANNOTATORS = [
+CONTENT_PART_ANNOTATORS: list[type[ContentPartAnnotator]] = [
     CodeBlockAnnotator,
-    ScriptHeaderAnnotator,
     LatexContentAnnotator,
     WikiLinkContentAnnotator,
 ]
-
-
-def run_content_part_annotators(session: Session) -> dict[str, int]:
-    """
-    Run all content-part annotators in priority order.
-    
-    Returns dict mapping annotator name to annotation count.
-    """
-    # Sort by priority (descending)
-    sorted_annotators = sorted(
-        CONTENT_PART_ANNOTATORS,
-        key=lambda cls: cls.PRIORITY,
-        reverse=True,
-    )
-    
-    results = {}
-    for annotator_cls in sorted_annotators:
-        annotator = annotator_cls(session)
-        count = annotator.compute()
-        results[annotator_cls.__name__] = count
-    
-    session.commit()
-    return results

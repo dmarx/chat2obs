@@ -1,4 +1,4 @@
--- schema/004_prompt_response_views.sql
+-- schema/007_prompt_response_views.sql
 -- Prompt-response convenience views for annotation and analysis
 
 -- ============================================================
