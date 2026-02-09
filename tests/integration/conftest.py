@@ -235,6 +235,121 @@ def chatgpt_branched_conversation() -> dict:
 
 
 @pytest.fixture
+def chatgpt_conversation_with_code() -> dict:
+    """ChatGPT conversation with code content — nested parts structure."""
+    return {
+        "conversation_id": "conv-code-001",
+        "title": "Code Example",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            "root": {
+                "id": "root",
+                "parent": None,
+                "children": ["node-1"],
+                "message": None,
+            },
+            "node-1": {
+                "id": "node-1",
+                "parent": "root",
+                "children": ["node-2"],
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "Write a Python function to calculate fibonacci numbers"
+                        ],
+                    },
+                },
+            },
+            "node-2": {
+                "id": "node-2",
+                "parent": "node-1",
+                "children": [],
+                "message": {
+                    "id": "msg-2",
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "Here's a Python function:",
+                            {
+                                "content_type": "code",
+                                "language": "python",
+                                "text": (
+                                    "def fibonacci(n):\n"
+                                    "    if n <= 1:\n"
+                                    "        return n\n"
+                                    "    return fibonacci(n-1) + fibonacci(n-2)"
+                                ),
+                            },
+                            "This is a recursive implementation.",
+                        ],
+                    },
+                },
+            },
+        },
+    }
+
+
+@pytest.fixture
+def chatgpt_conversation_with_image() -> dict:
+    """ChatGPT conversation with image content — multimodal parts."""
+    return {
+        "conversation_id": "conv-image-001",
+        "title": "Image Example",
+        "create_time": 1700000000.0,
+        "update_time": 1700001000.0,
+        "mapping": {
+            "root": {
+                "id": "root",
+                "parent": None,
+                "children": ["node-1"],
+                "message": None,
+            },
+            "node-1": {
+                "id": "node-1",
+                "parent": "root",
+                "children": ["node-2"],
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "user"},
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            "What's in this image?",
+                            {
+                                "content_type": "image/png",
+                                "asset_pointer": "file-service://dalle-gen-abc123",
+                            },
+                        ],
+                    },
+                },
+            },
+            "node-2": {
+                "id": "node-2",
+                "parent": "node-1",
+                "children": [],
+                "message": {
+                    "id": "msg-2",
+                    "author": {"role": "assistant"},
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": ["This image shows a cat."],
+                    },
+                },
+            },
+        },
+    }
+
+
+@pytest.fixture
 def chatgpt_conversations(
     chatgpt_simple_conversation,
     chatgpt_branched_conversation,
