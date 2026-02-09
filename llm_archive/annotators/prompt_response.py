@@ -209,7 +209,7 @@ class WikiCandidateAnnotator(PromptResponseAnnotator):
 
         return [
             AnnotationResult(
-                key=self.key,
+                key=self.ANNOTATION_KEY,
                 value_type=ValueType.FLAG,
                 confidence=confidence,
                 reason=f"wiki_links={len(wiki_links)}",
@@ -248,7 +248,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                 if title:
                     return [
                         AnnotationResult(
-                            key="proposed_title",
+                            key=self.ANNOTATION_KEY,
                             value=title,
                             value_type=ValueType.STRING,
                             confidence=0.9,
@@ -261,7 +261,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                 if title:
                     return [
                         AnnotationResult(
-                            key="proposed_title",
+                            key=self.ANNOTATION_KEY,
                             value=title,
                             value_type=ValueType.STRING,
                             confidence=0.9,
@@ -277,7 +277,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                 if title:
                     return [
                         AnnotationResult(
-                            key="proposed_title",
+                            key=self.ANNOTATION_KEY,
                             value=title,
                             value_type=ValueType.STRING,
                             confidence=0.9,
