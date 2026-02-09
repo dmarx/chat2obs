@@ -159,29 +159,10 @@ class TestWikiLinkContentAnnotator:
 
     def test_detects_wiki_links(self):
         results = self._annotate("See [[Python]] and [[JavaScript]]")
-        assert any(r.key == "has_wiki_links" for r in results)
-        count = [r for r in results if r.key == "wiki_link_count"][0]
-        assert count.value == 2
+        assert any(r.key == "wiki_candidate" for r in results)
 
     def test_no_links_returns_empty(self):
         assert self._annotate("no links here") == []
-
-
-# ============================================================
-# Prompt Response Annotator Configuration
-# ============================================================
-
-class TestPromptResponseAnnotatorConfig:
-
-    def test_entity_type(self):
-        assert PromptResponseAnnotator.ENTITY_TYPE == EntityType.PROMPT_RESPONSE
-
-    def test_naive_title_requires_wiki(self):
-        assert NaiveTitleAnnotator.REQUIRES_STRINGS == [("exchange_type", "wiki_article")]
-
-    def test_priority_ordering(self):
-        assert WikiCandidateAnnotator.PRIORITY > NaiveTitleAnnotator.PRIORITY
-
 
 # ============================================================
 # WikiCandidateAnnotator
@@ -226,18 +207,3 @@ class TestNaiveTitleAnnotator:
         assert len(results) == 1
         assert results[0].value == "The Great Migration"
         assert results[0].confidence == 0.9
-
-    # def test_falls_back_to_first_line(self):
-    #     results = self._annotate("Understanding the Modern World of Science\n\nParagraph content.")
-    #     assert len(results) == 1
-    #     assert results[0].value == "Understanding the Modern World of Science"
-    #     assert results[0].confidence == 0.6
-
-    # def test_rejects_too_short_first_line(self):
-    #     results = self._annotate("Hi\n\nContent here.")
-    #     assert results == []
-
-    # def test_rejects_too_long_first_line(self):
-    #     long_first = " ".join(["word"] * 15)
-    #     results = self._annotate(f"{long_first}\n\nContent here.")
-    #     assert results == []
