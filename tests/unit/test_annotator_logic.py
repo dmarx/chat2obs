@@ -159,6 +159,8 @@ class TestWikiLinkContentAnnotator:
 
     def test_detects_wiki_links(self):
         results = self._annotate("See [[Python]] and [[JavaScript]]")
+        assert not any(r.key == "wiki_candidate" for r in results)
+        results = self._annotate("See [[Python]] and [[JavaScript]] or [[third link since two isn't enough to annotate]]")
         assert any(r.key == "wiki_candidate" for r in results)
 
     def test_no_links_returns_empty(self):
