@@ -205,13 +205,11 @@ class WikiCandidateAnnotator(PromptResponseAnnotator):
         if len(wiki_links) < 2:
             return []
 
-        confidence = min(1.0, 0.5 + (len(wiki_links) * 0.05))
-
         return [
             AnnotationResult(
                 key=self.ANNOTATION_KEY,
                 value_type=ValueType.FLAG,
-                confidence=confidence,
+                confidence=.85,
                 reason=f"wiki_links={len(wiki_links)}",
             )
         ]
