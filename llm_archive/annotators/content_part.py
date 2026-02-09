@@ -179,51 +179,6 @@ class CodeBlockAnnotator(ContentPartAnnotator):
 # Script Header Annotator
 # ============================================================
 
-class ScriptHeaderAnnotator(ContentPartAnnotator):
-    """Detect script headers (shebang lines, file path comments).
-
-    Produces:
-    - has_script_header FLAG
-    - script_type STRING ('shebang' | 'filepath')
-    """
-
-    ANNOTATION_KEY = "has_script_header"
-    VALUE_TYPE = ValueType.FLAG
-    PRIORITY = 85
-    PART_TYPE_FILTER = "text"
-    ROLE_FILTER = "assistant"
-
-    SHEBANG_PATTERN = re.compile(r"^#!\s*/", re.MULTILINE)
-    FILEPATH_PATTERN = re.compile(
-        r"^(?:#|//|/\*)\s*(?:File|Path|Filename):\s*\S+",
-        re.MULTILINE | re.IGNORECASE,
-    )
-
-    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
-        if not data.text_content:
-            return []
-
-        results: list[AnnotationResult] = []
-
-        if self.SHEBANG_PATTERN.search(data.text_content):
-            results.append(
-                AnnotationResult(key="has_script_header", value_type=ValueType.FLAG, confidence=1.0)
-            )
-            results.append(
-                AnnotationResult(key="script_type", value="shebang", value_type=ValueType.STRING)
-            )
-
-        if self.FILEPATH_PATTERN.search(data.text_content):
-            if not results:
-                results.append(
-                    AnnotationResult(key="has_script_header", value_type=ValueType.FLAG, confidence=0.9)
-                )
-            results.append(
-                AnnotationResult(key="script_type", value="filepath", value_type=ValueType.STRING)
-            )
-
-        return results
-
 
 # ============================================================
 # LaTeX Content Annotator
@@ -321,7 +276,6 @@ class WikiLinkContentAnnotator(ContentPartAnnotator):
 
 CONTENT_PART_ANNOTATORS: list[type[ContentPartAnnotator]] = [
     CodeBlockAnnotator,
-    ScriptHeaderAnnotator,
     LatexContentAnnotator,
     WikiLinkContentAnnotator,
 ]
