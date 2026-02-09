@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Generator
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,28 +28,21 @@ def db_engine() -> Generator[Engine, None, None]:
 @pytest.fixture(scope="session")
 def setup_schemas(db_engine):
     """Initialize schemas once per test session via ORM."""
-    from llm_archive.db import reset_schema
+    from llm_archive.db import drop_schemas, init_schema_with_engine
 
     tests_dir = Path(__file__).parent.parent
     project_dir = tests_dir.parent
     schema_dir = project_dir / "schema"
 
-    # reset_schema drops raw/derived then calls init_schema which:
-    #   1. creates PG schemas + extensions
-    #   2. creates ORM tables (Base.metadata.create_all)
-    #   3. seeds raw.sources
-    #   4. creates annotation union views
-    #   5. executes view SQL files from schema_dir
-    db_url = str(db_engine.url)
-    reset_schema(db_url, schema_dir if schema_dir.exists() else None)
+    drop_schemas(db_engine)
+    init_schema_with_engine(
+        db_engine,
+        schema_dir if schema_dir.exists() else None,
+    )
 
     yield
 
-    # Cleanup
-    with db_engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA IF EXISTS derived CASCADE"))
-        conn.execute(text("DROP SCHEMA IF EXISTS raw CASCADE"))
-        conn.commit()
+    drop_schemas(db_engine)
 
 
 @pytest.fixture
