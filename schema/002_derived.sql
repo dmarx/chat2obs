@@ -19,14 +19,15 @@ create table if not exists derived.annotator_cursors (
     
     annotator_name          text not null,
     annotator_version       text not null,
-    entity_type             text not null,  -- 'message', 'prompt_response', etc.
+    entity_type             text not null,  -- 'content_part', 'prompt_response', etc.
     
     -- High water mark: last entity created_at timestamp processed
     high_water_mark         timestamptz not null,
     
-    -- Stats for this cursor
+    -- Cumulative stats for this cursor
     entities_processed      int not null default 0,
     annotations_created     int not null default 0,
+    cumulative_runtime_seconds  float not null default 0,
     
     updated_at              timestamptz default now(),
     
