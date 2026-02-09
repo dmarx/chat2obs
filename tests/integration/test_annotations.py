@@ -344,7 +344,8 @@ class TestPromptResponseAnnotatorIntegration:
         reader = AnnotationReader(clean_db_session)
         pr = clean_db_session.query(PromptResponse).first()
         
-        values = reader.get_string(EntityType.PROMPT_RESPONSE, pr.id, 'wiki_candidate')
+        #values = reader.get_string(EntityType.PROMPT_RESPONSE, pr.id, 'wiki_candidate')
+        values = reader.has_flag(EntityType.PROMPT_RESPONSE, pr.id, 'wiki_candidate') # todo: simplify/reconcile api
         assert len(values) > 0
     
     def test_naive_title_annotator_end_to_end(self, clean_db_session, wiki_conversation):
