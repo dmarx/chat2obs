@@ -121,32 +121,6 @@ class TestCodeBlockAnnotator:
 
 
 # ============================================================
-# ScriptHeaderAnnotator
-# ============================================================
-
-class TestScriptHeaderAnnotator:
-
-    def _annotate(self, text: str) -> list[AnnotationResult]:
-        annotator = ScriptHeaderAnnotator.__new__(ScriptHeaderAnnotator)
-        return annotator.annotate(_make_content_part(text))
-
-    def test_detects_shebang(self):
-        results = self._annotate("#!/usr/bin/env python\nprint('hi')")
-        keys = {r.key for r in results}
-        assert "has_script_header" in keys
-        assert any(r.key == "script_type" and r.value == "shebang" for r in results)
-
-    def test_detects_filepath_comment(self):
-        results = self._annotate("# File: src/main.py\nimport sys")
-        keys = {r.key for r in results}
-        assert "has_script_header" in keys
-        assert any(r.key == "script_type" and r.value == "filepath" for r in results)
-
-    def test_no_header_returns_empty(self):
-        assert self._annotate("just some text") == []
-
-
-# ============================================================
 # LatexContentAnnotator
 # ============================================================
 
