@@ -15,102 +15,85 @@ if the key is already satisfied.
 
 Example: Detecting code in an exchange
   - ChatGPTCodeExecutionAnnotator (priority=100): Platform ground truth
-  - CodeBlockAnnotator (priority=90): Explicit ``` blocks  
+  - CodeBlockAnnotator (priority=90): Explicit ``` blocks
   - CodeStructureAnnotator (priority=70): Function/class patterns
   - CodeKeywordDensityAnnotator (priority=30): Keyword density
 
 If code execution is detected (priority 100), lower-priority heuristics
 can check has_annotation_key() to skip redundant work.
 
-**Annotation Types**
-- tag: For filtering (topic:physics, quality:high)
-- feature: Detected features (has_code_blocks, has_latex)
-- metadata: Structural data (dialogue_length, prompt_stats)
-- title: Generated titles
-- summary: Brief descriptions
+**Cursor-Based Incremental Processing**
 
-**Entity Types**
-- message: Individual messages
-- exchange: User prompt + assistant response pair
-- dialogue: Entire conversation
+All annotators extend BaseAnnotator which manages cursor state.
+On each run only entities with created_at > high_water_mark are processed.
+Changing VERSION creates a new cursor, forcing full reprocessing.
 
-Creating Custom Annotators:
---------------------------
+**Creating a Custom Annotator**
 
-For MESSAGE annotations based on text content:
+    from llm_archive.annotators.prompt_response import (
+        PromptResponseAnnotator, PromptResponseData,
+    )
+    from llm_archive.annotations.core import AnnotationResult, ValueType
 
-    class MyMessageAnnotator(MessageTextAnnotator):
-        ANNOTATION_TYPE = 'feature'
-        ANNOTATION_KEY = 'my_feature'  # What we're detecting
-        PRIORITY = 50                   # When to run (higher = first)
-        VERSION = '1.0'
-        ROLE_FILTER = 'assistant'       # or 'user' or None for all
-        
-        def annotate(self, data: MessageTextData) -> list[AnnotationResult]:
-            if 'keyword' in data.text:
-                return [AnnotationResult(value='has_keyword', confidence=0.9)]
-            return []
-
-For EXCHANGE annotations based on content:
-
-    class MyExchangeAnnotator(ExchangeAnnotator):
-        ANNOTATION_TYPE = 'tag'
+    class MyAnnotator(PromptResponseAnnotator):
         ANNOTATION_KEY = 'my_tag'
+        VALUE_TYPE = ValueType.STRING
         PRIORITY = 50
         VERSION = '1.0'
-        
-        def annotate(self, data: ExchangeData) -> list[AnnotationResult]:
-            if (data.assistant_word_count or 0) > 1000:
-                return [AnnotationResult(value='long_response', key='length')]
+
+        def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+            if some_condition(data):
+                return [AnnotationResult(key='my_tag', value='detected')]
             return []
 
-For EXCHANGE annotations based on platform features (e.g., ChatGPT):
+Then register it:
 
-    class MyChatGPTAnnotator(ExchangePlatformAnnotator):
-        ANNOTATION_TYPE = 'feature'
-        ANNOTATION_KEY = 'platform_feature'
-        PRIORITY = 100  # Platform = ground truth
-        VERSION = '1.0'
-        
-        def annotate(self, data: ExchangePlatformData) -> list[AnnotationResult]:
-            # Query platform tables using data.message_ids
-            ...
+    from llm_archive.annotators.registry import get_default_registry
 
-For DIALOGUE annotations with aggregate statistics:
-
-    class MyDialogueAnnotator(DialogueAnnotator):
-        ANNOTATION_TYPE = 'metadata'
-        ANNOTATION_KEY = 'my_stats'
-        PRIORITY = 50
-        VERSION = '1.0'
-        
-        def annotate(self, data: DialogueData) -> list[AnnotationResult]:
-            if data.exchange_count > 10:
-                return [AnnotationResult(value='extended', key='length')]
-            return []
-
-Priority Guidelines:
-- 100: Platform features (ground truth from database)
-- 90: Explicit syntax (```, shebangs)
-- 70: Structural patterns (function definitions)
-- 50: Keyword detection (default)
-- 30: Density/heuristic analysis
-
-Bump VERSION to reprocess all entities with new logic.
+    registry = get_default_registry()
+    registry.register(MyAnnotator)
+    results = registry.run_all(session)
 """
+
+from llm_archive.annotators.base import BaseAnnotator
+from llm_archive.annotators.registry import AnnotatorRegistry, get_default_registry
+
+from llm_archive.annotators.content_part import (
+    ContentPartAnnotator,
+    ContentPartData,
+    CodeBlockAnnotator,
+    ScriptHeaderAnnotator,
+    LatexContentAnnotator,
+    WikiLinkContentAnnotator,
+    CONTENT_PART_ANNOTATORS,
+)
 
 from llm_archive.annotators.prompt_response import (
     PromptResponseAnnotator,
     PromptResponseData,
     WikiCandidateAnnotator,
     NaiveTitleAnnotator,
+    PROMPT_RESPONSE_ANNOTATORS,
 )
 
 __all__ = [
-
+    # Base
+    "BaseAnnotator",
+    # Registry
+    "AnnotatorRegistry",
+    "get_default_registry",
+    # Content-part annotators
+    "ContentPartAnnotator",
+    "ContentPartData",
+    "CodeBlockAnnotator",
+    "ScriptHeaderAnnotator",
+    "LatexContentAnnotator",
+    "WikiLinkContentAnnotator",
+    "CONTENT_PART_ANNOTATORS",
     # Prompt-response annotators
     "PromptResponseAnnotator",
     "PromptResponseData",
     "WikiCandidateAnnotator",
     "NaiveTitleAnnotator",
+    "PROMPT_RESPONSE_ANNOTATORS",
 ]
