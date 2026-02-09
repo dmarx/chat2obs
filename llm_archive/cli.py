@@ -221,6 +221,47 @@ class CLI:
     # Analysis
     # ================================================================
 
+# Add this method to the CLI class in llm_archive/cli.py (before list_annotators)
+
+    def annotation_counts(self):
+        """Query annotation tables and return counts by annotation_key, entity_type, and value_type.
+        
+        Provides visibility into all annotations including those applied during raw archive ingestion.
+        
+        Returns:
+            List of dicts with keys: annotation_key, entity_type, value_type, count
+        """
+        from llm_archive.models.annotations import get_all_annotation_models
+        from sqlalchemy import func
+        
+        results = []
+        
+        with get_session(self.db_url) as session:
+            for model in get_all_annotation_models():
+                # Extract entity_type and value_type from table name: {entity_type}_annotations_{value_type}
+                parts = model.__tablename__.split('_annotations_')
+                if len(parts) != 2:
+                    continue
+                
+                entity_type, value_type = parts
+                
+                # Query with grouping by annotation_key
+                query = session.query(
+                    model.annotation_key,
+                    func.count(model.id).label('count')
+                ).group_by(model.annotation_key)
+                
+                for row in query:
+                    results.append({
+                        'annotation_key': row.annotation_key,
+                        'entity_type': entity_type,
+                        'value_type': value_type,
+                        'count': row.count,
+                    })
+        
+        logger.info(f"Annotation counts: {len(results)} keys across {len(get_all_annotation_models())} tables")
+        return results
+
     def stats(self):
         """Show database statistics."""
         with get_session(self.db_url) as session:
