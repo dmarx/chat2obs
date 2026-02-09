@@ -123,10 +123,9 @@ class AnnotationWriter:
             .on_conflict_do_nothing(
                 index_elements=["entity_id", "annotation_key"],
             )
-            .returning(model.id)
         )
         result = self.session.execute(stmt)
-        created = result.scalar() is not None
+        created = result.rowcount > 0
         self._track(model.__tablename__, created)
         return created
 
@@ -157,10 +156,9 @@ class AnnotationWriter:
             .on_conflict_do_nothing(
                 index_elements=["entity_id", "annotation_key", "annotation_value"],
             )
-            .returning(model.id)
         )
         result = self.session.execute(stmt)
-        created = result.scalar() is not None
+        created = result.rowcount > 0
         self._track(model.__tablename__, created)
         return created
 
@@ -191,10 +189,9 @@ class AnnotationWriter:
             .on_conflict_do_nothing(
                 index_elements=["entity_id", "annotation_key", "annotation_value"],
             )
-            .returning(model.id)
         )
         result = self.session.execute(stmt)
-        created = result.scalar() is not None
+        created = result.rowcount > 0
         self._track(model.__tablename__, created)
         return created
 
@@ -232,10 +229,9 @@ class AnnotationWriter:
                     "source_version": source_version,
                 },
             )
-            .returning(model.id)
         )
         result = self.session.execute(stmt)
-        created = result.scalar() is not None
+        created = result.rowcount > 0
         self._track(model.__tablename__, created)
         return created
 
@@ -332,11 +328,29 @@ class AnnotationReader:
         )
         return {row[0] for row in rows}
 
-    def find_entities_with_string(self, entity_type: EntityType, key: str, value: str) -> set[UUID]:
+    def find_entities_with_string(
+        self, entity_type: EntityType, key: str, value: str | None = None,
+    ) -> set[UUID]:
         model = _get_model(entity_type, ValueType.STRING)
-        rows = (
+        query = (
             self.session.query(model.entity_id)
-            .filter(model.annotation_key == key, model.annotation_value == value)
-            .all()
+            .filter(model.annotation_key == key)
         )
+        if value is not None:
+            query = query.filter(model.annotation_value == value)
+        rows = query.all()
         return {row[0] for row in rows}
+
+    def get_all_keys(self, entity_type: EntityType, entity_id: UUID) -> set[str]:
+        """Return the set of annotation keys present for an entity (any value type)."""
+        keys: set[str] = set()
+        for vt in ValueType:
+            model = _get_model(entity_type, vt)
+            rows = (
+                self.session.query(model.annotation_key)
+                .filter(model.entity_id == entity_id)
+                .distinct()
+                .all()
+            )
+            keys.update(row[0] for row in rows)
+        return keys
