@@ -14,7 +14,6 @@ from llm_archive.annotators.content_part import (
     ContentPartAnnotator,
     ContentPartData,
     CodeBlockAnnotator,
-    ScriptHeaderAnnotator,
     LatexContentAnnotator,
     WikiLinkContentAnnotator,
 )
