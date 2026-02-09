@@ -39,26 +39,29 @@ def init_schema(db_url: str, schema_dir: Path | str):
     """Initialize database schema from SQL files."""
     schema_dir = Path(schema_dir)
     engine = get_engine(db_url)
+
+    from llm_archive.models import Base
+    Base.metadata.create_all(engine)
     
-    sql_files = sorted(schema_dir.glob("*.sql"))
+    # sql_files = sorted(schema_dir.glob("*.sql"))
     
-    if not sql_files:
-        logger.warning(f"No SQL files found in {schema_dir}")
-        return
+    # if not sql_files:
+    #     logger.warning(f"No SQL files found in {schema_dir}")
+    #     return
     
-    with engine.connect() as conn:
-        for sql_file in sql_files:
-            logger.info(f"Executing {sql_file.name}")
-            sql = sql_file.read_text()
+    # with engine.connect() as conn:
+    #     for sql_file in sql_files:
+    #         logger.info(f"Executing {sql_file.name}")
+    #         sql = sql_file.read_text()
             
-            statements = [s.strip() for s in sql.split(';') if s.strip()]
-            for stmt in statements:
-                try:
-                    conn.execute(text(stmt))
-                except Exception as e:
-                    logger.debug(f"Statement note: {e}")
+    #         statements = [s.strip() for s in sql.split(';') if s.strip()]
+    #         for stmt in statements:
+    #             try:
+    #                 conn.execute(text(stmt))
+    #             except Exception as e:
+    #                 logger.debug(f"Statement note: {e}")
             
-            conn.commit()
+    #         conn.commit()
     
     logger.info("Schema initialization complete")
 
