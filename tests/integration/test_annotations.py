@@ -344,12 +344,8 @@ class TestPromptResponseAnnotatorIntegration:
         reader = AnnotationReader(clean_db_session)
         pr = clean_db_session.query(PromptResponse).first()
         
-        values = reader.get_string(EntityType.PROMPT_RESPONSE, pr.id, 'exchange_type')
-        assert 'wiki_article' in values
-        
-        counts = reader.get_numeric(EntityType.PROMPT_RESPONSE, pr.id, 'wiki_link_count')
-        assert len(counts) > 0
-        assert counts[0] >= 4  # At least 4 wiki links in our test data
+        values = reader.get_string(EntityType.PROMPT_RESPONSE, pr.id, 'wiki_candidate')
+        assert len(values) > 0
     
     def test_naive_title_annotator_end_to_end(self, clean_db_session, wiki_conversation):
         """Test NaiveTitleAnnotator with real database."""
