@@ -187,7 +187,7 @@ class TestNaiveTitleAnnotator:
         assert results[0].reason == 'bold_header_with_suffix'
     
     def test_no_title_preamble(self, pr_id):
-        """Should return nothing if first line is preamble."""
+        """~~Should return nothing if first line is preamble.~~ Actually, now we check for any header in the first 5 lines"""
         data = make_pr_data(
             prompt_text="Write about cats",
             response_text="Sure, here's an article about cats:\n\n# The Domestic Cat\n\n...",
@@ -199,7 +199,9 @@ class TestNaiveTitleAnnotator:
         
         # This is expected - naive extractor misses the title
         # because first line is a preamble
-        assert len(results) == 0
+        assert len(results) == 1
+        assert results[0].value == 'The Domestic Cat'
+        
     
     def test_no_title_plain_text(self, pr_id):
         """Should return nothing if no clear title format."""
