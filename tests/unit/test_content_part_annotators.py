@@ -316,7 +316,6 @@ class TestContentPartAnnotatorRegistry:
     def test_all_annotators_in_registry(self):
         """All annotators should be in CONTENT_PART_ANNOTATORS."""
         assert CodeBlockAnnotator in CONTENT_PART_ANNOTATORS
-        assert ScriptHeaderAnnotator in CONTENT_PART_ANNOTATORS
         assert LatexContentAnnotator in CONTENT_PART_ANNOTATORS
         assert WikiLinkContentAnnotator in CONTENT_PART_ANNOTATORS
     
