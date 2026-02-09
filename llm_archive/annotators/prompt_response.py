@@ -239,6 +239,10 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
         if not data.response_text:
             return []
 
+        reason_suffix = ""
+        if data.role == "user":
+            reason_suffix = " in prompt"
+
         lines = data.response_text.split("\n")
         for line in lines[:5]:
             if line.startswith("#"):
@@ -250,7 +254,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                             value=title,
                             value_type=ValueType.STRING,
                             confidence=0.9,
-                            reason="markdown_header",
+                            reason="markdown_header"+reason_suffix,
                         )
                     ]
 
@@ -263,7 +267,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                             value=title,
                             value_type=ValueType.STRING,
                             confidence=0.9,
-                            reason="bold_header",
+                            reason="bold_header"+reason_suffix,
                         )
                     ]
                     
@@ -279,7 +283,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                             value=title,
                             value_type=ValueType.STRING,
                             confidence=0.9,
-                            reason="bold_header_with_suffix",
+                            reason="bold_header_with_suffix"+reason_suffix,
                         )
                     ]
         
