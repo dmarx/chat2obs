@@ -202,7 +202,7 @@ class TestWikiCandidateAnnotator:
             "## Section Three\n\nMore info at [[Topic D]].\n"
         )
         results = self._annotate(text, word_count=300)
-        assert any(r.key == "exchange_type" and r.value == "wiki_article" for r in results)
+        assert any(r.key == "wiki_candidate" for r in results)
 
     def test_no_response_returns_empty(self):
         annotator = WikiCandidateAnnotator.__new__(WikiCandidateAnnotator)
