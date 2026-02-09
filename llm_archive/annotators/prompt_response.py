@@ -190,8 +190,8 @@ class WikiCandidateAnnotator(PromptResponseAnnotator):
     - exchange_type STRING 'wiki_article'
     """
 
-    ANNOTATION_KEY = "exchange_type"
-    VALUE_TYPE = ValueType.STRING
+    ANNOTATION_KEY = "wiki_candidate"
+    VALUE_TYPE = ValueType.FLAG
     PRIORITY = 60
     VERSION = "1.0"
 
@@ -205,32 +205,16 @@ class WikiCandidateAnnotator(PromptResponseAnnotator):
         if len(wiki_links) < 2:
             return []
 
-        has_structure = self._has_article_structure(data.response_text)
-        word_count = data.response_word_count or 0
-        is_substantial = word_count >= 200
-
-        if not (has_structure or is_substantial):
-            return []
-
         confidence = min(1.0, 0.5 + (len(wiki_links) * 0.05))
-        if has_structure:
-            confidence = min(1.0, confidence + 0.2)
 
         return [
             AnnotationResult(
-                key="exchange_type",
-                value="wiki_article",
-                value_type=ValueType.STRING,
+                key=self.key,
+                value_type=ValueType.FLAG,
                 confidence=confidence,
-                reason=f"wiki_links={len(wiki_links)} structure={has_structure}",
+                reason=f"wiki_links={len(wiki_links)}",
             )
         ]
-
-    @staticmethod
-    def _has_article_structure(text: str) -> bool:
-        heading_patterns = ["\n## ", "\n### ", "\n#### "]
-        heading_count = sum(text.count(p) for p in heading_patterns)
-        return heading_count >= 3
 
 
 # ============================================================
