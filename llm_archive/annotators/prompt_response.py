@@ -219,6 +219,13 @@ class WikiCandidateAnnotator(PromptResponseAnnotator):
 # Naive Title Extraction
 # ============================================================
 
+def clean_title(text: str):
+    text = text.replace('[[','')
+    text = text.replace(']]','')
+    text = text.replace('**','')
+    return text
+
+
 class NaiveTitleAnnotator(PromptResponseAnnotator):
     """Extract potential article title from response.
 
@@ -231,7 +238,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
     ANNOTATION_KEY = "proposed_title"
     VALUE_TYPE = ValueType.STRING
     PRIORITY = 50
-    VERSION = "1.0"
+    VERSION = "1.1"
 
     REQUIRES_FLAGS = [("wiki_candidate")]
 
@@ -251,7 +258,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                     return [
                         AnnotationResult(
                             key=self.ANNOTATION_KEY,
-                            value=title,
+                            value=clean_title(title),
                             value_type=ValueType.STRING,
                             confidence=0.9,
                             reason="markdown_header"+reason_suffix,
@@ -264,7 +271,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                     return [
                         AnnotationResult(
                             key=self.ANNOTATION_KEY,
-                            value=title,
+                            value=clean_title(title),
                             value_type=ValueType.STRING,
                             confidence=0.9,
                             reason="bold_header"+reason_suffix,
@@ -280,7 +287,7 @@ class NaiveTitleAnnotator(PromptResponseAnnotator):
                     return [
                         AnnotationResult(
                             key=self.ANNOTATION_KEY,
-                            value=title,
+                            value=clean_title(title),
                             value_type=ValueType.STRING,
                             confidence=0.9,
                             reason="bold_header_with_suffix"+reason_suffix,
