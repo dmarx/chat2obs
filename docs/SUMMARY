@@ -1,0 +1,5089 @@
+---
+File: docs/annotators.md
+---
+<!-- docs/annotators.md -->
+# Annotation System
+
+## Overview
+
+The annotation system applies labels, tags, and metadata to entities using a typed table architecture. Multiple detection strategies can target the same semantic concept with priority-based resolution.
+
+## Architecture
+
+### Typed Annotation Tables
+
+Each entity type has four annotation tables based on value type:
+
+```
+derived.{entity}_annotations_flag      # Boolean presence (key only)
+derived.{entity}_annotations_string    # Text values
+derived.{entity}_annotations_numeric   # Numeric values
+derived.{entity}_annotations_json      # JSONB values
+```
+
+**Supported entity types:**
+- `content_part` - Individual content segments
+- `message` - Complete messages
+- `prompt_response` - User-assistant pairs
+- `dialogue` - Entire conversations
+
+**Table schema example** (for `prompt_response_annotations_string`):
+
+```sql
+CREATE TABLE derived.prompt_response_annotations_string (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    entity_id           uuid NOT NULL REFERENCES derived.prompt_responses(id),
+    annotation_key      text NOT NULL,
+    annotation_value    text NOT NULL,
+    
+    confidence          float,
+    reason              text,
+    source              text NOT NULL,
+    source_version      text,
+    created_at          timestamptz DEFAULT now(),
+    
+    UNIQUE (entity_id, annotation_key, annotation_value)
+);
+```
+
+### Design Benefits
+
+| Benefit | Description |
+|---------|-------------|
+| **Query Performance** | Direct filtering on typed columns |
+| **Type Safety** | Database enforces value types |
+| **Efficient Indexes** | Separate indexes per value type |
+| **Null Handling** | Flags don't waste space on NULL values |
+| **Schema Clarity** | Explicit value types in table names |
+
+## Core Components
+
+### AnnotationResult
+
+Return value from annotator logic:
+
+```python
+from llm_archive.annotations.core import AnnotationResult, ValueType
+
+# Flag annotation (presence = true)
+AnnotationResult(
+    key='has_code_blocks',
+    value_type=ValueType.FLAG,
+)
+
+# String annotation
+AnnotationResult(
+    key='exchange_type',
+    value='wiki_article',
+    value_type=ValueType.STRING,
+    confidence=0.9,
+)
+
+# Numeric annotation
+AnnotationResult(
+    key='response_quality_score',
+    value=0.85,
+    value_type=ValueType.NUMERIC,
+    confidence=0.7,
+)
+
+# JSON annotation
+AnnotationResult(
+    key='code_blocks',
+    value={'python': 3, 'javascript': 1},
+    value_type=ValueType.JSON,
+)
+```
+
+### AnnotationWriter
+
+Inserts annotations into typed tables:
+
+```python
+from llm_archive.annotations.core import AnnotationWriter, EntityType
+
+writer = AnnotationWriter(session)
+
+# Write flag
+writer.write_flag(
+    entity_type=EntityType.PROMPT_RESPONSE,
+    entity_id=pr_id,
+    key='is_wiki_candidate',
+    source='WikiCandidateAnnotator',
+    source_version='1.0',
+)
+
+# Write string
+writer.write_string(
+    entity_type=EntityType.PROMPT_RESPONSE,
+    entity_id=pr_id,
+    key='proposed_title',
+    value='Introduction to Machine Learning',
+    confidence=0.8,
+    source='NaiveTitleAnnotator',
+)
+
+# Write from AnnotationResult
+result = AnnotationResult(key='tag', value='technical', value_type=ValueType.STRING)
+writer.write_result(
+    entity_type=EntityType.MESSAGE,
+    entity_id=msg_id,
+    result=result,
+)
+```
+
+### AnnotationReader
+
+Queries annotations from typed tables:
+
+```python
+from llm_archive.annotations.core import AnnotationReader, EntityType
+
+reader = AnnotationReader(session)
+
+# Check if flag exists
+if reader.has_flag(EntityType.PROMPT_RESPONSE, pr_id, 'is_wiki_candidate'):
+    print("This is a wiki candidate")
+
+# Get string values
+titles = reader.get_string(EntityType.PROMPT_RESPONSE, pr_id, 'proposed_title')
+print(f"Proposed titles: {titles}")
+
+# Get numeric value
+score = reader.get_numeric(EntityType.MESSAGE, msg_id, 'sentiment_score')
+
+# Get JSON value
+metadata = reader.get_json(EntityType.DIALOGUE, dialogue_id, 'summary_stats')
+```
+
+## PromptResponseAnnotator Base Class
+
+### Basic Structure
+
+```python
+from llm_archive.annotators.prompt_response import (
+    PromptResponseAnnotator,
+    PromptResponseData,
+)
+from llm_archive.annotations.core import AnnotationResult, ValueType
+
+class MyAnnotator(PromptResponseAnnotator):
+    # Metadata
+    ANNOTATION_KEY = 'my_classification'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 50  # Higher runs first
+    VERSION = '1.0'
+    SOURCE = 'heuristic'
+    
+    # Optional: Filtering prerequisites
+    REQUIRES_FLAGS = []  # Only process entities with these flags
+    REQUIRES_STRINGS = []  # Only process entities with these (key, value) pairs
+    SKIP_IF_FLAGS = []  # Skip entities with these flags
+    SKIP_IF_STRINGS = []  # Skip entities with these key or (key, value) pairs
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        """
+        Annotate a single prompt-response pair.
+        
+        Args:
+            data: PromptResponseData with all fields populated
+        
+        Returns:
+            List of AnnotationResult objects (empty if no annotations)
+        """
+        if self._matches_criteria(data):
+            return [AnnotationResult(
+                key=self.ANNOTATION_KEY,
+                value='my_value',
+                confidence=0.9,
+                reason='Matched pattern X',
+            )]
+        return []
+```
+
+### PromptResponseData
+
+Data passed to annotation logic:
+
+```python
+@dataclass
+class PromptResponseData:
+    prompt_response_id: UUID
+    dialogue_id: UUID
+    prompt_message_id: UUID
+    response_message_id: UUID
+    prompt_text: str | None
+    response_text: str | None
+    prompt_word_count: int | None
+    response_word_count: int | None
+    prompt_role: str
+    response_role: str
+    created_at: datetime | None
+```
+
+### Annotation Filtering
+
+Annotators can specify prerequisites and skip conditions:
+
+```python
+class WikiArticleAnnotator(PromptResponseAnnotator):
+    ANNOTATION_KEY = 'is_wiki_article'
+    VALUE_TYPE = ValueType.FLAG
+    
+    # Only process wiki candidates
+    REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
+    
+    # Skip if already marked as low quality
+    SKIP_IF_FLAGS = ['low_quality']
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        # This only runs on wiki_article candidates without low_quality flag
+        if self._is_complete_article(data.response_text):
+            return [AnnotationResult(key=self.ANNOTATION_KEY)]
+        return []
+```
+
+## Example Annotators
+
+### WikiCandidateAnnotator
+
+Identifies potential wiki articles:
+
+```python
+class WikiCandidateAnnotator(PromptResponseAnnotator):
+    """Flag prompt-responses that look like wiki article requests/responses."""
+    
+    ANNOTATION_KEY = 'exchange_type'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 80
+    VERSION = '1.0'
+    
+    WIKI_KEYWORDS = [
+        'write an article', 'create an article', 'wiki article',
+        'wikipedia style', 'encyclopedia entry', 'comprehensive guide',
+    ]
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        # Check prompt for wiki-like requests
+        if not data.prompt_text:
+            return []
+        
+        prompt_lower = data.prompt_text.lower()
+        
+        # Check for explicit wiki keywords
+        for keyword in self.WIKI_KEYWORDS:
+            if keyword in prompt_lower:
+                return [AnnotationResult(
+                    key=self.ANNOTATION_KEY,
+                    value='wiki_article',
+                    confidence=0.9,
+                    reason=f'Matched keyword: {keyword}',
+                )]
+        
+        # Check response length (wiki articles tend to be long)
+        if data.response_word_count and data.response_word_count > 500:
+            # Check for article structure (sections, etc.)
+            if self._has_article_structure(data.response_text):
+                return [AnnotationResult(
+                    key=self.ANNOTATION_KEY,
+                    value='wiki_article',
+                    confidence=0.7,
+                    reason='Long response with article structure',
+                )]
+        
+        return []
+    
+    def _has_article_structure(self, text: str) -> bool:
+        """Check if text has typical article structure."""
+        if not text:
+            return False
+        
+        # Look for multiple headings
+        heading_patterns = ['\n## ', '\n### ', '\n#### ']
+        heading_count = sum(text.count(pattern) for pattern in heading_patterns)
+        
+        return heading_count >= 3
+```
+
+### NaiveTitleAnnotator
+
+Extracts potential titles from wiki articles:
+
+```python
+class NaiveTitleAnnotator(PromptResponseAnnotator):
+    """
+    Extract potential article title from response.
+    
+    Only runs on wiki_article candidates.
+    """
+    
+    ANNOTATION_KEY = 'proposed_title'
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 50
+    VERSION = '1.0'
+    
+    # Only process wiki candidates
+    REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
+    
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if not data.response_text:
+            return []
+        
+        # Strategy 1: Look for markdown H1
+        lines = data.response_text.split('\n')
+        for line in lines[:5]:  # Check first 5 lines
+            if line.startswith('# '):
+                title = line[2:].strip()
+                if title:
+                    return [AnnotationResult(
+                        key=self.ANNOTATION_KEY,
+                        value=title,
+                        confidence=0.9,
+                        reason='Found markdown H1',
+                    )]
+        
+        # Strategy 2: Use first line if short enough
+        first_line = lines[0].strip()
+        if 5 <= len(first_line.split()) <= 10:
+            return [AnnotationResult(
+                key=self.ANNOTATION_KEY,
+                value=first_line,
+                confidence=0.6,
+                reason='Used first line',
+            )]
+        
+        return []
+```
+
+## Priority System
+
+Annotators execute in priority order (highest first):
+
+```mermaid
+flowchart LR
+    Start["Annotators"] --> Sort["Sort by<br/>PRIORITY<br/>(descending)"]
+    
+    Sort --> P100["Priority 90-100<br/>Platform Truth"]
+    P100 --> P80["Priority 70-89<br/>Explicit Syntax"]
+    P80 --> P50["Priority 40-69<br/>Statistical/ML"]
+    P50 --> P30["Priority 1-39<br/>Heuristics"]
+```
+
+| Priority Range | Use Case | Example |
+|----------------|----------|---------|
+| 90-100 | Platform ground truth | ChatGPT code execution metadata |
+| 70-89 | Explicit syntax detection | Code blocks, citations |
+| 40-69 | Statistical/ML models | Semantic classification |
+| 1-39 | Heuristics | Keyword matching |
+
+## Incremental Processing
+
+### Cursor-Based Execution
+
+Annotators track processing state with cursors:
+
+```sql
+CREATE TABLE derived.annotator_cursors (
+    id                      uuid PRIMARY KEY,
+    annotator_name          text NOT NULL,
+    annotator_version       text NOT NULL,
+    entity_type             text NOT NULL,
+    high_water_mark         timestamptz NOT NULL,
+    entities_processed      int DEFAULT 0,
+    annotations_created     int DEFAULT 0,
+    updated_at              timestamptz DEFAULT now(),
+    
+    UNIQUE (annotator_name, annotator_version, entity_type)
+);
+```
+
+### Execution Flow
+
+```python
+def compute(self) -> int:
+    """Run annotation with cursor tracking."""
+    # Get or create cursor
+    cursor = self._get_cursor()
+    
+    # Query entities created after cursor
+    entities = self._iter_prompt_responses_after(cursor.high_water_mark)
+    
+    count = 0
+    latest_created_at = cursor.high_water_mark
+    
+    for data in entities:
+        results = self.annotate(data)
+        for result in results:
+            if self._write_result(data.prompt_response_id, result):
+                count += 1
+        
+        # Track latest timestamp
+        if data.created_at and data.created_at > latest_created_at:
+            latest_created_at = data.created_at
+    
+    # Update cursor
+    self._update_cursor(cursor, count, latest_created_at)
+    
+    return count
+```
+
+## Running Annotators
+
+### Via CLI
+
+```bash
+# Run all registered annotators
+llm-archive annotate
+
+# Run specific annotator
+llm-archive annotate WikiCandidateAnnotator
+
+# Clear and re-run (ignores cursors)
+llm-archive annotate --clear
+```
+
+### Via Python
+
+```python
+from llm_archive.cli import AnnotationManager
+from sqlalchemy.orm import Session
+
+# Create manager
+manager = AnnotationManager(session)
+
+# Register annotators
+manager.register(WikiCandidateAnnotator)
+manager.register(NaiveTitleAnnotator)
+
+# Run all (respects priorities and cursors)
+results = manager.run_all()
+print(f"Created {results['total_annotations']} annotations")
+
+# Run specific annotator
+results = manager.run_one('WikiCandidateAnnotator')
+```
+
+## Querying Annotations
+
+### Via Views
+
+Use convenience views for common queries:
+
+```sql
+-- Get all wiki article candidates with proposed titles
+SELECT 
+    pr.id,
+    pr.dialogue_id,
+    prc.prompt_text,
+    prc.response_text,
+    (SELECT annotation_value 
+     FROM derived.prompt_response_annotations_string 
+     WHERE entity_id = pr.id AND annotation_key = 'proposed_title') as title
+FROM derived.prompt_responses pr
+JOIN derived.prompt_response_content prc ON prc.prompt_response_id = pr.id
+JOIN derived.prompt_response_annotations_string ans ON ans.entity_id = pr.id
+WHERE ans.annotation_key = 'exchange_type' AND ans.annotation_value = 'wiki_article';
+```
+
+### Via Python
+
+```python
+# Get all wiki candidates
+wiki_candidates = (
+    session.query(PromptResponse)
+    .join(
+        prompt_response_annotations_string,
+        PromptResponse.id == prompt_response_annotations_string.c.entity_id
+    )
+    .filter(
+        prompt_response_annotations_string.c.annotation_key == 'exchange_type',
+        prompt_response_annotations_string.c.annotation_value == 'wiki_article',
+    )
+    .all()
+)
+```
+
+## Best Practices
+
+### 1. Choose Appropriate Priority
+
+```python
+# Platform truth = 90-100
+class ChatGPTCodeExecutionAnnotator(PromptResponseAnnotator):
+    PRIORITY = 100
+
+# Explicit syntax = 70-89
+class CodeBlockDetector(PromptResponseAnnotator):
+    PRIORITY = 80
+
+# Heuristics = 1-39
+class KeywordMatcher(PromptResponseAnnotator):
+    PRIORITY = 30
+```
+
+### 2. Return Appropriate Confidence
+
+```python
+# Ground truth
+AnnotationResult(value='has_code_execution', confidence=1.0)
+
+# Strong signal
+AnnotationResult(value='has_code_blocks', confidence=1.0)
+
+# Moderate signal
+AnnotationResult(value='technical_content', confidence=0.7)
+
+# Weak signal
+AnnotationResult(value='possibly_tutorial', confidence=0.5)
+```
+
+### 3. Use Filtering Effectively
+
+```python
+# Only process specific types
+REQUIRES_STRINGS = [('exchange_type', 'wiki_article')]
+
+# Avoid reprocessing
+SKIP_IF_FLAGS = ['already_processed']
+
+# Avoid conflicts
+SKIP_IF_STRINGS = [('proposed_title',)]  # Skip if any title exists
+```
+
+### 4. Version Appropriately
+
+```python
+class MyAnnotator(PromptResponseAnnotator):
+    VERSION = '1.0'  # Initial
+    # VERSION = '1.1'  # Bug fix
+    # VERSION = '2.0'  # Major logic change
+```
+
+Changing VERSION creates a new cursor, allowing re-annotation without clearing.
+
+## Testing
+
+### Unit Tests
+
+Test annotation logic without database:
+
+```python
+def test_wiki_candidate_detection():
+    """Test wiki candidate detection logic."""
+    annotator = WikiCandidateAnnotator(mock_session)
+    
+    data = PromptResponseData(
+        prompt_response_id=uuid4(),
+        dialogue_id=uuid4(),
+        prompt_message_id=uuid4(),
+        response_message_id=uuid4(),
+        prompt_text="Write a wiki article about Python",
+        response_text="# Python\n\nPython is...",
+        prompt_word_count=6,
+        response_word_count=500,
+        prompt_role='user',
+        response_role='assistant',
+        created_at=datetime.now(),
+    )
+    
+    results = annotator.annotate(data)
+    assert len(results) == 1
+    assert results[0].value == 'wiki_article'
+```
+
+### Integration Tests
+
+Test full annotation cycle:
+
+```python
+def test_annotation_creates_records(session, sample_prompt_response):
+    """Test annotation creates database records."""
+    annotator = WikiCandidateAnnotator(session)
+    count = annotator.compute()
+    
+    assert count > 0
+    
+    # Verify record exists
+    reader = AnnotationReader(session)
+    assert reader.has_string(
+        EntityType.PROMPT_RESPONSE,
+        sample_prompt_response.id,
+        'exchange_type',
+        'wiki_article',
+    )
+```
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md)
+- [Schema Design](schema.md) - Annotation table schema
+- [Models](models.md) - Annotation models
+- [CLI Reference](cli.md) - Running annotators via CLI
+- [Builders](builders.md) - Creating entities to annotate
+
+
+
+---
+File: docs/architecture.md
+---
+<!-- docs/architecture.md -->
+# LLM Archive: System Architecture
+
+## Overview
+
+LLM Archive is a system for importing, normalizing, analyzing, and annotating conversation data from multiple LLM platforms (ChatGPT, Claude, and future sources). It transforms heterogeneous export formats into a unified data model optimized for annotation and downstream processing.
+
+## Design Philosophy
+
+### Core Principles
+
+1. **Source Fidelity**: Raw data is preserved exactly as received; normalization happens in derived layers
+2. **Schema Separation**: Clear distinction between raw (immutable imports) and derived (computed analysis)
+3. **Incremental Processing**: All analysis is cursor-based to support efficient updates
+4. **Platform Abstraction**: Common abstractions with platform-specific extensions
+5. **Typed Annotations**: Separate tables per annotation type for query performance
+
+### Key Architectural Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Two-schema design (raw/derived) | Preserves original data while enabling computed views |
+| Tree-native message structure | ChatGPT exports are trees; maintain in raw layer |
+| Prompt-response as fundamental unit | Simpler than exchange model, no tree dependency |
+| Typed annotation tables | Better query performance than polymorphic table |
+| Cursor-based incremental processing | Efficient re-annotation without full reprocessing |
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Sources["Data Sources"]
+        ChatGPT["ChatGPT Export<br/>(JSON)"]
+        Claude["Claude Export<br/>(JSON)"]
+        Future["Future Sources<br/>(...)"]
+    end
+
+    subgraph Extractors["Extraction Layer"]
+        BaseExtractor["BaseExtractor"]
+        ChatGPTExtractor["ChatGPTExtractor"]
+        ClaudeExtractor["ClaudeExtractor"]
+    end
+
+    subgraph RawSchema["raw.* Schema"]
+        Dialogues["dialogues"]
+        Messages["messages"]
+        ContentParts["content_parts"]
+        Citations["citations"]
+        Attachments["attachments"]
+        
+        subgraph ChatGPTExt["ChatGPT Extensions"]
+            CGPTMeta["chatgpt_message_meta"]
+            CGPTSearch["chatgpt_search_*"]
+            CGPTCode["chatgpt_code_*"]
+            CGPTCanvas["chatgpt_canvas_docs"]
+            CGPTDALLE["chatgpt_dalle_generations"]
+        end
+        
+        subgraph ClaudeExt["Claude Extensions"]
+            ClaudeMeta["claude_message_meta"]
+        end
+    end
+
+    subgraph Builders["Builder Layer"]
+        PRBuilder["PromptResponseBuilder"]
+    end
+
+    subgraph DerivedSchema["derived.* Schema"]
+        PRs["prompt_responses"]
+        PRContent["prompt_response_content"]
+        
+        subgraph Annotations["Typed Annotations"]
+            AnnFlag["*_annotations_flag"]
+            AnnString["*_annotations_string"]
+            AnnNumeric["*_annotations_numeric"]
+            AnnJSON["*_annotations_json"]
+        end
+        
+        Cursors["annotator_cursors"]
+    end
+
+    subgraph AnnotationSystem["Annotation System"]
+        AnnotationWriter["AnnotationWriter"]
+        AnnotationReader["AnnotationReader"]
+        Annotators["Annotators"]
+    end
+
+    Sources --> Extractors
+    Extractors --> RawSchema
+    RawSchema --> Builders
+    Builders --> DerivedSchema
+    DerivedSchema --> AnnotationSystem
+    AnnotationSystem --> DerivedSchema
+```
+
+## Data Flow
+
+### Import Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI
+    participant Extractor
+    participant RawDB as raw.* Tables
+    participant Builder
+    participant DerivedDB as derived.* Tables
+    participant Annotator
+
+    User->>CLI: import_chatgpt [file]
+    CLI->>Extractor: extract(file_path)
+    
+    loop For each conversation
+        Extractor->>RawDB: Insert dialogue
+        loop For each message
+            Extractor->>RawDB: Insert message
+            Extractor->>RawDB: Insert content_parts
+            Extractor->>RawDB: Insert platform extensions
+        end
+    end
+    
+    CLI->>Builder: build_prompt_responses()
+    Builder->>RawDB: Query messages
+    loop For each dialogue
+        Builder->>DerivedDB: Insert prompt_responses
+        Builder->>DerivedDB: Insert prompt_response_content
+    end
+    
+    CLI->>Annotator: run_all()
+    loop For each annotator (by priority)
+        Annotator->>DerivedDB: Check cursor
+        Annotator->>DerivedDB: Query entities > cursor
+        loop For each entity
+            Annotator->>DerivedDB: Insert annotations
+        end
+        Annotator->>DerivedDB: Update cursor
+    end
+    
+    Annotator-->>User: Complete
+```
+
+### Incremental Update Flow
+
+```mermaid
+sequenceDiagram
+    participant CLI
+    participant Extractor
+    participant RawDB
+    participant Builder
+    participant DerivedDB
+    participant Annotator
+
+    CLI->>Extractor: import(file, mode=incremental)
+    
+    loop For each conversation
+        Extractor->>RawDB: Check source_id exists
+        alt New conversation
+            Extractor->>RawDB: INSERT dialogue + messages
+        else Existing conversation
+            Extractor->>RawDB: Compare content_hash
+            alt Changed
+                Extractor->>RawDB: UPDATE messages
+            end
+        end
+    end
+    
+    CLI->>Builder: build_for_dialogue(new/updated)
+    Builder->>DerivedDB: Clear existing records
+    Builder->>DerivedDB: Rebuild prompt-responses
+    
+    CLI->>Annotator: run_all()
+    Annotator->>DerivedDB: Get cursor (high_water_mark)
+    Annotator->>DerivedDB: Query WHERE created_at > cursor
+    Note over Annotator: Only processes new entities
+```
+
+## Component Responsibilities
+
+### Extractors
+
+Transform platform-specific export formats into the universal raw schema:
+
+| Component | Responsibility |
+|-----------|---------------|
+| `BaseExtractor` | Common interface, deduplication, transaction management |
+| `ChatGPTExtractor` | Parse conversations.json, handle tree structure, extract platform features |
+| `ClaudeExtractor` | Parse Claude exports, synthesize linear parent-child relationships |
+
+### Builders
+
+Compute derived structures from raw data:
+
+| Component | Responsibility |
+|-----------|---------------|
+| `PromptResponseBuilder` | Create user→assistant pairs using parent_id with sequential fallback |
+
+### Annotations
+
+Apply labels, tags, and metadata to entities:
+
+| Component | Responsibility |
+|-----------|---------------|
+| `AnnotationWriter` | Insert annotations into typed tables |
+| `AnnotationReader` | Query annotations from typed tables |
+| `PromptResponseAnnotator` | Base class for annotating prompt-response pairs |
+| Example annotators | `WikiCandidateAnnotator`, `NaiveTitleAnnotator` |
+
+## Deployment Architecture
+
+```mermaid
+flowchart LR
+    subgraph Host["Host Machine"]
+        CLI["CLI<br/>(Python)"]
+        PG["PostgreSQL<br/>(Docker)"]
+        Data["Export Files<br/>(.json)"]
+    end
+    
+    CLI -->|"psycopg2"| PG
+    Data -->|"read"| CLI
+    
+    subgraph PGInternal["PostgreSQL Instance"]
+        Raw["raw schema"]
+        Derived["derived schema"]
+    end
+```
+
+### Container Setup
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: llm_archive
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+```
+
+## Extension Points
+
+### Adding a New Source
+
+1. Create extractor class extending `BaseExtractor`
+2. Add source entry to `raw.sources` table
+3. Create platform extension tables if needed
+4. Implement message parent-child linking logic
+
+### Adding a New Annotator
+
+1. Extend `PromptResponseAnnotator` base class
+2. Define `ANNOTATION_KEY` for grouping
+3. Set `PRIORITY` relative to existing annotators
+4. Choose `VALUE_TYPE` (flag, string, numeric, json)
+5. Implement `annotate()` method returning `AnnotationResult` list
+6. Register with CLI
+
+### Adding a New Derived Structure
+
+1. Design schema in new SQL file (e.g., `schema/009_*.sql`)
+2. Create SQLAlchemy model in `models/derived.py`
+3. Create builder class in `builders/`
+4. Integrate with CLI pipeline
+
+### Adding a New Entity Type for Annotations
+
+1. Add entity type to `EntityType` enum in `annotations/core.py`
+2. Create annotation tables in schema (4 tables per entity type)
+3. Update `AnnotationWriter`/`AnnotationReader` table templates
+4. Create base annotator class for the entity type
+
+## Performance Considerations
+
+### Indexing Strategy
+
+- Raw tables: Indexed on `dialogue_id`, `parent_id`, `created_at`
+- Derived tables: Indexed on foreign keys and filtered columns
+- Annotation tables: Indexed on `entity_id`, `annotation_key`, and `annotation_value`
+
+### Batch Processing
+
+- Extractors use batch inserts (1000 messages/batch)
+- Builders process dialogues individually with periodic commits
+- Annotators use cursor-based incremental processing
+
+### Memory Management
+
+- Builders iterate dialogues without loading all into memory
+- Content aggregation uses database-side text concatenation
+- Large dialogues processed incrementally
+
+## Security Considerations
+
+- All data stored locally (no cloud dependencies)
+- Database credentials via environment variables
+- Source JSON preserved for audit trail
+- No PII-specific handling (user responsibility)
+
+## Annotation System Architecture
+
+### Typed Annotation Tables
+
+Each entity type has 4 annotation tables:
+
+```
+derived.{entity}_annotations_flag      # Boolean presence
+derived.{entity}_annotations_string    # Text values
+derived.{entity}_annotations_numeric   # Numeric values
+derived.{entity}_annotations_json      # JSONB values
+```
+
+### Annotation Workflow
+
+1. **Annotator Registration**: Annotators are ordered by priority
+2. **Cursor Check**: Each annotator checks its high-water mark
+3. **Entity Query**: Query entities created after cursor
+4. **Annotation Logic**: Run detection/classification logic
+5. **Result Writing**: Write results to appropriate typed table
+6. **Cursor Update**: Update high-water mark for next run
+
+### Priority System
+
+| Priority Range | Use Case | Example |
+|----------------|----------|---------|
+| 90-100 | Platform ground truth | ChatGPT metadata flags |
+| 70-89 | Explicit syntax detection | Code block detection |
+| 40-69 | Statistical/ML models | Semantic classification |
+| 1-39 | Heuristics | Keyword matching |
+
+## Related Documentation
+
+- [Schema Design](schema.md) - Database schema details
+- [Models](models.md) - SQLAlchemy ORM models  
+- [Extractors](extractors.md) - Data extraction system
+- [Builders](builders.md) - Derived data construction
+- [Annotators](annotators.md) - Annotation system
+- [CLI Reference](cli.md) - Command-line interface
+- [Testing](testing.md) - Testing strategy
+
+
+
+---
+File: docs/builders.md
+---
+<!-- docs/builders.md -->
+# Builders: Derived Data Construction
+
+## Overview
+
+Builders transform raw imported data into derived structures optimized for annotation and analysis. The current builder system focuses on creating prompt-response pairs directly from message parent-child relationships.
+
+## PromptResponseBuilder
+
+### Purpose
+
+The `PromptResponseBuilder` creates direct user→assistant associations without depending on tree analysis. This is simpler and more robust than the previous exchange-based model.
+
+### Key Features
+
+- **Direct associations**: Uses `parent_id` for tree-aware pairing
+- **Sequential fallback**: Falls back to most recent user message when parent_id unavailable
+- **Handles regenerations**: Multiple responses can share the same prompt
+- **Denormalized content**: Aggregates text content for efficient queries
+
+### Data Model
+
+```mermaid
+erDiagram
+    PromptResponse ||--|| Message : "prompt (user)"
+    PromptResponse ||--|| Message : "response (assistant)"
+    PromptResponse ||--|| PromptResponseContent : "has content"
+    PromptResponse }o--|| Dialogue : "belongs to"
+    
+    PromptResponse {
+        uuid id PK
+        uuid dialogue_id FK
+        uuid prompt_message_id FK
+        uuid response_message_id FK
+        int prompt_position
+        int response_position
+        string prompt_role
+        string response_role
+    }
+    
+    PromptResponseContent {
+        uuid prompt_response_id PK_FK
+        text prompt_text
+        text response_text
+        int prompt_word_count
+        int response_word_count
+    }
+```
+
+### Pairing Strategy
+
+```mermaid
+flowchart TD
+    Start["Process Message"] --> RoleCheck{"Role?"}
+    
+    RoleCheck -->|"user"| UpdateLast["Update<br/>last_user_msg"]
+    RoleCheck -->|"assistant"| FindPrompt["Find Prompt"]
+    RoleCheck -->|"system/tool"| Skip["Skip"]
+    
+    FindPrompt --> HasParent{"Has<br/>parent_id?"}
+    
+    HasParent -->|"Yes"| CheckParentRole{"Parent<br/>is user?"}
+    CheckParentRole -->|"Yes"| UseParent["Use parent"]
+    CheckParentRole -->|"No"| WalkUp["Walk up tree"]
+    
+    WalkUp --> FoundUser{"Found<br/>user?"}
+    FoundUser -->|"Yes"| UseFound["Use found"]
+    FoundUser -->|"No"| UseLast["Use last_user_msg"]
+    
+    HasParent -->|"No"| UseLast
+    
+    UseParent --> CreatePR["Create<br/>PromptResponse"]
+    UseFound --> CreatePR
+    UseLast --> CreatePR
+    
+    CreatePR --> UpdateLast
+    UpdateLast --> NextMsg["Next Message"]
+    Skip --> NextMsg
+```
+
+### Handling Regenerations
+
+When a user regenerates an assistant response, ChatGPT creates multiple sibling messages with the same parent:
+
+```mermaid
+flowchart TB
+    User["user: 'Write a story'"] --> Asst1["assistant v1"]
+    User --> Asst2["assistant v2<br/>(regeneration)"]
+    User --> Asst3["assistant v3<br/>(regeneration)"]
+    
+    style Asst2 fill:#ffe0b2
+    style Asst3 fill:#ffe0b2
+```
+
+Each regeneration creates a separate `PromptResponse` record:
+- All three records have the same `prompt_message_id`
+- Each has a unique `response_message_id`
+- Position tracking maintains sequential order
+
+## Implementation
+
+### Core Algorithm
+
+```python
+class PromptResponseBuilder:
+    def build_for_dialogue(self, dialogue_id: UUID):
+        # Get all messages ordered by created_at
+        messages = (
+            self.session.query(Message)
+            .filter(Message.dialogue_id == dialogue_id)
+            .filter(Message.deleted_at.is_(None))
+            .order_by(Message.created_at.nulls_first(), Message.id)
+            .all()
+        )
+        
+        # Build lookup structures
+        msg_by_id = {m.id: m for m in messages}
+        position_by_id = {m.id: i for i, m in enumerate(messages)}
+        
+        # Track most recent user for sequential fallback
+        last_user_msg = None
+        
+        for msg in messages:
+            if msg.role == 'user':
+                last_user_msg = msg
+                continue
+            
+            # Find the prompt for this response
+            prompt_msg = self._find_prompt(msg, msg_by_id, last_user_msg)
+            
+            if prompt_msg:
+                self._create_prompt_response(
+                    dialogue_id=dialogue_id,
+                    prompt_msg=prompt_msg,
+                    response_msg=msg,
+                    prompt_position=position_by_id[prompt_msg.id],
+                    response_position=position_by_id[msg.id],
+                )
+```
+
+### Finding the Prompt
+
+```python
+def _find_prompt(
+    self,
+    response_msg: Message,
+    msg_by_id: dict[UUID, Message],
+    last_user_msg: Message | None,
+) -> Message | None:
+    """Find the user prompt that elicited this response."""
+    
+    # Strategy 1: Use parent_id if it points to a user message
+    if response_msg.parent_id and response_msg.parent_id in msg_by_id:
+        parent = msg_by_id[response_msg.parent_id]
+        if parent.role == 'user':
+            return parent
+        
+        # Parent exists but isn't user - walk up tree
+        current = parent
+        visited = {response_msg.id}
+        while current and current.id not in visited:
+            visited.add(current.id)
+            if current.role == 'user':
+                return current
+            if current.parent_id and current.parent_id in msg_by_id:
+                current = msg_by_id[current.parent_id]
+            else:
+                break
+    
+    # Strategy 2: Fall back to most recent user message
+    return last_user_msg
+```
+
+### Content Aggregation
+
+After creating prompt-response records, content is aggregated:
+
+```python
+def _build_content(self, dialogue_id: UUID) -> int:
+    """Build content records for all prompt-responses in a dialogue."""
+    result = self.session.execute(
+        text("""
+            INSERT INTO derived.prompt_response_content 
+                (prompt_response_id, prompt_text, response_text, 
+                 prompt_word_count, response_word_count)
+            SELECT 
+                pr.id,
+                (SELECT string_agg(cp.text_content, ' ' ORDER BY cp.sequence)
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.prompt_message_id),
+                (SELECT string_agg(cp.text_content, ' ' ORDER BY cp.sequence)
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.response_message_id),
+                (SELECT sum(array_length(
+                    string_to_array(cp.text_content, ' '), 1))
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.prompt_message_id),
+                (SELECT sum(array_length(
+                    string_to_array(cp.text_content, ' '), 1))
+                 FROM raw.content_parts cp 
+                 WHERE cp.message_id = pr.response_message_id)
+            FROM derived.prompt_responses pr
+            WHERE pr.dialogue_id = :dialogue_id
+            ON CONFLICT (prompt_response_id) DO UPDATE SET
+                prompt_text = EXCLUDED.prompt_text,
+                response_text = EXCLUDED.response_text,
+                prompt_word_count = EXCLUDED.prompt_word_count,
+                response_word_count = EXCLUDED.response_word_count
+        """),
+        {'dialogue_id': dialogue_id}
+    )
+    return result.rowcount
+```
+
+## Build Modes
+
+### Full Rebuild
+
+Clears and rebuilds all prompt-responses:
+
+```bash
+# Rebuild all dialogues
+llm-archive build_prompt_responses
+
+# Rebuild specific dialogue
+llm-archive build_prompt_responses --dialogue_id=<uuid>
+```
+
+```python
+def build_all(self):
+    """Rebuild all prompt-responses."""
+    # Clear all existing
+    self.session.execute(
+        text("DELETE FROM derived.prompt_response_content")
+    )
+    self.session.execute(
+        text("DELETE FROM derived.prompt_responses")
+    )
+    
+    # Rebuild all dialogues
+    dialogues = self.session.query(Dialogue.id).all()
+    for (dialogue_id,) in dialogues:
+        self.build_for_dialogue(dialogue_id)
+    
+    self.session.commit()
+```
+
+### Incremental Build
+
+Builds only for new/updated dialogues:
+
+```python
+def build_incremental(self):
+    """Build prompt-responses for dialogues without them."""
+    # Find dialogues without prompt-responses
+    dialogues_without_prs = (
+        self.session.query(Dialogue.id)
+        .outerjoin(PromptResponse, Dialogue.id == PromptResponse.dialogue_id)
+        .filter(PromptResponse.id.is_(None))
+        .all()
+    )
+    
+    for (dialogue_id,) in dialogues_without_prs:
+        self.build_for_dialogue(dialogue_id)
+    
+    self.session.commit()
+```
+
+## Edge Cases
+
+### System Messages
+
+System messages are typically not part of user→assistant pairs:
+
+```python
+# System message is skipped
+if msg.role in ('system', 'tool', 'tool_result'):
+    continue
+```
+
+### Empty Content
+
+Messages with no content parts are still included:
+
+```python
+# Content may be NULL if message has no content_parts
+prompt_text = None
+response_text = None
+```
+
+### Tool Use
+
+Tool use messages are treated as non-user, non-assistant messages:
+
+```python
+# Tool messages skipped, but assistant response after tool_result is paired
+if msg.role in ('tool', 'tool_result'):
+    continue
+```
+
+## Performance Considerations
+
+### Batch Processing
+
+```python
+def build_all(self, batch_size: int = 100):
+    """Build with periodic commits."""
+    dialogues = self.session.query(Dialogue.id).all()
+    
+    for i, (dialogue_id,) in enumerate(dialogues):
+        self.build_for_dialogue(dialogue_id)
+        
+        if (i + 1) % batch_size == 0:
+            self.session.commit()
+            logger.info(f"Processed {i + 1} dialogues")
+    
+    self.session.commit()
+```
+
+### Memory Efficiency
+
+- Uses database-side text aggregation for content
+- Processes one dialogue at a time
+- Clears per-dialogue structures after processing
+
+## Views
+
+Several views provide convenient access to prompt-response data:
+
+### prompt_response_content_v
+
+Joins prompt_responses with their content for annotation:
+
+```sql
+CREATE VIEW derived.prompt_response_content_v AS
+SELECT 
+    pr.id as prompt_response_id,
+    pr.dialogue_id,
+    pr.prompt_message_id,
+    pr.response_message_id,
+    prc.prompt_text,
+    prc.response_text,
+    prc.prompt_word_count,
+    prc.response_word_count,
+    pr.prompt_role,
+    pr.response_role,
+    pr.prompt_position,
+    pr.response_position
+FROM derived.prompt_responses pr
+LEFT JOIN derived.prompt_response_content prc 
+    ON prc.prompt_response_id = pr.id;
+```
+
+### prompt_exchanges
+
+Groups responses by their prompt (shows regenerations):
+
+```sql
+CREATE VIEW derived.prompt_exchanges AS
+SELECT 
+    prompt_message_id,
+    dialogue_id,
+    ARRAY_AGG(response_message_id ORDER BY response_position) as response_ids,
+    COUNT(*) as response_count,
+    COUNT(*) > 1 as has_regenerations,
+    MIN(prompt_text) as prompt_text
+FROM derived.prompt_responses pr
+LEFT JOIN derived.prompt_response_content prc 
+    ON prc.prompt_response_id = pr.id
+GROUP BY prompt_message_id, dialogue_id;
+```
+
+## Testing
+
+### Unit Tests
+
+Test pairing logic with mock data:
+
+```python
+def test_find_prompt_uses_parent_id(builder, messages):
+    """Test that parent_id takes precedence."""
+    user_msg = messages[0]  # role='user'
+    asst_msg = messages[1]  # role='assistant', parent_id=user_msg.id
+    
+    msg_by_id = {m.id: m for m in messages}
+    prompt = builder._find_prompt(asst_msg, msg_by_id, user_msg)
+    
+    assert prompt.id == user_msg.id
+```
+
+### Integration Tests
+
+Test full build with real database:
+
+```python
+def test_build_creates_prompt_responses(session, sample_dialogue):
+    """Test building prompt-responses for a dialogue."""
+    builder = PromptResponseBuilder(session)
+    stats = builder.build_for_dialogue(sample_dialogue.id)
+    
+    assert stats['prompt_responses'] > 0
+    
+    # Verify records exist
+    prs = session.query(PromptResponse).filter(
+        PromptResponse.dialogue_id == sample_dialogue.id
+    ).all()
+    assert len(prs) == stats['prompt_responses']
+```
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md)
+- [Schema Design](schema.md) - Prompt-response table definitions
+- [Models](models.md) - PromptResponse SQLAlchemy model
+- [Extractors](extractors.md) - Raw data source
+- [Annotators](annotators.md) - Downstream annotation
+
+
+
+---
+File: docs/chatgpt.schema.json
+---
+{'$schema': 'http://json-schema.org/schema#',
+ 'type': 'array',
+ 'items': {'type': 'object',
+  'properties': {'mapping': {'type': 'object',
+    'patternProperties': {'^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$': {'type': 'object',
+      'properties': {'id': {'type': 'string'},
+       'message': {'anyOf': [{'type': 'null'},
+         {'type': 'object',
+          'properties': {'id': {'type': 'string'},
+           'author': {'type': 'object',
+            'properties': {'role': {'type': 'string'},
+             'name': {'type': ['null', 'string']},
+             'metadata': {'type': 'object',
+              'properties': {'real_author': {'type': 'string'}}}},
+            'required': ['metadata', 'name', 'role']},
+           'create_time': {'type': ['null', 'number']},
+           'update_time': {'type': ['null', 'number']},
+           'content': {'type': 'object',
+            'properties': {'content_type': {'type': 'string'},
+             'parts': {'type': 'array',
+              'items': {'anyOf': [{'type': 'string'},
+                {'type': 'object',
+                 'properties': {'content_type': {'type': 'string'},
+                  'asset_pointer': {'type': 'string'},
+                  'size_bytes': {'type': 'integer'},
+                  'width': {'type': 'integer'},
+                  'height': {'type': 'integer'},
+                  'fovea': {'type': ['integer', 'null']},
+                  'metadata': {'anyOf': [{'type': 'null'},
+                    {'type': 'object',
+                     'properties': {'dalle': {'anyOf': [{'type': 'null'},
+                        {'type': 'object',
+                         'properties': {'gen_id': {'type': 'string'},
+                          'prompt': {'type': 'string'},
+                          'seed': {'type': ['integer', 'null']},
+                          'parent_gen_id': {'type': ['null', 'string']},
+                          'edit_op': {'type': ['null', 'string']},
+                          'serialization_title': {'type': 'string'}},
+                         'required': ['edit_op',
+                          'gen_id',
+                          'parent_gen_id',
+                          'prompt',
+                          'seed',
+                          'serialization_title']}]},
+                      'gizmo': {'type': 'null'},
+                      'generation': {'anyOf': [{'type': 'null'},
+                        {'type': 'object',
+                         'properties': {'gen_id': {'type': 'string'},
+                          'gen_size': {'type': 'string'},
+                          'seed': {'type': 'null'},
+                          'parent_gen_id': {'type': 'null'},
+                          'height': {'type': 'integer'},
+                          'width': {'type': 'integer'},
+                          'transparent_background': {'type': 'boolean'},
+                          'serialization_title': {'type': 'string'}},
+                         'required': ['gen_id',
+                          'gen_size',
+                          'height',
+                          'parent_gen_id',
+                          'seed',
+                          'serialization_title',
+                          'transparent_background',
+                          'width']}]},
+                      'container_pixel_height': {'type': ['integer', 'null']},
+                      'container_pixel_width': {'type': ['integer', 'null']},
+                      'emu_omit_glimpse_image': {'type': 'null'},
+                      'emu_patches_override': {'type': 'null'},
+                      'sanitized': {'type': 'boolean'},
+                      'asset_pointer_link': {'type': 'null'},
+                      'watermarked_asset_pointer': {'type': 'null'},
+                      'start_timestamp': {'type': 'null'},
+                      'end_timestamp': {'type': 'null'},
+                      'pretokenized_vq': {'type': 'null'},
+                      'interruptions': {'type': 'null'},
+                      'original_audio_source': {'type': 'null'},
+                      'transcription': {'type': 'null'},
+                      'word_transcription': {'type': 'null'},
+                      'start': {'type': 'number'},
+                      'end': {'type': 'number'}}}]},
+                  'expiry_datetime': {'type': 'null'},
+                  'frames_asset_pointers': {'type': 'array'},
+                  'video_container_asset_pointer': {'type': 'null'},
+                  'audio_asset_pointer': {'type': 'object',
+                   'properties': {'expiry_datetime': {'type': 'null'},
+                    'content_type': {'type': 'string'},
+                    'asset_pointer': {'type': 'string'},
+                    'size_bytes': {'type': 'integer'},
+                    'format': {'type': 'string'},
+                    'metadata': {'type': 'object',
+                     'properties': {'start_timestamp': {'type': 'null'},
+                      'end_timestamp': {'type': 'null'},
+                      'pretokenized_vq': {'type': 'null'},
+                      'interruptions': {'type': 'null'},
+                      'original_audio_source': {'type': 'null'},
+                      'transcription': {'type': 'null'},
+                      'word_transcription': {'type': 'null'},
+                      'start': {'type': 'number'},
+                      'end': {'type': 'number'}},
+                     'required': ['end',
+                      'end_timestamp',
+                      'interruptions',
+                      'original_audio_source',
+                      'pretokenized_vq',
+                      'start',
+                      'start_timestamp',
+                      'transcription',
+                      'word_transcription']}},
+                   'required': ['asset_pointer',
+                    'content_type',
+                    'expiry_datetime',
+                    'format',
+                    'metadata',
+                    'size_bytes']},
+                  'audio_start_timestamp': {'type': 'number'},
+                  'text': {'type': 'string'},
+                  'direction': {'type': 'string'},
+                  'decoding_id': {'type': 'null'},
+                  'format': {'type': 'string'}},
+                 'required': ['content_type']}]}},
+             'language': {'type': 'string'},
+             'response_format_name': {'type': 'null'},
+             'text': {'type': 'string'},
+             'thoughts': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'summary': {'type': 'string'},
+                'content': {'type': 'string'}},
+               'required': ['content', 'summary']}},
+             'source_analysis_msg_id': {'type': 'string'},
+             'content': {'type': 'string'},
+             'result': {'type': 'string'},
+             'summary': {'type': ['null', 'string']},
+             'assets': {'type': 'array'},
+             'tether_id': {'type': 'null'},
+             'url': {'type': 'string'},
+             'domain': {'type': 'string'},
+             'title': {'type': 'string'},
+             'snippet': {'type': 'string'},
+             'pub_date': {'type': 'null'},
+             'crawl_date': {'type': 'null'},
+             'pub_timestamp': {'type': 'number'},
+             'ref_id': {'type': 'string'},
+             'name': {'type': 'string'}},
+            'required': ['content_type']},
+           'status': {'type': 'string'},
+           'end_turn': {'type': ['boolean', 'null']},
+           'weight': {'type': 'number'},
+           'metadata': {'type': 'object',
+            'properties': {'is_visually_hidden_from_conversation': {'type': 'boolean'},
+             'selected_sources': {'type': 'array',
+              'items': {'type': 'string'}},
+             'selected_github_repos': {'type': 'array'},
+             'serialization_metadata': {'type': 'object',
+              'properties': {'custom_symbol_offsets': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'symbol': {'type': 'string'},
+                  'startIndex': {'type': 'integer'},
+                  'endIndex': {'type': 'integer'}},
+                 'required': ['endIndex', 'startIndex', 'symbol']}}},
+              'required': ['custom_symbol_offsets']},
+             'request_id': {'type': ['null', 'string']},
+             'message_source': {'type': 'null'},
+             'timestamp_': {'type': 'string'},
+             'message_type': {'type': ['null', 'string']},
+             'model_slug': {'type': 'string'},
+             'default_model_slug': {'type': 'string'},
+             'parent_id': {'type': 'string'},
+             'is_complete': {'type': 'boolean'},
+             'finish_details': {'type': 'object',
+              'properties': {'type': {'type': 'string'},
+               'stop_tokens': {'type': 'array', 'items': {'type': 'integer'}},
+               'stop': {'type': 'string'}},
+              'required': ['type']},
+             'sonic_classification_result': {'type': 'object',
+              'properties': {'latency_ms': {'type': ['null', 'number']},
+               'search_prob': {'type': ['null', 'number']},
+               'force_search_threshold': {'type': ['null', 'number']},
+               'classifier_config_name': {'type': 'string'}},
+              'required': ['latency_ms', 'search_prob']},
+             'citations': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'start_ix': {'type': 'integer'},
+                'end_ix': {'type': 'integer'},
+                'invalid_reason': {'type': 'string'},
+                'citation_format_type': {'type': 'string'},
+                'metadata': {'type': 'object',
+                 'properties': {'type': {'type': 'string'},
+                  'title': {'type': 'string'},
+                  'url': {'type': 'string'},
+                  'text': {'type': 'string'},
+                  'pub_date': {'type': ['null', 'string']},
+                  'extra': {'anyOf': [{'type': 'null'},
+                    {'type': 'object',
+                     'properties': {'cited_message_idx': {'type': 'integer'},
+                      'search_result_idx': {'type': ['integer', 'null']},
+                      'evidence_text': {'type': 'string'},
+                      'cloud_doc_url': {'type': 'null'}},
+                     'required': ['cited_message_idx', 'evidence_text']}]},
+                  'og_tags': {'type': 'null'}},
+                 'required': ['extra',
+                  'pub_date',
+                  'text',
+                  'title',
+                  'type',
+                  'url']}},
+               'required': ['end_ix', 'start_ix']}},
+             'content_references': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'matched_text': {'type': 'string'},
+                'start_idx': {'type': 'integer'},
+                'end_idx': {'type': 'integer'},
+                'refs': {'type': 'array',
+                 'items': {'anyOf': [{'type': 'string'},
+                   {'type': 'object',
+                    'properties': {'turn_index': {'type': 'integer'},
+                     'ref_type': {'type': 'string'},
+                     'ref_index': {'type': 'integer'}},
+                    'required': ['ref_index', 'ref_type', 'turn_index']}]}},
+                'alt': {'type': ['null', 'string']},
+                'prompt_text': {'type': ['null', 'string']},
+                'type': {'type': 'string'},
+                'invalid': {'type': 'boolean'},
+                'safe_urls': {'type': 'array', 'items': {'type': 'string'}},
+                'attributable_index': {'type': 'string'},
+                'attributions': {'type': 'null'},
+                'attributions_debug': {'type': 'null'},
+                'items': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'title': {'type': 'string'},
+                   'url': {'type': 'string'},
+                   'pub_date': {'type': ['null', 'number']},
+                   'snippet': {'type': ['null', 'string']},
+                   'attribution_segments': {'anyOf': [{'type': 'null'},
+                     {'type': 'array', 'items': {'type': 'string'}}]},
+                   'supporting_websites': {'type': 'array',
+                    'items': {'type': 'object',
+                     'properties': {'title': {'type': 'string'},
+                      'url': {'type': 'string'},
+                      'pub_date': {'type': ['null', 'number']},
+                      'snippet': {'type': 'string'},
+                      'attribution': {'type': 'string'}},
+                     'required': ['attribution',
+                      'pub_date',
+                      'snippet',
+                      'title',
+                      'url']}},
+                   'refs': {'type': 'array',
+                    'items': {'type': 'object',
+                     'properties': {'turn_index': {'type': 'integer'},
+                      'ref_type': {'type': 'string'},
+                      'ref_index': {'type': 'integer'}},
+                     'required': ['ref_index', 'ref_type', 'turn_index']}},
+                   'hue': {'type': 'null'},
+                   'attributions': {'type': 'null'},
+                   'attribution': {'type': 'string'}},
+                  'required': ['pub_date', 'snippet', 'title', 'url']}},
+                'status': {'type': 'string'},
+                'error': {'type': 'null'},
+                'style': {'type': ['null', 'string']},
+                'sources': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'title': {'type': 'string'},
+                   'url': {'type': 'string'},
+                   'attribution': {'type': 'string'}},
+                  'required': ['attribution', 'title', 'url']}},
+                'has_images': {'type': 'boolean'},
+                'images': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'url': {'type': 'string'},
+                   'content_url': {'type': 'string'},
+                   'thumbnail_url': {'type': 'string'},
+                   'title': {'type': 'string'},
+                   'content_size': {'type': 'object',
+                    'properties': {'width': {'type': 'integer'},
+                     'height': {'type': 'integer'}},
+                    'required': ['height', 'width']},
+                   'thumbnail_size': {'type': 'object',
+                    'properties': {'width': {'type': 'integer'},
+                     'height': {'type': 'integer'}},
+                    'required': ['height', 'width']},
+                   'thumbnail_crop_info': {'type': 'null'},
+                   'attribution': {'type': 'string'}},
+                  'required': ['attribution',
+                   'content_size',
+                   'content_url',
+                   'thumbnail_crop_info',
+                   'thumbnail_size',
+                   'thumbnail_url',
+                   'title',
+                   'url']}},
+                'title': {'type': 'string'},
+                'url': {'type': 'string'},
+                'pub_date': {'type': ['null', 'number']},
+                'snippet': {'type': 'string'},
+                'attribution': {'type': 'string'},
+                'icon_type': {'type': 'null'}},
+               'required': ['end_idx', 'matched_text', 'start_idx', 'type']}},
+             'command': {'type': 'string'},
+             'status': {'type': 'string'},
+             'search_source': {'type': 'string'},
+             'client_reported_search_source': {'type': ['null', 'string']},
+             'debug_sonic_thread_id': {'type': 'string'},
+             'search_result_groups': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'type': {'type': 'string'},
+                'domain': {'type': 'string'},
+                'entries': {'type': 'array',
+                 'items': {'type': 'object',
+                  'properties': {'type': {'type': 'string'},
+                   'url': {'type': 'string'},
+                   'title': {'type': 'string'},
+                   'snippet': {'type': 'string'},
+                   'ref_id': {'anyOf': [{'type': 'null'},
+                     {'type': 'object',
+                      'properties': {'turn_index': {'type': 'integer'},
+                       'ref_type': {'type': 'string'},
+                       'ref_index': {'type': 'integer'}},
+                      'required': ['ref_index', 'ref_type', 'turn_index']}]},
+                   'content_type': {'type': 'null'},
+                   'pub_date': {'type': ['null', 'number']},
+                   'attributions': {'type': 'null'},
+                   'attribution': {'type': 'string'},
+                   'attributions_debug': {'type': 'null'}},
+                  'required': ['pub_date',
+                   'ref_id',
+                   'snippet',
+                   'title',
+                   'type',
+                   'url']}}},
+               'required': ['domain', 'entries', 'type']}},
+             'safe_urls': {'type': 'array', 'items': {'type': 'string'}},
+             'message_locale': {'type': 'string'},
+             'image_results': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'url': {'type': 'string'},
+                'content_url': {'type': 'string'},
+                'thumbnail_url': {'type': 'string'},
+                'title': {'type': 'string'},
+                'content_size': {'type': 'object',
+                 'properties': {'width': {'type': 'integer'},
+                  'height': {'type': 'integer'}},
+                 'required': ['height', 'width']},
+                'thumbnail_size': {'type': 'object',
+                 'properties': {'width': {'type': 'integer'},
+                  'height': {'type': 'integer'}},
+                 'required': ['height', 'width']},
+                'thumbnail_crop_info': {'type': 'null'},
+                'attribution': {'type': 'string'}},
+               'required': ['attribution',
+                'content_size',
+                'content_url',
+                'thumbnail_crop_info',
+                'thumbnail_size',
+                'thumbnail_url',
+                'title',
+                'url']}},
+             'rebase_developer_message': {'type': 'boolean'},
+             'reasoning_status': {'type': 'string'},
+             'search_queries': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'type': {'type': 'string'},
+                'q': {'type': 'string'}},
+               'required': ['q', 'type']}},
+             'search_display_string': {'type': 'string'},
+             'searched_display_string': {'type': 'string'},
+             'finished_duration_sec': {'type': 'integer'},
+             'canvas': {'type': 'object',
+              'properties': {'textdoc_id': {'type': 'string'},
+               'textdoc_type': {'type': 'string'},
+               'version': {'type': 'integer'},
+               'title': {'type': 'string'},
+               'create_source': {'type': 'string'},
+               'from_version': {'type': 'integer'},
+               'textdoc_content_length': {'type': 'integer'},
+               'user_message_type': {'type': 'string'},
+               'selection_metadata': {'type': 'object',
+                'properties': {'selection_type': {'type': 'string'},
+                 'selection_position_range': {'type': 'object',
+                  'properties': {'start': {'type': 'integer'},
+                   'end': {'type': 'integer'}},
+                  'required': ['end', 'start']}},
+                'required': ['selection_position_range', 'selection_type']},
+               'comment_ids': {'type': 'array', 'items': {'type': 'string'}},
+               'has_user_edit': {'type': 'boolean'},
+               'is_failure': {'type': 'boolean'}}},
+             'targeted_reply': {'type': 'string'},
+             'targeted_reply_label': {'type': 'string'},
+             'attachments': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'id': {'type': 'string'},
+                'size': {'type': 'integer'},
+                'name': {'type': 'string'},
+                'mime_type': {'type': 'string'},
+                'width': {'type': 'integer'},
+                'height': {'type': 'integer'},
+                'mimeType': {'type': 'string'}},
+               'required': ['id', 'name']}},
+             'caterpillar_selected_sources': {'type': 'array',
+              'items': {'type': 'string'}},
+             'gizmo_id': {'type': ['null', 'string']},
+             'rebase_system_message': {'type': 'boolean'},
+             'category_suggestions': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'title': {'type': 'string'},
+                'category_id': {'type': 'string'},
+                'suggestions': {'anyOf': [{'type': 'null'},
+                  {'type': 'array',
+                   'items': {'type': 'object',
+                    'properties': {'title': {'type': 'null'},
+                     'description': {'type': 'string'},
+                     'prompt': {'type': 'string'},
+                     'system_hint': {'type': 'string'},
+                     'category_id': {'type': 'string'},
+                     'cta_label': {'type': 'null'},
+                     'image_url': {'type': 'null'},
+                     'model_override': {'type': 'null'},
+                     'id': {'type': 'string'}},
+                    'required': ['category_id',
+                     'cta_label',
+                     'description',
+                     'id',
+                     'prompt',
+                     'system_hint',
+                     'title']}}]},
+                'style': {'type': 'string'}},
+               'required': ['category_id', 'suggestions', 'title']}},
+             'finished_text': {'type': 'string'},
+             'initial_text': {'type': 'string'},
+             '_cite_metadata': {'type': 'object',
+              'properties': {'citation_format': {'type': 'object',
+                'properties': {'name': {'type': 'string'},
+                 'regex': {'type': 'string'}},
+                'required': ['name']},
+               'metadata_list': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'type': {'type': 'string'},
+                  'title': {'type': 'string'},
+                  'url': {'type': 'string'},
+                  'text': {'type': 'string'},
+                  'pub_date': {'type': ['null', 'string']},
+                  'extra': {'type': 'null'},
+                  'og_tags': {'type': 'null'},
+                  'name': {'type': 'string'},
+                  'id': {'type': 'string'},
+                  'source': {'type': 'string'}},
+                 'required': ['extra', 'text', 'type']}},
+               'original_query': {'type': 'null'}},
+              'required': ['citation_format',
+               'metadata_list',
+               'original_query']},
+             'args': {'type': 'array',
+              'items': {'anyOf': [{'type': ['integer', 'string']},
+                {'type': 'array', 'items': {'type': 'integer'}}]}},
+             'system_hints': {'type': 'array', 'items': {'type': 'string'}},
+             'cloud_doc_urls': {'type': 'array', 'items': {'type': 'null'}},
+             'search_engine': {'type': 'string'},
+             'aggregate_result': {'type': 'object',
+              'properties': {'status': {'type': 'string'},
+               'run_id': {'type': 'string'},
+               'start_time': {'type': 'number'},
+               'update_time': {'type': 'number'},
+               'code': {'type': 'string'},
+               'end_time': {'type': ['null', 'number']},
+               'final_expression_output': {'type': ['null', 'string']},
+               'in_kernel_exception': {'anyOf': [{'type': 'null'},
+                 {'type': 'object',
+                  'properties': {'name': {'type': 'string'},
+                   'traceback': {'type': 'array', 'items': {'type': 'string'}},
+                   'args': {'type': 'array', 'items': {'type': 'string'}},
+                   'notes': {'type': 'array'}},
+                  'required': ['args', 'name', 'notes', 'traceback']}]},
+               'system_exception': {'type': 'null'},
+               'messages': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'message_type': {'type': 'string'},
+                  'time': {'type': 'number'},
+                  'sender': {'type': 'string'},
+                  'image_payload': {'type': 'null'},
+                  'image_url': {'type': 'string'},
+                  'width': {'type': 'integer'},
+                  'height': {'type': 'integer'},
+                  'stream_name': {'type': 'string'},
+                  'text': {'type': 'string'},
+                  'timeout_triggered': {'type': 'number'}},
+                 'required': ['message_type', 'sender', 'time']}},
+               'jupyter_messages': {'type': 'array',
+                'items': {'type': 'object',
+                 'properties': {'msg_type': {'type': 'string'},
+                  'parent_header': {'type': 'object',
+                   'properties': {'msg_id': {'type': 'string'},
+                    'version': {'type': 'string'}},
+                   'required': ['msg_id', 'version']},
+                  'content': {'type': 'object',
+                   'properties': {'execution_state': {'type': 'string'},
+                    'data': {'type': 'object',
+                     'properties': {'text/plain': {'type': 'string'},
+                      'text/html': {'type': 'string'},
+                      'image/vnd.openai.fileservice2.png': {'type': 'string'},
+                      'image/vnd.openai.fileservice.png': {'type': 'string'}},
+                     'required': ['text/plain']},
+                    'name': {'type': 'string'},
+                    'text': {'type': 'string'},
+                    'traceback': {'type': 'array',
+                     'items': {'type': 'string'}},
+                    'ename': {'type': 'string'},
+                    'evalue': {'type': 'string'}}},
+                  'timeout': {'type': 'number'}},
+                 'required': ['msg_type']}},
+               'timeout_triggered': {'type': ['null', 'number']}},
+              'required': ['code',
+               'end_time',
+               'final_expression_output',
+               'in_kernel_exception',
+               'jupyter_messages',
+               'messages',
+               'run_id',
+               'start_time',
+               'status',
+               'system_exception',
+               'timeout_triggered',
+               'update_time']},
+             'paragen_variants_info': {'type': 'object',
+              'properties': {'type': {'type': 'string'},
+               'num_variants_in_stream': {'type': 'integer'},
+               'display_treatment': {'type': 'string'},
+               'conversation_id': {'type': 'string'}},
+              'required': ['conversation_id',
+               'display_treatment',
+               'num_variants_in_stream',
+               'type']},
+             'paragen_variant_choice': {'type': 'string'},
+             'voice_mode_message': {'type': 'boolean'},
+             'kwargs': {'type': 'object',
+              'properties': {'message_id': {'type': 'string'},
+               'pending_message_id': {'type': ['null', 'string']},
+               'sync_write': {'type': 'boolean'}},
+              'required': ['message_id']},
+             'augmented_paragen_prompt_label': {'type': ['null', 'string']},
+             'exclusive_key': {'type': 'string'},
+             'model_switcher_deny': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'slug': {'type': 'string'},
+                'context': {'type': 'string'},
+                'reason': {'type': 'string'},
+                'description': {'type': 'string'}},
+               'required': ['context', 'description', 'reason', 'slug']}},
+             'pad': {'type': 'string'},
+             'real_time_audio_has_video': {'type': 'boolean'},
+             'ada_visualizations': {'type': 'array',
+              'items': {'type': 'object',
+               'properties': {'type': {'type': 'string'},
+                'file_id': {'type': 'string'},
+                'title': {'type': 'string'},
+                'chart_type': {'type': 'string'},
+                'fallback_to_image': {'type': 'boolean'}},
+               'required': ['chart_type',
+                'fallback_to_image',
+                'file_id',
+                'title',
+                'type']}},
+             'requested_model_slug': {'type': 'string'},
+             'dalle': {'type': 'object',
+              'properties': {'from_client': {'type': 'object',
+                'properties': {'operation': {'type': 'object',
+                  'properties': {'type': {'type': 'string'},
+                   'original_gen_id': {'type': 'string'},
+                   'original_file_id': {'type': 'string'}},
+                  'required': ['original_file_id',
+                   'original_gen_id',
+                   'type']}},
+                'required': ['operation']}},
+              'required': ['from_client']},
+             'filter_out_for_training': {'type': 'boolean'},
+             'jit_plugin_data': {'type': 'object',
+              'properties': {'from_server': {'type': 'object',
+                'properties': {'type': {'type': 'string'},
+                 'body': {'type': 'object',
+                  'properties': {'domain': {'type': 'string'},
+                   'is_consequential': {'type': 'boolean'},
+                   'privacy_policy': {'type': 'string'},
+                   'method': {'type': 'string'},
+                   'path': {'type': 'string'},
+                   'operation': {'type': 'string'},
+                   'params': {'type': 'object',
+                    'properties': {'country_name': {'type': 'string'},
+                     'state_name': {'type': 'string'},
+                     'city_name': {'type': 'string'},
+                     'filters': {'type': 'string'},
+                     'num_trails': {'type': 'integer'},
+                     'raw_query': {'type': 'string'},
+                     'location_helper': {'type': 'string'}},
+                    'required': ['city_name',
+                     'country_name',
+                     'filters',
+                     'location_helper',
+                     'num_trails',
+                     'raw_query',
+                     'state_name']},
+                   'actions': {'type': 'array',
+                    'items': {'type': 'object',
+                     'properties': {'name': {'type': 'string'},
+                      'type': {'type': 'string'},
+                      'allow': {'type': 'object',
+                       'properties': {'target_message_id': {'type': 'string'}},
+                       'required': ['target_message_id']},
+                      'always_allow': {'type': 'object',
+                       'properties': {'target_message_id': {'type': 'string'},
+                        'operation_hash': {'type': 'string'}},
+                       'required': ['operation_hash', 'target_message_id']},
+                      'deny': {'type': 'object',
+                       'properties': {'target_message_id': {'type': 'string'}},
+                       'required': ['target_message_id']}},
+                     'required': ['type']}}},
+                  'required': ['actions',
+                   'domain',
+                   'is_consequential',
+                   'method',
+                   'operation',
+                   'params',
+                   'path',
+                   'privacy_policy']}},
+                'required': ['body', 'type']},
+               'from_client': {'type': 'object',
+                'properties': {'user_action': {'type': 'object',
+                  'properties': {'data': {'type': 'object',
+                    'properties': {'type': {'type': 'string'}},
+                    'required': ['type']},
+                   'target_message_id': {'type': 'string'}},
+                  'required': ['data', 'target_message_id']}},
+                'required': ['user_action']}}},
+             'invoked_plugin': {'type': 'object',
+              'properties': {'type': {'type': 'string'},
+               'namespace': {'type': 'string'},
+               'plugin_id': {'type': 'string'},
+               'http_response_status': {'type': 'integer'}},
+              'required': ['http_response_status',
+               'namespace',
+               'plugin_id',
+               'type']}}},
+           'recipient': {'type': 'string'},
+           'channel': {'type': ['null', 'string']}},
+          'required': ['author',
+           'channel',
+           'content',
+           'create_time',
+           'end_turn',
+           'id',
+           'metadata',
+           'recipient',
+           'status',
+           'update_time',
+           'weight']}]},
+       'parent': {'type': ['null', 'string']},
+       'children': {'type': 'array', 'items': {'type': 'string'}}},
+      'required': ['children', 'id', 'message', 'parent']},
+     '^client-created-': {'type': 'object',
+      'properties': {'id': {'type': 'string'},
+       'message': {'type': 'null'},
+       'parent': {'type': 'null'},
+       'children': {'type': 'array', 'items': {'type': 'string'}}},
+      'required': ['children', 'id', 'message', 'parent']}}},
+   'title': {'type': 'string'},
+   'create_time': {'type': 'number'},
+   'update_time': {'type': 'number'},
+   'moderation_results': {'type': 'array'},
+   'current_node': {'type': 'string'},
+   'plugin_ids': {'anyOf': [{'type': 'null'},
+     {'type': 'array', 'items': {'type': 'string'}}]},
+   'conversation_id': {'type': 'string'},
+   'conversation_template_id': {'type': ['null', 'string']},
+   'gizmo_id': {'type': ['null', 'string']},
+   'gizmo_type': {'type': ['null', 'string']},
+   'is_archived': {'type': 'boolean'},
+   'is_starred': {'type': 'null'},
+   'safe_urls': {'type': 'array', 'items': {'type': 'string'}},
+   'blocked_urls': {'type': 'array'},
+   'default_model_slug': {'type': ['null', 'string']},
+   'conversation_origin': {'type': 'null'},
+   'voice': {'type': ['null', 'string']},
+   'async_status': {'type': ['integer', 'null']},
+   'disabled_tool_ids': {'type': 'array'},
+   'is_do_not_remember': {'type': ['boolean', 'null']},
+   'memory_scope': {'type': 'string'},
+   'id': {'type': 'string'}},
+  'required': ['async_status',
+   'blocked_urls',
+   'conversation_id',
+   'conversation_origin',
+   'conversation_template_id',
+   'create_time',
+   'current_node',
+   'default_model_slug',
+   'disabled_tool_ids',
+   'gizmo_id',
+   'gizmo_type',
+   'id',
+   'is_archived',
+   'is_do_not_remember',
+   'is_starred',
+   'mapping',
+   'memory_scope',
+   'moderation_results',
+   'plugin_ids',
+   'safe_urls',
+   'title',
+   'update_time',
+   'voice']}}
+
+
+
+---
+File: docs/claude.schema.json
+---
+{'$schema': 'http://json-schema.org/schema#',
+ 'type': 'array',
+ 'items': {'type': 'object',
+  'properties': {'uuid': {'pattern': '^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$',
+    'type': 'string'},
+   'name': {'type': 'string'},
+   'created_at': {'format': 'date-time', 'type': 'string'},
+   'updated_at': {'format': 'date-time', 'type': 'string'},
+   'account': {'type': 'object',
+    'properties': {'uuid': {'pattern': '^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$',
+      'type': 'string'}},
+    'required': ['uuid']},
+   'chat_messages': {'type': 'array',
+    'items': {'type': 'object',
+     'properties': {'uuid': {'pattern': '^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$',
+       'type': 'string'},
+      'text': {'type': 'string'},
+      'content': {'type': 'array',
+       'items': {'type': 'object',
+        'properties': {'start_timestamp': {'anyOf': [{'type': 'null'},
+           {'format': 'date-time', 'type': 'string'}]},
+         'stop_timestamp': {'anyOf': [{'type': 'null'},
+           {'format': 'date-time', 'type': 'string'}]},
+         'type': {'type': 'string'},
+         'text': {'type': 'string'},
+         'citations': {'type': 'array',
+          'items': {'type': 'object',
+           'properties': {'uuid': {'type': 'string'},
+            'start_index': {'type': 'integer'},
+            'end_index': {'type': 'integer'},
+            'details': {'type': 'object',
+             'properties': {'type': {'type': 'string'},
+              'url': {'type': 'string'}},
+             'required': ['type', 'url']}},
+           'required': ['details', 'end_index', 'start_index', 'uuid']}},
+         'name': {'type': 'string'},
+         'input': {'type': 'object',
+          'properties': {'query': {'type': 'string'},
+           'id': {'type': 'string'},
+           'type': {'type': 'string'},
+           'title': {'type': 'string'},
+           'command': {'type': 'string'},
+           'content': {'type': 'string'},
+           'language': {'type': 'string'},
+           'version_uuid': {'type': 'string'},
+           'new_str': {'type': 'string'},
+           'old_str': {'type': 'string'},
+           'code': {'type': 'string'},
+           'url': {'type': 'string'}}},
+         'message': {'type': ['null', 'string']},
+         'integration_name': {'type': ['null', 'string']},
+         'integration_icon_url': {'type': ['null', 'string']},
+         'context': {'type': 'null'},
+         'display_content': {'anyOf': [{'type': 'null'},
+           {'type': 'object',
+            'properties': {'type': {'type': 'string'},
+             'link': {'type': 'object',
+              'properties': {'title': {'type': 'string'},
+               'subtitles': {'type': 'null'},
+               'url': {'type': 'string'},
+               'resource_type': {'type': 'null'},
+               'icon_url': {'type': 'string'},
+               'source': {'type': 'string'}},
+              'required': ['icon_url',
+               'resource_type',
+               'source',
+               'subtitles',
+               'title',
+               'url']},
+             'is_trusted': {'type': 'boolean'},
+             'table': {'type': 'array',
+              'items': {'type': 'array', 'items': {'type': 'string'}}}},
+            'required': ['type']}]},
+         'approval_options': {'type': 'null'},
+         'approval_key': {'type': 'null'},
+         'content': {'type': 'array',
+          'items': {'type': 'object',
+           'properties': {'type': {'type': 'string'},
+            'title': {'type': 'string'},
+            'url': {'type': 'string'},
+            'metadata': {'type': 'object',
+             'properties': {'type': {'type': 'string'},
+              'site_domain': {'type': 'string'},
+              'favicon_url': {'type': 'string'},
+              'site_name': {'type': 'string'}},
+             'required': ['favicon_url', 'site_domain', 'site_name', 'type']},
+            'is_missing': {'type': 'boolean'},
+            'text': {'type': 'string'},
+            'is_citable': {'type': 'boolean'},
+            'prompt_context_metadata': {'type': 'object',
+             'properties': {'url': {'type': 'string'},
+              'age': {'type': 'string'},
+              'content_type': {'type': 'string'}}},
+            'uuid': {'type': 'string'}},
+           'required': ['text', 'type']}},
+         'is_error': {'type': 'boolean'},
+         'thinking': {'type': 'string'},
+         'summaries': {'type': 'array',
+          'items': {'type': 'object',
+           'properties': {'summary': {'type': 'string'}},
+           'required': ['summary']}},
+         'cut_off': {'type': 'boolean'}},
+        'required': ['start_timestamp', 'stop_timestamp', 'type']}},
+      'sender': {'type': 'string'},
+      'created_at': {'format': 'date-time', 'type': 'string'},
+      'updated_at': {'format': 'date-time', 'type': 'string'},
+      'attachments': {'type': 'array',
+       'items': {'type': 'object',
+        'properties': {'file_name': {'type': 'string'},
+         'file_size': {'type': 'integer'},
+         'file_type': {'type': 'string'},
+         'extracted_content': {'type': 'string'}},
+        'required': ['extracted_content',
+         'file_name',
+         'file_size',
+         'file_type']}},
+      'files': {'type': 'array',
+       'items': {'type': 'object',
+        'properties': {'file_name': {'type': 'string'}},
+        'required': ['file_name']}}},
+     'required': ['attachments',
+      'content',
+      'created_at',
+      'files',
+      'sender',
+      'text',
+      'updated_at',
+      'uuid']}}},
+  'required': ['account',
+   'chat_messages',
+   'created_at',
+   'name',
+   'updated_at',
+   'uuid']}}
+
+
+
+---
+File: docs/cli.md
+---
+<!-- docs/cli.md -->
+# Command-Line Interface
+
+## Overview
+
+The CLI provides the primary interface for importing data, building derived structures, and running annotations. It's built with Python Fire for automatic command generation.
+
+## Installation
+
+```bash
+# Install package with CLI
+pip install -e .
+
+# Or run directly with uv
+uv run llm-archive <command>
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/llm_archive"
+
+# Or individual components
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5432
+export POSTGRES_DB=llm_archive
+export POSTGRES_USER=postgres
+export POSTGRES_PASSWORD=postgres
+```
+
+### Configuration File
+
+```yaml
+# config.yaml
+database:
+  host: localhost
+  port: 5432
+  database: llm_archive
+  user: postgres
+  password: postgres
+
+import:
+  batch_size: 1000
+  
+logging:
+  level: INFO
+```
+
+---
+
+## Command Reference
+
+### Database Management
+
+#### `init`
+
+Initialize database with schemas:
+
+```bash
+# Create schemas and tables from schema/ directory
+llm-archive init --schema_dir=schema
+
+# With custom connection
+llm-archive init --database_url="postgresql://..." --schema_dir=schema
+```
+
+```mermaid
+flowchart LR
+    Init["init"] --> CreateRaw["CREATE SCHEMA raw"]
+    Init --> CreateDerived["CREATE SCHEMA derived"]
+    CreateRaw --> RawTables["Create raw.* tables"]
+    CreateDerived --> DerivedTables["Create derived.* tables"]
+    RawTables --> InsertSources["INSERT sources"]
+```
+
+#### `reset`
+
+Reset database (destructive):
+
+```bash
+# Drop and recreate all schemas
+llm-archive reset --confirm
+
+# Reset only derived schema
+llm-archive reset --schema=derived --confirm
+```
+
+### Data Import
+
+#### `import_chatgpt`
+
+Import ChatGPT conversation export:
+
+```bash
+# Basic import
+llm-archive import_chatgpt /path/to/conversations.json
+
+# Incremental import (update only changed)
+llm-archive import_chatgpt /path/to/conversations.json --incremental
+
+# With batch size
+llm-archive import_chatgpt /path/to/conversations.json --batch_size=500
+```
+
+**Arguments:**
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `file` | Path to conversations.json | Required |
+| `--incremental` | Only update changed dialogues | False |
+| `--batch_size` | Messages per batch | 1000 |
+
+#### `import_claude`
+
+Import Claude conversation export:
+
+```bash
+# Basic import
+llm-archive import_claude /path/to/claude_export.json
+
+# Incremental import
+llm-archive import_claude /path/to/claude_export.json --incremental
+```
+
+#### `import_all`
+
+Import from multiple sources:
+
+```bash
+llm-archive import_all \
+    --chatgpt_path=/path/to/chatgpt.json \
+    --claude_path=/path/to/claude.json \
+    --incremental
+```
+
+### Building Derived Data
+
+#### `build_prompt_responses`
+
+Build prompt-response pairs from imported messages:
+
+```bash
+# Build all dialogues
+llm-archive build_prompt_responses
+
+# Build specific dialogue
+llm-archive build_prompt_responses --dialogue_id="uuid-here"
+
+# Rebuild (clears existing first)
+llm-archive build_prompt_responses --rebuild
+```
+
+**Arguments:**
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--dialogue_id` | Build for specific dialogue only | None (all) |
+| `--rebuild` | Clear and rebuild | False |
+| `--batch_size` | Dialogues per commit | 100 |
+
+```mermaid
+flowchart LR
+    Build["build_prompt_responses"] --> Clear["Clear existing<br/>(if rebuild)"]
+    Clear --> Iterate["Iterate dialogues"]
+    
+    Iterate --> Process["Process each dialogue"]
+    Process --> Pair["Create prompt-response<br/>pairs"]
+    Pair --> Content["Aggregate content"]
+    Content --> Next["Next dialogue"]
+    
+    Next --> Commit{"Batch full?"}
+    Commit -->|Yes| CommitDB["COMMIT"]
+    Commit -->|No| Iterate
+    CommitDB --> Iterate
+```
+
+### Annotation
+
+#### `annotate`
+
+Run annotators on entities:
+
+```bash
+# Run all registered annotators
+llm-archive annotate
+
+# Run specific annotator
+llm-archive annotate WikiCandidateAnnotator
+
+# Clear cursors and re-run everything
+llm-archive annotate --clear
+```
+
+**Arguments:**
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `annotator` | Annotator name or None for all | None (all) |
+| `--clear` | Clear cursors before running | False |
+
+```mermaid
+flowchart TD
+    Annotate["annotate"] --> Sort["Sort by priority"]
+    Sort --> Loop["For each annotator"]
+    
+    Loop --> GetCursor["Get/Create cursor"]
+    GetCursor --> Query["Query entities > cursor"]
+    
+    Query --> HasEntities{"Entities?"}
+    HasEntities -->|Yes| Process["Process entity"]
+    Process --> Write["Write annotations"]
+    Write --> Next["Next entity"]
+    Next --> HasEntities
+    
+    HasEntities -->|No| UpdateCursor["Update cursor"]
+    UpdateCursor --> NextAnnotator["Next annotator"]
+    NextAnnotator --> Loop
+```
+
+### Analysis and Queries
+
+#### `stats`
+
+Show database statistics:
+
+```bash
+# Show overview
+llm-archive stats
+
+# Detailed stats
+llm-archive stats --detailed
+```
+
+Output includes:
+- Dialogue counts by source
+- Message counts by role
+- Prompt-response pair counts
+- Annotation counts by key
+
+#### `query_annotations`
+
+Query entities by annotations:
+
+```bash
+# Find all wiki article candidates
+llm-archive query_annotations \
+    --entity_type=prompt_response \
+    --annotation_key=exchange_type \
+    --annotation_value=wiki_article
+
+# Find entities with specific flag
+llm-archive query_annotations \
+    --entity_type=message \
+    --annotation_key=has_code_blocks \
+    --value_type=flag
+
+# Export results
+llm-archive query_annotations \
+    --entity_type=prompt_response \
+    --annotation_key=exchange_type \
+    --annotation_value=wiki_article \
+    --output=wiki_articles.json
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `--entity_type` | Entity type (prompt_response, message, etc.) |
+| `--annotation_key` | Annotation key to filter on |
+| `--annotation_value` | Annotation value to filter on (optional for flags) |
+| `--value_type` | Type of annotation (flag, string, numeric, json) |
+| `--output` | Output file path |
+
+### Pipeline Commands
+
+#### `pipeline`
+
+Run full import and processing pipeline:
+
+```bash
+# Full pipeline with initialization
+llm-archive pipeline \
+    --chatgpt_path=/path/to/chatgpt.json \
+    --claude_path=/path/to/claude.json \
+    --init_db
+
+# Incremental update
+llm-archive pipeline \
+    --chatgpt_path=/path/to/new_export.json \
+    --incremental
+```
+
+**Pipeline steps:**
+1. Initialize database (if `--init_db`)
+2. Import ChatGPT conversations (if `--chatgpt_path`)
+3. Import Claude conversations (if `--claude_path`)
+4. Build prompt-responses
+5. Run all annotators
+
+---
+
+## Usage Examples
+
+### First-Time Setup
+
+```bash
+# 1. Initialize database
+llm-archive init --schema_dir=schema
+
+# 2. Import ChatGPT export
+llm-archive import_chatgpt ~/Downloads/conversations.json
+
+# 3. Import Claude export
+llm-archive import_claude ~/Downloads/claude_export.json
+
+# 4. Build prompt-response pairs
+llm-archive build_prompt_responses
+
+# 5. Run annotations
+llm-archive annotate
+
+# 6. Check statistics
+llm-archive stats
+```
+
+### Incremental Update
+
+```bash
+# Weekly update with new export
+llm-archive pipeline \
+    --chatgpt_path=new_conversations.json \
+    --incremental
+```
+
+### Targeted Operations
+
+```bash
+# Rebuild prompt-responses for single dialogue
+llm-archive build_prompt_responses --dialogue_id="12345678-..."
+
+# Re-run specific annotator
+llm-archive annotate WikiCandidateAnnotator --clear
+
+# Query wiki article candidates
+llm-archive query_annotations \
+    --entity_type=prompt_response \
+    --annotation_key=exchange_type \
+    --annotation_value=wiki_article \
+    --output=wiki_articles.json
+```
+
+### Development Workflow
+
+```bash
+# Reset database
+llm-archive reset --confirm
+
+# Import test data
+llm-archive import_chatgpt tests/fixtures/sample.json
+
+# Build and annotate
+llm-archive build_prompt_responses
+llm-archive annotate
+
+# Check results
+llm-archive stats --detailed
+```
+
+---
+
+## Error Handling
+
+### Common Issues
+
+**Database connection failed:**
+```bash
+# Check environment variables
+echo $DATABASE_URL
+
+# Or check individual vars
+echo $POSTGRES_HOST
+echo $POSTGRES_PORT
+
+# Test connection
+psql -h localhost -U postgres -d llm_archive
+```
+
+**Import fails with duplicate key:**
+```bash
+# Use incremental mode to update existing
+llm-archive import_chatgpt file.json --incremental
+
+# Or clear and reimport
+llm-archive reset --schema=raw --confirm
+llm-archive import_chatgpt file.json
+```
+
+**Annotation cursor stuck:**
+```bash
+# Clear cursors and re-run
+llm-archive annotate --clear
+```
+
+### Verbose Output
+
+```bash
+# Set log level
+export LOG_LEVEL=DEBUG
+llm-archive import_chatgpt file.json
+
+# Or use python directly with debug
+python -m llm_archive.cli import_chatgpt file.json
+```
+
+---
+
+## Shell Completion
+
+### Bash
+
+```bash
+# Add to ~/.bashrc
+eval "$(llm-archive --completion bash)"
+```
+
+### Zsh
+
+```bash
+# Add to ~/.zshrc
+eval "$(llm-archive --completion zsh)"
+```
+
+---
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md)
+- [Extractors](extractors.md) - Import details
+- [Builders](builders.md) - Build process
+- [Annotators](annotators.md) - Annotation system
+- [Testing](testing.md) - Testing commands
+
+
+
+---
+File: docs/extractors.md
+---
+# docs/extractors.md
+# Data Extraction System
+
+## Overview
+
+Extractors transform platform-specific export formats into the universal raw schema. Each extractor handles the idiosyncrasies of its source platform while producing consistent output that can be processed by downstream builders and annotators.
+
+## Architecture
+
+```mermaid
+classDiagram
+    direction TB
+    
+    class BaseExtractor {
+        <<abstract>>
+        +source_id: str
+        +session: Session
+        +extract(file_path: Path) int
+        +extract_dialogue(data: dict) Dialogue
+        #_extract_messages(dialogue, data) list[Message]
+        #_build_content_parts(data) list[dict]
+        #_compute_content_hash(parts) str
+    }
+    
+    class ChatGPTExtractor {
+        +source_id = "chatgpt"
+        +extract_dialogue(data) Dialogue
+        -_extract_message_node(node, dialogue_id, parent_id) Message
+        -_extract_content_parts(message_data) list[dict]
+        -_extract_search_metadata(message, metadata)
+        -_extract_code_execution(message, metadata)
+        -_extract_canvas_metadata(message, metadata)
+        -_extract_dalle_metadata(content_part, asset_pointer)
+    }
+    
+    class ClaudeExtractor {
+        +source_id = "claude"
+        +extract_dialogue(data) Dialogue
+        -_extract_messages(dialogue, chat_messages) list[Message]
+        -_extract_content_parts(content) list[dict]
+        -_synthesize_parent_chain(messages) 
+    }
+    
+    BaseExtractor <|-- ChatGPTExtractor
+    BaseExtractor <|-- ClaudeExtractor
+```
+
+## Base Extractor
+
+The `BaseExtractor` class provides common functionality for all extractors:
+
+### Core Interface
+
+```python
+class BaseExtractor(ABC):
+    """Base class for platform-specific extractors."""
+    
+    source_id: str = None  # Override in subclass: 'chatgpt', 'claude'
+    
+    def __init__(self, session: Session):
+        self.session = session
+    
+    def extract(
+        self,
+        file_path: Path,
+        mode: str = 'full',      # 'full' | 'incremental'
+        batch_size: int = 1000,
+    ) -> int:
+        """
+        Extract dialogues from export file.
+        
+        Args:
+            file_path: Path to export JSON file
+            mode: 'full' replaces existing, 'incremental' updates only
+            batch_size: Messages per batch insert
+            
+        Returns:
+            Number of dialogues processed
+        """
+    
+    @abstractmethod
+    def extract_dialogue(self, data: dict) -> Dialogue:
+        """Extract a single dialogue from source data."""
+        pass
+```
+
+### Deduplication Strategy
+
+```mermaid
+flowchart TD
+    Start["Process Dialogue"] --> Check{"Exists in DB?<br/>(source + source_id)"}
+    
+    Check -->|No| Insert["INSERT new dialogue"]
+    Check -->|Yes| Mode{"Import Mode?"}
+    
+    Mode -->|full| Replace["DELETE + INSERT"]
+    Mode -->|incremental| Compare["Compare content_hash"]
+    
+    Compare --> Changed{"Changed?"}
+    Changed -->|Yes| Update["UPDATE messages"]
+    Changed -->|No| Skip["Skip (no changes)"]
+    
+    Insert --> Done["Continue"]
+    Replace --> Done
+    Update --> Done
+    Skip --> Done
+```
+
+### Content Hashing
+
+Content hashes enable efficient change detection:
+
+```python
+def _compute_content_hash(self, content_parts: list[dict]) -> str:
+    """Compute SHA256 hash of message content for change detection."""
+    # Normalize content for consistent hashing
+    normalized = []
+    for part in sorted(content_parts, key=lambda p: p.get('sequence', 0)):
+        normalized.append({
+            'type': part.get('part_type'),
+            'text': part.get('text_content', ''),
+            'language': part.get('language'),
+        })
+    
+    content_str = json.dumps(normalized, sort_keys=True)
+    return hashlib.sha256(content_str.encode()).hexdigest()
+```
+
+---
+
+## ChatGPT Extractor
+
+### Export Format
+
+ChatGPT exports are ZIP files containing:
+- `conversations.json` - Array of conversation objects
+- `message_feedback.json` - User feedback (not currently extracted)
+- Various media files
+
+### Conversation Structure
+
+```json
+{
+  "id": "abc123",
+  "title": "Conversation Title",
+  "create_time": 1699900000.0,
+  "update_time": 1699900100.0,
+  "mapping": {
+    "node-id-1": {
+      "id": "node-id-1",
+      "parent": null,
+      "children": ["node-id-2"],
+      "message": {
+        "id": "msg-id-1",
+        "author": {"role": "system"},
+        "content": {"content_type": "text", "parts": ["..."]},
+        "create_time": 1699900000.0,
+        "metadata": {...}
+      }
+    },
+    "node-id-2": {...}
+  },
+  "current_node": "node-id-final",
+  "gizmo_id": "g-xxx"  // Custom GPT identifier
+}
+```
+
+### Tree Extraction
+
+ChatGPT conversations are stored as trees in a `mapping` dictionary:
+
+```mermaid
+flowchart TD
+    subgraph Mapping["ChatGPT mapping{}"]
+        Root["system message<br/>(root)"]
+        U1["user message"]
+        A1["assistant v1"]
+        A2["assistant v2<br/>(regeneration)"]
+        U2["user follow-up"]
+        A3["assistant response"]
+    end
+    
+    Root --> U1
+    U1 --> A1
+    U1 --> A2
+    A1 --> U2
+    U2 --> A3
+    
+    style A2 fill:#ffe0b2
+```
+
+```python
+def _extract_message_tree(self, dialogue: Dialogue, mapping: dict) -> list[Message]:
+    """Extract messages preserving tree structure."""
+    messages = []
+    
+    # Build ID mapping for parent references
+    source_to_db_id = {}
+    
+    # Process in topological order (parents before children)
+    for node_id in self._topological_sort(mapping):
+        node = mapping[node_id]
+        
+        if not node.get('message'):
+            continue  # Skip empty nodes
+        
+        parent_source_id = node.get('parent')
+        parent_db_id = source_to_db_id.get(parent_source_id)
+        
+        message = self._extract_message_node(
+            node=node,
+            dialogue_id=dialogue.id,
+            parent_id=parent_db_id,
+        )
+        
+        messages.append(message)
+        source_to_db_id[node_id] = message.id
+    
+    return messages
+```
+
+### Content Part Extraction
+
+```python
+def _extract_content_parts(self, message_data: dict) -> list[dict]:
+    """Extract content parts from ChatGPT message."""
+    content = message_data.get('content', {})
+    content_type = content.get('content_type', 'text')
+    parts = []
+    
+    if content_type == 'text':
+        # Text content: parts is array of strings
+        for i, text in enumerate(content.get('parts', [])):
+            parts.append({
+                'sequence': i,
+                'part_type': 'text',
+                'text_content': text,
+                'source_json': {'type': 'text', 'text': text},
+            })
+    
+    elif content_type == 'code':
+        # Code block with language
+        parts.append({
+            'sequence': 0,
+            'part_type': 'code',
+            'text_content': content.get('text', ''),
+            'language': content.get('language'),
+            'source_json': content,
+        })
+    
+    elif content_type == 'multimodal_text':
+        # Mixed content: text, images, files
+        for i, part in enumerate(content.get('parts', [])):
+            if isinstance(part, str):
+                parts.append({
+                    'sequence': i,
+                    'part_type': 'text',
+                    'text_content': part,
+                })
+            elif isinstance(part, dict):
+                # Image or file reference
+                parts.append(self._extract_multimodal_part(i, part))
+    
+    return parts
+```
+
+### Platform Feature Extraction
+
+#### Web Search
+
+```python
+def _extract_search_metadata(self, message: Message, metadata: dict):
+    """Extract web search results into extension tables."""
+    search_groups = metadata.get('search_result_groups', [])
+    
+    for group_data in search_groups:
+        group = ChatGPTSearchGroup(
+            message_id=message.id,
+            group_type=group_data.get('group_type'),
+            domain=group_data.get('domain'),
+            source_json=group_data,
+        )
+        self.session.add(group)
+        
+        for i, entry in enumerate(group_data.get('entries', [])):
+            search_entry = ChatGPTSearchEntry(
+                group_id=group.id,
+                sequence=i,
+                url=entry.get('url'),
+                title=entry.get('title'),
+                snippet=entry.get('snippet'),
+                source_json=entry,
+            )
+            self.session.add(search_entry)
+```
+
+#### Code Execution
+
+```python
+def _extract_code_execution(self, message: Message, metadata: dict):
+    """Extract Code Interpreter execution data."""
+    aggregate_result = metadata.get('aggregate_result', {})
+    
+    for run_data in aggregate_result.get('runs', []):
+        execution = ChatGPTCodeExecution(
+            message_id=message.id,
+            run_id=run_data.get('id'),
+            status=run_data.get('status'),
+            code=run_data.get('code'),
+            started_at=self._parse_timestamp(run_data.get('start_time')),
+            ended_at=self._parse_timestamp(run_data.get('end_time')),
+            final_output=run_data.get('final_output'),
+            exception_name=run_data.get('exception', {}).get('name'),
+            exception_traceback=run_data.get('exception', {}).get('traceback'),
+            source_json=run_data,
+        )
+        self.session.add(execution)
+        
+        for i, output in enumerate(run_data.get('outputs', [])):
+            code_output = ChatGPTCodeOutput(
+                execution_id=execution.id,
+                sequence=i,
+                output_type=output.get('type'),
+                stream_name=output.get('stream'),
+                text_content=output.get('text'),
+                image_url=output.get('image_url'),
+                source_json=output,
+            )
+            self.session.add(code_output)
+```
+
+---
+
+## Claude Extractor
+
+### Export Format
+
+Claude exports are JSON files with this structure:
+
+```json
+{
+  "uuid": "conversation-uuid",
+  "name": "Conversation Title",
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T11:45:00Z",
+  "chat_messages": [
+    {
+      "uuid": "message-uuid",
+      "sender": "human",
+      "created_at": "2024-01-15T10:30:00Z",
+      "updated_at": "2024-01-15T10:30:00Z",
+      "content": [
+        {"type": "text", "text": "Hello!"}
+      ],
+      "attachments": []
+    },
+    {
+      "uuid": "message-uuid-2",
+      "sender": "assistant",
+      "created_at": "2024-01-15T10:30:05Z",
+      "content": [
+        {"type": "text", "text": "Hello! How can I help?"}
+      ]
+    }
+  ]
+}
+```
+
+### Linear to Tree Conversion
+
+Claude exports are linear (no branching). The extractor synthesizes parent-child relationships:
+
+```mermaid
+flowchart LR
+    subgraph Export["Claude Export (Linear)"]
+        M1["Message 1"]
+        M2["Message 2"]
+        M3["Message 3"]
+        M4["Message 4"]
+        
+        M1 --> M2 --> M3 --> M4
+    end
+    
+    subgraph Database["Database (Tree)"]
+        D1["Message 1<br/>parent: null"]
+        D2["Message 2<br/>parent: M1"]
+        D3["Message 3<br/>parent: M2"]
+        D4["Message 4<br/>parent: M3"]
+        
+        D1 --> D2 --> D3 --> D4
+    end
+    
+    Export --> |"synthesize<br/>parent_id"| Database
+```
+
+```python
+def _synthesize_parent_chain(self, messages: list[Message]):
+    """Add parent_id to create linear tree structure."""
+    for i, message in enumerate(messages):
+        if i > 0:
+            message.parent_id = messages[i - 1].id
+```
+
+### Content Part Extraction
+
+```python
+def _extract_content_parts(self, content: list[dict]) -> list[dict]:
+    """Extract content parts from Claude message content array."""
+    parts = []
+    
+    for i, item in enumerate(content):
+        content_type = item.get('type', 'text')
+        
+        if content_type == 'text':
+            parts.append({
+                'sequence': i,
+                'part_type': 'text',
+                'text_content': item.get('text', ''),
+                'source_json': item,
+            })
+        
+        elif content_type == 'tool_use':
+            parts.append({
+                'sequence': i,
+                'part_type': 'tool_use',
+                'tool_name': item.get('name'),
+                'tool_use_id': item.get('id'),
+                'tool_input': item.get('input'),
+                'source_json': item,
+            })
+        
+        elif content_type == 'tool_result':
+            parts.append({
+                'sequence': i,
+                'part_type': 'tool_result',
+                'tool_use_id': item.get('tool_use_id'),
+                'text_content': self._extract_tool_result_text(item),
+                'is_error': item.get('is_error', False),
+                'source_json': item,
+            })
+        
+        elif content_type == 'image':
+            parts.append({
+                'sequence': i,
+                'part_type': 'image',
+                'media_type': item.get('source', {}).get('media_type'),
+                'url': item.get('source', {}).get('url'),
+                'source_json': item,
+            })
+        
+        elif content_type == 'thinking':
+            parts.append({
+                'sequence': i,
+                'part_type': 'thinking',
+                'text_content': item.get('thinking', ''),
+                'source_json': item,
+            })
+    
+    return parts
+```
+
+### Tool Use Correlation
+
+Claude's tool use requires correlating `tool_use` with `tool_result`:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Assistant
+    participant Tool
+    
+    User->>Assistant: "Search for X"
+    Assistant->>Tool: tool_use (id: "toolu_123")
+    Tool-->>Assistant: tool_result (tool_use_id: "toolu_123")
+    Assistant->>User: "I found..."
+```
+
+```python
+def _correlate_tool_use(self, messages: list[Message]):
+    """Link tool_result parts back to their tool_use parts."""
+    tool_uses = {}  # tool_use_id -> ContentPart
+    
+    for message in messages:
+        for part in message.content_parts:
+            if part.part_type == 'tool_use':
+                tool_uses[part.tool_use_id] = part
+            elif part.part_type == 'tool_result':
+                # The tool_use_id field already links them
+                # But we can add additional correlation if needed
+                pass
+```
+
+---
+
+## Import Modes
+
+### Full Import
+
+Replaces all existing data for the source:
+
+```python
+extractor.extract(file_path, mode='full')
+```
+
+1. Delete existing dialogues with matching `source_id`
+2. Insert all dialogues from file
+3. Rebuild derived structures
+
+### Incremental Import
+
+Updates only changed data:
+
+```python
+extractor.extract(file_path, mode='incremental')
+```
+
+1. Check if dialogue exists (by `source` + `source_id`)
+2. If new: INSERT
+3. If exists: Compare `content_hash`
+4. If changed: UPDATE messages
+5. Mark missing messages as `deleted_at`
+
+```mermaid
+stateDiagram-v2
+    [*] --> CheckExists
+    
+    CheckExists --> Insert: Not Found
+    CheckExists --> CompareHash: Found
+    
+    CompareHash --> Skip: Unchanged
+    CompareHash --> Update: Changed
+    
+    Insert --> MarkDeleted
+    Update --> MarkDeleted
+    Skip --> MarkDeleted
+    
+    MarkDeleted --> [*]
+    
+    note right of MarkDeleted
+        Messages in DB but not in
+        export get deleted_at set
+    end note
+```
+
+---
+
+## Error Handling
+
+### Malformed Data
+
+```python
+def extract_dialogue(self, data: dict) -> Dialogue | None:
+    """Extract dialogue, handling malformed data gracefully."""
+    try:
+        source_id = data.get('id')
+        if not source_id:
+            logger.warning("Dialogue missing 'id' field, skipping")
+            return None
+        
+        dialogue = Dialogue(
+            source=self.source_id,
+            source_id=source_id,
+            title=data.get('title'),
+            source_json=data,
+        )
+        
+        # Extract messages...
+        
+        return dialogue
+        
+    except Exception as e:
+        logger.error(f"Failed to extract dialogue {data.get('id')}: {e}")
+        return None
+```
+
+### Transaction Safety
+
+```python
+def extract(self, file_path: Path, ...) -> int:
+    """Extract with transaction safety."""
+    count = 0
+    
+    with open(file_path) as f:
+        conversations = json.load(f)
+    
+    for data in conversations:
+        try:
+            dialogue = self.extract_dialogue(data)
+            if dialogue:
+                self.session.add(dialogue)
+                count += 1
+                
+                # Batch commits
+                if count % 100 == 0:
+                    self.session.commit()
+                    
+        except Exception as e:
+            logger.error(f"Failed: {e}")
+            self.session.rollback()
+            continue
+    
+    self.session.commit()
+    return count
+```
+
+---
+
+## Adding a New Extractor
+
+### Step 1: Create Extractor Class
+
+```python
+# llm_archive/extractors/new_platform.py
+
+class NewPlatformExtractor(BaseExtractor):
+    """Extractor for NewPlatform exports."""
+    
+    source_id = 'new_platform'
+    
+    def extract_dialogue(self, data: dict) -> Dialogue:
+        # 1. Create Dialogue object
+        dialogue = Dialogue(
+            source=self.source_id,
+            source_id=data['conversation_id'],
+            title=data.get('title'),
+            source_created_at=parse_timestamp(data.get('created')),
+            source_json=data,
+        )
+        
+        # 2. Extract messages
+        messages = self._extract_messages(dialogue, data['messages'])
+        
+        # 3. Establish tree structure
+        self._build_parent_chain(messages)
+        
+        # 4. Extract platform-specific features
+        self._extract_platform_features(messages, data)
+        
+        return dialogue
+```
+
+### Step 2: Add Source Entry
+
+```sql
+INSERT INTO raw.sources (id, display_name, has_native_trees, role_vocabulary)
+VALUES ('new_platform', 'New Platform', false, ARRAY['user', 'assistant']);
+```
+
+### Step 3: Create Extension Tables (if needed)
+
+```sql
+CREATE TABLE raw.new_platform_message_meta (
+    message_id uuid PRIMARY KEY REFERENCES raw.messages ON DELETE CASCADE,
+    custom_field text,
+    source_json jsonb NOT NULL
+);
+```
+
+### Step 4: Register in CLI
+
+```python
+# llm_archive/cli.py
+
+EXTRACTORS = {
+    'chatgpt': ChatGPTExtractor,
+    'claude': ClaudeExtractor,
+    'new_platform': NewPlatformExtractor,
+}
+```
+
+---
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md)
+- [Schema Design](schema.md)
+- [Models](models.md)
+- [Builders](builders.md) - Post-extraction processing
+
+
+---
+File: docs/index.md
+---
+<!-- docs/index.md -->
+# LLM Archive Documentation
+
+## Overview
+
+LLM Archive is a system for importing, normalizing, analyzing, and annotating conversation data from multiple LLM platforms. It transforms heterogeneous export formats into a unified data model optimized for annotation and downstream analysis.
+
+## Quick Start
+
+```bash
+# Initialize database
+llm-archive init --schema_dir=schema
+
+# Import conversations
+llm-archive import_chatgpt conversations.json
+llm-archive import_claude claude_export.json
+
+# Build prompt-response pairs
+llm-archive build_prompt_responses
+
+# Run annotations
+llm-archive annotate
+
+# View statistics
+llm-archive stats
+```
+
+## Documentation Guide
+
+### System Design
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](architecture.md) | High-level system design, data flow, component responsibilities |
+| [Schema](schema.md) | Database schema design for raw and derived tables |
+| [Models](models.md) | SQLAlchemy ORM models and relationships |
+
+### Components
+
+| Document | Description |
+|----------|-------------|
+| [Extractors](extractors.md) | Platform-specific data extraction (ChatGPT, Claude) |
+| [Builders](builders.md) | Derived data construction (prompt-responses) |
+| [Annotators](annotators.md) | Typed annotation system with strategy pattern |
+| [CLI](cli.md) | Command-line interface reference |
+| [Testing](testing.md) | Testing strategy and guidelines |
+
+## Architecture Overview
+
+```mermaid
+flowchart TB
+    subgraph Input["Data Sources"]
+        ChatGPT["ChatGPT Export"]
+        Claude["Claude Export"]
+    end
+    
+    subgraph Extract["Extraction"]
+        Extractors["Extractors"]
+    end
+    
+    subgraph Store["Storage"]
+        Raw["raw.* Schema"]
+        Derived["derived.* Schema"]
+    end
+    
+    subgraph Process["Processing"]
+        Build["Prompt-Response<br/>Builder"]
+        Annotate["Annotators"]
+    end
+    
+    subgraph Output["Output"]
+        Query["Query API"]
+        Export["Export"]
+    end
+    
+    ChatGPT --> Extractors
+    Claude --> Extractors
+    Extractors --> Raw
+    Raw --> Build
+    Build --> Derived
+    Derived --> Annotate
+    Annotate --> Derived
+    Derived --> Query
+    Derived --> Export
+```
+
+## Key Concepts
+
+### Two-Schema Architecture
+
+- **raw.\***: Immutable imported data with full source fidelity
+- **derived.\***: Computed structures that can be rebuilt
+
+### Prompt-Response Model
+
+- Fundamental interaction unit: user prompt + assistant response
+- Direct parent-child associations without tree dependency
+- Each response associated with exactly one prompt
+- Prompts can have multiple responses (regenerations)
+
+### Typed Annotation System
+
+- Separate tables per (entity_type, value_type) combination
+- Four value types: `flag`, `string`, `numeric`, `json`
+- Four entity types: `content_part`, `message`, `prompt_response`, `dialogue`
+- Cursor-based incremental processing
+- Multiple strategies can target the same semantic concept with priority ordering
+
+## Module Structure
+
+```
+llm_archive/
+├── models/
+│   ├── raw.py              # Raw schema models
+│   └── derived.py          # Derived schema models
+├── extractors/
+│   ├── base.py             # Base extractor class
+│   ├── chatgpt.py          # ChatGPT extractor
+│   └── claude.py           # Claude extractor
+├── builders/
+│   └── prompt_response.py  # Prompt-response builder
+├── annotations/
+│   └── core.py             # AnnotationWriter/Reader
+├── annotators/
+│   └── prompt_response.py  # Prompt-response annotators
+├── cli.py                  # Command-line interface
+└── config.py               # Environment configuration
+```
+
+## Schema Layers
+
+### Raw Schema (`raw.*`)
+
+- Sources registry
+- Dialogues (conversations)
+- Messages (with tree structure via parent_id)
+- Content parts (text, code, images, tool use)
+- Platform-specific extensions (ChatGPT search, code execution, DALL-E, etc.)
+
+### Derived Schema (`derived.*`)
+
+- Prompt-response pairs and content
+- Typed annotation tables
+- Views for querying annotated content
+- Annotator cursor tracking
+
+## Annotation Workflow
+
+```mermaid
+flowchart LR
+    Entities["Prompt-Response<br/>Pairs"] --> Annotator1["WikiCandidate<br/>Priority=80"]
+    Annotator1 --> Annotator2["NaiveTitle<br/>Priority=50"]
+    Annotator2 --> Results["Typed<br/>Annotations"]
+    
+    Results --> FlagTable["*_annotations_flag"]
+    Results --> StringTable["*_annotations_string"]
+    Results --> NumericTable["*_annotations_numeric"]
+    Results --> JSONTable["*_annotations_json"]
+```
+
+## Entity Relationships
+
+```mermaid
+erDiagram
+    Dialogue ||--o{ Message : contains
+    Message ||--o{ ContentPart : has
+    Message ||--o{ Message : parent_of
+    Dialogue ||--o{ PromptResponse : segmented_into
+    PromptResponse ||--|| PromptResponseContent : has
+    PromptResponse ||--o{ Annotation_Flag : annotated_by
+    PromptResponse ||--o{ Annotation_String : annotated_by
+    PromptResponse ||--o{ Annotation_Numeric : annotated_by
+    PromptResponse ||--o{ Annotation_JSON : annotated_by
+    Message ||--o{ Annotation_Flag : annotated_by
+    Message ||--o{ Annotation_String : annotated_by
+```
+
+## Processing Pipeline
+
+```mermaid
+flowchart TD
+    Import["Import<br/>(Extractors)"] --> Raw["raw.dialogues<br/>raw.messages<br/>raw.content_parts"]
+    
+    Raw --> Builder["PromptResponse<br/>Builder"]
+    Builder --> PRs["derived.prompt_responses<br/>derived.prompt_response_content"]
+    
+    PRs --> Annotators["Annotators<br/>(Priority-Ordered)"]
+    Annotators --> Annotations["derived.*_annotations_*"]
+    
+    Annotations --> Query["Query/Export"]
+```
+
+## Getting Started
+
+1. **Setup**: Initialize database and import data
+2. **Build**: Create prompt-response pairs
+3. **Annotate**: Run annotators to classify and tag content
+4. **Query**: Use views and annotations to find specific content
+5. **Export**: Extract processed data for downstream use
+
+## Support
+
+- **GitHub Issues**: Bug reports and feature requests
+- **Documentation**: This docs/ folder
+- **Tests**: tests/ folder for examples and integration patterns
+
+## Version History
+
+See CHANGELOG.md for release notes.
+
+
+
+---
+File: docs/models.md
+---
+<!-- docs/models.md -->
+# SQLAlchemy Models
+
+## Overview
+
+The ORM layer provides Python classes that map to database tables, enabling type-safe data access and relationship navigation. Models are organized into two modules mirroring the database schemas:
+
+- `models/raw.py` - Raw schema models (imports)
+- `models/derived.py` - Derived schema models (computed)
+
+## Model Organization
+
+```mermaid
+classDiagram
+    direction TB
+    
+    class Base {
+        <<declarative_base>>
+    }
+    
+    namespace raw {
+        class Source {
+            +id: str
+            +display_name: str
+            +has_native_trees: bool
+            +role_vocabulary: list[str]
+            +metadata: dict
+        }
+        
+        class Dialogue {
+            +id: UUID
+            +source: str
+            +source_id: str
+            +title: str
+            +source_created_at: datetime
+            +source_updated_at: datetime
+            +source_json: dict
+        }
+        
+        class Message {
+            +id: UUID
+            +dialogue_id: UUID
+            +source_id: str
+            +parent_id: UUID
+            +role: str
+            +author_id: str
+            +author_name: str
+            +content_hash: str
+        }
+        
+        class ContentPart {
+            +id: UUID
+            +message_id: UUID
+            +sequence: int
+            +part_type: str
+            +text_content: str
+        }
+    }
+    
+    namespace derived {
+        class PromptResponse {
+            +id: UUID
+            +dialogue_id: UUID
+            +prompt_message_id: UUID
+            +response_message_id: UUID
+            +prompt_position: int
+            +response_position: int
+        }
+        
+        class PromptResponseContent {
+            +prompt_response_id: UUID
+            +prompt_text: str
+            +response_text: str
+            +prompt_word_count: int
+            +response_word_count: int
+        }
+    }
+    
+    Base <|-- Source
+    Base <|-- Dialogue
+    Base <|-- Message
+    Base <|-- ContentPart
+    Base <|-- PromptResponse
+    Base <|-- PromptResponseContent
+    
+    Source "1" --> "*" Dialogue : dialogues
+    Dialogue "1" --> "*" Message : messages
+    Message "1" --> "*" ContentPart : content_parts
+    Message "1" --> "*" Message : children
+    Dialogue "1" --> "*" PromptResponse : prompt_responses
+    PromptResponse "1" --> "1" PromptResponseContent : content
+    PromptResponse "1" --> "1" Message : prompt_message
+    PromptResponse "1" --> "1" Message : response_message
+```
+
+## Raw Models (`models/raw.py`)
+
+### Core Models
+
+#### Source
+
+```python
+class Source(Base):
+    """Registry of dialogue sources."""
+    __tablename__ = "sources"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(String, primary_key=True)
+    display_name = Column(String, nullable=False)
+    has_native_trees = Column(Boolean, nullable=False)
+    role_vocabulary = Column(ARRAY(String), nullable=False)
+    source_metadata = Column(JSONB, name="metadata")
+    
+    # Relationships
+    dialogues = relationship("Dialogue", back_populates="source_rel")
+```
+
+**Usage:**
+```python
+# Check if source supports tree structure
+if source.has_native_trees:
+    # Handle ChatGPT-style branching
+    pass
+    
+# Validate role
+if message.role not in source.role_vocabulary:
+    raise ValueError(f"Invalid role: {message.role}")
+```
+
+#### Dialogue
+
+```python
+class Dialogue(Base):
+    """Universal dialogue container."""
+    __tablename__ = "dialogues"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, 
+                server_default=func.gen_random_uuid())
+    source = Column(String, ForeignKey("raw.sources.id"), nullable=False)
+    source_id = Column(String, nullable=False)
+    
+    title = Column(String)
+    
+    # Source timestamps (from archive)
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    source_rel = relationship("Source", back_populates="dialogues")
+    messages = relationship("Message", back_populates="dialogue", 
+                          cascade="all, delete-orphan")
+    prompt_responses = relationship("PromptResponse", back_populates="dialogue",
+                                  cascade="all, delete-orphan")
+```
+
+**Usage:**
+```python
+# Get all messages
+for message in dialogue.messages:
+    print(f"{message.role}: {message.content_parts[0].text_content}")
+
+# Get prompt-response pairs
+for pr in dialogue.prompt_responses:
+    print(f"Q: {pr.content.prompt_text}")
+    print(f"A: {pr.content.response_text}")
+```
+
+#### Message
+
+```python
+class Message(Base):
+    """Universal message with tree structure support."""
+    __tablename__ = "messages"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True,
+                server_default=func.gen_random_uuid())
+    dialogue_id = Column(PG_UUID(as_uuid=True), 
+                        ForeignKey("raw.dialogues.id", ondelete="CASCADE"),
+                        nullable=False)
+    source_id = Column(String, nullable=False)
+    
+    # Tree structure
+    parent_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
+    
+    # Normalized fields
+    role = Column(String, nullable=False)
+    author_id = Column(String)
+    author_name = Column(String)
+    
+    # Source timestamps
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
+    
+    # Change tracking
+    content_hash = Column(String)
+    deleted_at = Column(DateTime(timezone=True))
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    dialogue = relationship("Dialogue", back_populates="messages")
+    content_parts = relationship("ContentPart", back_populates="message",
+                               cascade="all, delete-orphan",
+                               order_by="ContentPart.sequence")
+    
+    # Tree relationships
+    parent = relationship("Message", remote_side=[id], backref="children")
+```
+
+**Usage:**
+```python
+# Get text content
+text = ' '.join(part.text_content for part in message.content_parts 
+                if part.text_content)
+
+# Navigate tree
+if message.parent:
+    print(f"Parent: {message.parent.role}")
+
+for child in message.children:
+    print(f"Child: {child.role}")
+
+# Check for regenerations (siblings)
+if message.parent:
+    siblings = [m for m in message.parent.children if m.id != message.id]
+    if siblings:
+        print(f"This message has {len(siblings)} regeneration(s)")
+```
+
+#### ContentPart
+
+```python
+class ContentPart(Base):
+    """Segmented content within a message."""
+    __tablename__ = "content_parts"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True,
+                server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True),
+                       ForeignKey("raw.messages.id", ondelete="CASCADE"),
+                       nullable=False)
+    sequence = Column(Integer, nullable=False)
+    
+    part_type = Column(String, nullable=False)
+    text_content = Column(Text)
+    
+    # Code-specific
+    language = Column(String)
+    
+    # Media-specific
+    media_type = Column(String)
+    url = Column(String)
+    
+    # Tool use-specific
+    tool_name = Column(String)
+    tool_use_id = Column(String)
+    tool_input = Column(JSONB)
+    
+    # Relationships
+    message = relationship("Message", back_populates="content_parts")
+```
+
+**Usage:**
+```python
+# Filter by type
+text_parts = [p for p in message.content_parts if p.part_type == 'text']
+code_parts = [p for p in message.content_parts if p.part_type == 'code']
+
+# Get code blocks
+for part in code_parts:
+    print(f"Language: {part.language}")
+    print(part.text_content)
+```
+
+### Platform Extension Models
+
+#### ChatGPT Extensions
+
+```python
+class ChatGPTMessageMeta(Base):
+    """ChatGPT-specific message metadata."""
+    __tablename__ = "chatgpt_message_meta"
+    __table_args__ = {"schema": "raw"}
+    
+    message_id = Column(PG_UUID(as_uuid=True),
+                       ForeignKey("raw.messages.id", ondelete="CASCADE"),
+                       primary_key=True)
+    
+    weight = Column(Float)
+    end_turn = Column(Boolean)
+    recipient = Column(String)
+    model_slug = Column(String)
+    is_complete = Column(Boolean)
+    finish_details = Column(JSONB)
+
+class ChatGPTCodeExecution(Base):
+    """Code execution results from ChatGPT."""
+    # ... similar structure
+
+class ChatGPTSearchGroup(Base):
+    """Web search groups from ChatGPT."""
+    # ... similar structure
+```
+
+#### Claude Extensions
+
+```python
+class ClaudeMessageMeta(Base):
+    """Claude-specific message metadata."""
+    __tablename__ = "claude_message_meta"
+    __table_args__ = {"schema": "raw"}
+    
+    message_id = Column(PG_UUID(as_uuid=True),
+                       ForeignKey("raw.messages.id", ondelete="CASCADE"),
+                       primary_key=True)
+    
+    model = Column(String)
+    usage_input_tokens = Column(Integer)
+    usage_output_tokens = Column(Integer)
+```
+
+## Derived Models (`models/derived.py`)
+
+### PromptResponse
+
+```python
+class PromptResponse(Base):
+    """
+    Direct prompt-response association without tree dependency.
+    
+    Each record pairs a user prompt with one of its responses.
+    A prompt can have multiple responses (regenerations).
+    Each response appears in exactly one record.
+    """
+    __tablename__ = "prompt_responses"
+    __table_args__ = {"schema": "derived"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True,
+                server_default=func.gen_random_uuid())
+    dialogue_id = Column(PG_UUID(as_uuid=True),
+                        ForeignKey("raw.dialogues.id", ondelete="CASCADE"),
+                        nullable=False)
+    
+    prompt_message_id = Column(PG_UUID(as_uuid=True),
+                              ForeignKey("raw.messages.id"),
+                              nullable=False)
+    response_message_id = Column(PG_UUID(as_uuid=True),
+                                ForeignKey("raw.messages.id"),
+                                nullable=False)
+    
+    prompt_position = Column(Integer, nullable=False)
+    response_position = Column(Integer, nullable=False)
+    
+    prompt_role = Column(String, nullable=False)
+    response_role = Column(String, nullable=False)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    dialogue = relationship("Dialogue", back_populates="prompt_responses")
+    prompt_message = relationship("Message", foreign_keys=[prompt_message_id])
+    response_message = relationship("Message", foreign_keys=[response_message_id])
+    content = relationship("PromptResponseContent", uselist=False,
+                         back_populates="prompt_response",
+                         cascade="all, delete-orphan")
+```
+
+**Usage:**
+```python
+# Access messages
+print(f"User: {pr.prompt_message.content_parts[0].text_content}")
+print(f"Assistant: {pr.response_message.content_parts[0].text_content}")
+
+# Access denormalized content (faster)
+print(f"Q: {pr.content.prompt_text}")
+print(f"A: {pr.content.response_text}")
+
+# Find regenerations (same prompt, different responses)
+siblings = (
+    session.query(PromptResponse)
+    .filter(
+        PromptResponse.prompt_message_id == pr.prompt_message_id,
+        PromptResponse.id != pr.id
+    )
+    .all()
+)
+```
+
+### PromptResponseContent
+
+```python
+class PromptResponseContent(Base):
+    """
+    Denormalized text content for annotation/search without joins.
+    """
+    __tablename__ = "prompt_response_content"
+    __table_args__ = {"schema": "derived"}
+    
+    prompt_response_id = Column(PG_UUID(as_uuid=True),
+                                ForeignKey("derived.prompt_responses.id",
+                                         ondelete="CASCADE"),
+                                primary_key=True)
+    
+    prompt_text = Column(Text)
+    response_text = Column(Text)
+    
+    prompt_word_count = Column(Integer)
+    response_word_count = Column(Integer)
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    prompt_response = relationship("PromptResponse", back_populates="content")
+```
+
+**Usage:**
+```python
+# Query with content filters
+long_responses = (
+    session.query(PromptResponse)
+    .join(PromptResponseContent)
+    .filter(PromptResponseContent.response_word_count > 500)
+    .all()
+)
+
+# Search text content
+wiki_articles = (
+    session.query(PromptResponse)
+    .join(PromptResponseContent)
+    .filter(PromptResponseContent.prompt_text.ilike('%write an article%'))
+    .all()
+)
+```
+
+## Querying Patterns
+
+### Basic Queries
+
+```python
+from sqlalchemy.orm import Session
+from llm_archive.models import Dialogue, Message, PromptResponse
+
+# Get all dialogues from ChatGPT
+chatgpt_dialogues = (
+    session.query(Dialogue)
+    .filter(Dialogue.source == 'chatgpt')
+    .all()
+)
+
+# Get user messages
+user_messages = (
+    session.query(Message)
+    .filter(Message.role == 'user')
+    .all()
+)
+
+# Get prompt-responses with long responses
+long_prs = (
+    session.query(PromptResponse)
+    .join(PromptResponseContent)
+    .filter(PromptResponseContent.response_word_count > 1000)
+    .all()
+)
+```
+
+### Joining with Annotations
+
+```python
+from sqlalchemy import text
+
+# Get wiki article candidates
+wiki_candidates = (
+    session.query(PromptResponse)
+    .join(
+        text("""
+            derived.prompt_response_annotations_string 
+            ON derived.prompt_response_annotations_string.entity_id = derived.prompt_responses.id
+        """)
+    )
+    .filter(
+        text("""
+            derived.prompt_response_annotations_string.annotation_key = 'exchange_type'
+            AND derived.prompt_response_annotations_string.annotation_value = 'wiki_article'
+        """)
+    )
+    .all()
+)
+```
+
+### Eager Loading
+
+```python
+from sqlalchemy.orm import joinedload
+
+# Load dialogue with all messages and content
+dialogue = (
+    session.query(Dialogue)
+    .options(
+        joinedload(Dialogue.messages).joinedload(Message.content_parts)
+    )
+    .filter(Dialogue.id == dialogue_id)
+    .one()
+)
+
+# Load prompt-response with content
+pr = (
+    session.query(PromptResponse)
+    .options(joinedload(PromptResponse.content))
+    .filter(PromptResponse.id == pr_id)
+    .one()
+)
+```
+
+### Tree Navigation
+
+```python
+# Get message tree depth
+def get_depth(message):
+    depth = 0
+    current = message
+    while current.parent:
+        depth += 1
+        current = current.parent
+    return depth
+
+# Get all descendants
+def get_descendants(message):
+    descendants = []
+    for child in message.children:
+        descendants.append(child)
+        descendants.extend(get_descendants(child))
+    return descendants
+
+# Get root message
+def get_root(message):
+    current = message
+    while current.parent:
+        current = current.parent
+    return current
+```
+
+## Session Management
+
+### Basic Session
+
+```python
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from llm_archive.config import DATABASE_URL
+from llm_archive.models import Base
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(bind=engine)
+
+with SessionLocal() as session:
+    dialogues = session.query(Dialogue).all()
+    # ... work with data
+    session.commit()
+```
+
+### Context Manager
+
+```python
+from contextlib import contextmanager
+
+@contextmanager
+def get_session():
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+# Usage
+with get_session() as session:
+    dialogue = session.query(Dialogue).first()
+```
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md)
+- [Schema Design](schema.md) - Database schema details
+- [Extractors](extractors.md) - Creating model instances
+- [Builders](builders.md) - Building derived models
+- [Annotators](annotators.md) - Querying models
+
+
+
+---
+File: docs/schema.md
+---
+# docs/schema.md
+# Database Schema Design
+
+## Overview
+
+The LLM Archive database uses a two-schema architecture that separates concerns between raw imported data and derived computed structures. This design ensures source fidelity while enabling rich analysis capabilities.
+
+## Schema Philosophy
+
+```mermaid
+flowchart LR
+    subgraph Sources["External Sources"]
+        ChatGPT["ChatGPT<br/>Export"]
+        Claude["Claude<br/>Export"]
+    end
+    
+    subgraph RawLayer["raw.* (Immutable)"]
+        direction TB
+        R1["Source of Truth"]
+        R2["Platform-Specific"]
+        R3["Preserves Original"]
+    end
+    
+    subgraph DerivedLayer["derived.* (Computed)"]
+        direction TB
+        D1["Normalized Views"]
+        D2["Cross-Platform"]
+        D3["Rebuild-Safe"]
+    end
+    
+    Sources --> RawLayer
+    RawLayer --> DerivedLayer
+    
+    style RawLayer fill:#e1f5fe
+    style DerivedLayer fill:#f3e5f5
+```
+
+### Design Principles
+
+| Principle | Implementation |
+|-----------|---------------|
+| **Source Fidelity** | `source_json` column preserves original data |
+| **Platform Abstraction** | Core tables are platform-agnostic |
+| **Extension Tables** | Platform-specific features in separate tables |
+| **Temporal Tracking** | Both source and database timestamps |
+| **Soft Deletes** | `deleted_at` for removed content |
+| **Cascade Deletes** | Referential integrity maintained automatically |
+
+## Raw Schema (`raw.*`)
+
+The raw schema contains imported data exactly as received from source platforms.
+
+### Entity Relationship Diagram
+
+```mermaid
+erDiagram
+    sources ||--o{ dialogues : "has"
+    dialogues ||--o{ messages : "contains"
+    messages ||--o{ content_parts : "has"
+    messages ||--o{ messages : "parent_of"
+    messages ||--o{ attachments : "has"
+    content_parts ||--o{ citations : "has"
+    
+    messages ||--o| chatgpt_message_meta : "extends"
+    messages ||--o{ chatgpt_search_groups : "has"
+    messages ||--o{ chatgpt_code_executions : "has"
+    messages ||--o{ chatgpt_canvas_docs : "has"
+    content_parts ||--o{ chatgpt_dalle_generations : "has"
+    chatgpt_search_groups ||--o{ chatgpt_search_entries : "contains"
+    chatgpt_code_executions ||--o{ chatgpt_code_outputs : "has"
+    
+    messages ||--o| claude_message_meta : "extends"
+
+    sources {
+        text id PK
+        text display_name
+        boolean has_native_trees
+        text[] role_vocabulary
+        jsonb metadata
+    }
+    
+    dialogues {
+        uuid id PK
+        text source FK
+        text source_id
+        text title
+        timestamptz source_created_at
+        timestamptz source_updated_at
+        jsonb source_json
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    
+    messages {
+        uuid id PK
+        uuid dialogue_id FK
+        text source_id
+        uuid parent_id FK
+        text role
+        text author_id
+        text author_name
+        timestamptz source_created_at
+        timestamptz source_updated_at
+        text content_hash
+        timestamptz deleted_at
+        jsonb source_json
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    
+    content_parts {
+        uuid id PK
+        uuid message_id FK
+        int sequence
+        text part_type
+        text text_content
+        text language
+        text media_type
+        text url
+        text tool_name
+        text tool_use_id
+        jsonb tool_input
+        timestamptz started_at
+        timestamptz ended_at
+        boolean is_error
+        jsonb source_json
+    }
+```
+
+### Core Tables
+
+#### `raw.sources`
+
+Registry of supported data sources. Pre-populated with known platforms.
+
+```sql
+CREATE TABLE raw.sources (
+    id                  text PRIMARY KEY,          -- 'chatgpt', 'claude'
+    display_name        text NOT NULL,             -- 'ChatGPT', 'Claude'
+    has_native_trees    boolean NOT NULL,          -- true for ChatGPT
+    role_vocabulary     text[] NOT NULL,           -- ['user', 'assistant', ...]
+    metadata            jsonb                       -- platform-specific config
+);
+```
+
+**Design Notes:**
+- `has_native_trees`: ChatGPT exports include branching; Claude exports are linear
+- `role_vocabulary`: Validates message roles during import
+
+#### `raw.dialogues`
+
+Universal container for conversations from any source.
+
+```sql
+CREATE TABLE raw.dialogues (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    source              text NOT NULL REFERENCES raw.sources(id),
+    source_id           text NOT NULL,             -- platform's conversation ID
+    title               text,
+    
+    -- Source timestamps (from archive export)
+    source_created_at   timestamptz,
+    source_updated_at   timestamptz,
+    
+    source_json         jsonb NOT NULL,            -- complete original object
+    
+    -- Database timestamps
+    created_at          timestamptz DEFAULT now(),
+    updated_at          timestamptz DEFAULT now(),
+    
+    UNIQUE (source, source_id)
+);
+```
+
+**Design Notes:**
+- Dual timestamp strategy: `source_*` from export, `created_at/updated_at` for DB tracking
+- `source_json` preserves complete original data for debugging/audit
+- Unique constraint prevents duplicate imports
+
+#### `raw.messages`
+
+Universal message representation with tree structure support.
+
+```sql
+CREATE TABLE raw.messages (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    dialogue_id         uuid NOT NULL REFERENCES raw.dialogues ON DELETE CASCADE,
+    source_id           text NOT NULL,             -- platform's message ID
+    
+    -- Tree structure
+    parent_id           uuid REFERENCES raw.messages,
+    
+    -- Normalized fields
+    role                text NOT NULL,             -- 'user', 'assistant', 'system', 'tool'
+    author_id           text,                      -- for multi-user scenarios
+    author_name         text,
+    
+    -- Source timestamps
+    source_created_at   timestamptz,
+    source_updated_at   timestamptz,
+    
+    -- Change tracking
+    content_hash        text,                      -- SHA256 of content for diff
+    deleted_at          timestamptz,               -- soft delete marker
+    
+    source_json         jsonb NOT NULL,
+    
+    -- Database timestamps
+    created_at          timestamptz DEFAULT now(),
+    updated_at          timestamptz DEFAULT now(),
+    
+    UNIQUE (dialogue_id, source_id)
+);
+```
+
+**Design Notes:**
+- Self-referential `parent_id` enables tree structure (for ChatGPT regenerations/edits)
+- `content_hash` enables efficient change detection during incremental imports
+- `deleted_at` tracks messages removed from source (vs. never existed)
+
+#### `raw.content_parts`
+
+Segmented content within a message (text, code, images, tool use).
+
+```sql
+CREATE TABLE raw.content_parts (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    message_id          uuid NOT NULL REFERENCES raw.messages ON DELETE CASCADE,
+    sequence            int NOT NULL,              -- ordering within message
+    
+    part_type           text NOT NULL,             -- 'text', 'code', 'image', 'tool_use', 'tool_result'
+    text_content        text,
+    
+    -- Code-specific
+    language            text,                      -- 'python', 'javascript', etc.
+    
+    -- Media-specific
+    media_type          text,                      -- 'image/png', 'audio/mp3'
+    url                 text,
+    
+    -- Tool use (Claude)
+    tool_name           text,
+    tool_use_id         text,                      -- correlates tool_use with tool_result
+    tool_input          jsonb,
+    
+    -- Timing
+    started_at          timestamptz,
+    ended_at            timestamptz,
+    is_error            boolean DEFAULT false,
+    
+    source_json         jsonb NOT NULL,
+    
+    UNIQUE (message_id, sequence)
+);
+```
+
+**Design Notes:**
+- `part_type` discriminates content categories
+- `tool_use_id` links tool calls to their results (important for Claude agentic flows)
+- `sequence` maintains ordering for multi-part messages
+
+### Platform Extension Tables
+
+#### ChatGPT Extensions
+
+ChatGPT exports include rich metadata about platform features:
+
+```mermaid
+erDiagram
+    messages ||--o| chatgpt_message_meta : "1:1"
+    messages ||--o{ chatgpt_search_groups : "1:N"
+    messages ||--o{ chatgpt_code_executions : "1:N"
+    messages ||--o{ chatgpt_canvas_docs : "1:N"
+    content_parts ||--o{ chatgpt_dalle_generations : "1:N"
+    chatgpt_search_groups ||--o{ chatgpt_search_entries : "1:N"
+    chatgpt_code_executions ||--o{ chatgpt_code_outputs : "1:N"
+
+    chatgpt_message_meta {
+        uuid message_id PK_FK
+        text model_slug
+        text status
+        boolean end_turn
+        text gizmo_id
+    }
+    
+    chatgpt_search_groups {
+        uuid id PK
+        uuid message_id FK
+        text group_type
+        text domain
+    }
+    
+    chatgpt_code_executions {
+        uuid id PK
+        uuid message_id FK
+        text run_id
+        text status
+        text code
+        text final_output
+        text exception_name
+    }
+```
+
+| Table | Purpose | Key Fields |
+|-------|---------|------------|
+| `chatgpt_message_meta` | Message-level metadata | `model_slug`, `gizmo_id` |
+| `chatgpt_search_groups` | Web search result groups | `domain`, `group_type` |
+| `chatgpt_search_entries` | Individual search results | `url`, `title`, `snippet` |
+| `chatgpt_code_executions` | Code interpreter runs | `code`, `status`, `exception_name` |
+| `chatgpt_code_outputs` | Execution outputs | `output_type`, `text_content`, `image_url` |
+| `chatgpt_dalle_generations` | Image generation metadata | `prompt`, `seed`, `edit_op` |
+| `chatgpt_canvas_docs` | Canvas document operations | `textdoc_type`, `version` |
+
+#### Claude Extensions
+
+```sql
+CREATE TABLE raw.claude_message_meta (
+    message_id  uuid PRIMARY KEY REFERENCES raw.messages ON DELETE CASCADE,
+    source_json jsonb NOT NULL    -- placeholder for future Claude-specific fields
+);
+```
+
+**Design Notes:**
+- Currently minimal; Claude exports have fewer platform-specific features
+- `source_json` preserves any additional metadata for future extraction
+
+---
+
+#### `derived.annotator_cursors`
+
+Tracks incremental processing state for each annotator.
+
+```sql
+CREATE TABLE derived.annotator_cursors (
+    id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    
+    annotator_name          text NOT NULL,
+    annotator_version       text NOT NULL,
+    entity_type             text NOT NULL,
+    
+    -- High water mark: last processed entity timestamp
+    high_water_mark         timestamptz NOT NULL,
+    
+    -- Statistics
+    entities_processed      int NOT NULL DEFAULT 0,
+    annotations_created     int NOT NULL DEFAULT 0,
+    
+    updated_at              timestamptz DEFAULT now(),
+    
+    UNIQUE (annotator_name, annotator_version, entity_type)
+);
+```
+
+**Design Notes:**
+- Each annotator+version+entity_type gets its own cursor
+- Bumping VERSION in annotator code forces reprocessing
+
+---
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md)
+- [Models](models.md) - SQLAlchemy ORM models
+- [Extractors](extractors.md) - Data extraction system
+- [Builders](builders.md) - Derived data construction
+
+
+
+---
+File: docs/testing.md
+---
+# docs/testing.md
+# Testing Guide
+
+## Overview
+
+The test suite validates all components of LLM Archive across multiple layers:
+
+- **Unit Tests**: Test individual functions and classes in isolation
+- **Integration Tests**: Test component interactions with a real database
+
+## Test Organization
+
+```
+tests/
+├── conftest.py                 # Shared fixtures
+├── unit/
+│   ├── conftest.py             # Unit test fixtures
+│   ├── test_annotators.py      # Annotator logic tests
+│   ├── test_annotation_utils.py
+│   ├── test_cli.py             # CLI tests
+│   ├── test_content_classification.py
+│   ├── test_exchange_utils.py
+│   ├── test_extractor_utils.py
+│   ├── test_hash_utils.py
+│   └── test_models.py          # Model tests
+└── integration/
+    ├── conftest.py             # Database fixtures
+    ├── test_annotators.py      # Annotator integration
+    ├── test_builders.py        # Builder integration
+    ├── test_extractors.py      # Extractor integration
+    ├── test_idempotency.py     # Incremental import tests
+    └── test_models.py          # Model persistence tests
+```
+
+## Running Tests
+
+### All Tests
+
+```bash
+# Run all tests
+pytest
+
+# With verbose output
+pytest -v
+
+# With coverage
+pytest --cov=llm_archive --cov-report=html
+```
+
+### Unit Tests Only
+
+```bash
+# Unit tests don't require database
+pytest tests/unit/ -v
+```
+
+### Integration Tests Only
+
+```bash
+# Requires PostgreSQL running
+pytest tests/integration/ -v
+```
+
+### Specific Test File
+
+```bash
+pytest tests/unit/test_annotators.py -v
+```
+
+### Specific Test Class or Function
+
+```bash
+# Specific class
+pytest tests/unit/test_annotators.py::TestCodeBlockAnnotator -v
+
+# Specific test
+pytest tests/unit/test_annotators.py::TestCodeBlockAnnotator::test_detects_code_block_with_language -v
+```
+
+---
+
+## Unit Tests
+
+Unit tests verify component logic without database dependencies.
+
+### Annotator Tests
+
+Tests validate the `annotate()` method by constructing data objects directly:
+
+```python
+# tests/unit/test_annotators.py
+
+class TestCodeBlockAnnotator:
+    """Test CodeBlockAnnotator (priority 90)."""
+    
+    def test_detects_code_block_with_language(self, message_id):
+        """Should detect code blocks with language specification."""
+        text = "```python\ndef hello():\n    print('world')\n```"
+        data = make_message_data(text, message_id=message_id)
+        
+        # Create instance without session (we only test annotate())
+        annotator = CodeBlockAnnotator.__new__(CodeBlockAnnotator)
+        results = annotator.annotate(data)
+        
+        assert len(results) >= 1
+        assert 'python' in results[0].data['languages']
+```
+
+### Helper Functions
+
+```python
+def make_message_data(text: str, role: str = 'assistant', message_id=None) -> MessageTextData:
+    """Helper to create MessageTextData for testing."""
+    return MessageTextData(
+        message_id=message_id or uuid4(),
+        text=text,
+        created_at=datetime.now(timezone.utc),
+        role=role,
+    )
+
+def make_exchange_data(
+    user_text: str | None = None,
+    assistant_text: str | None = None,
+) -> ExchangeData:
+    """Helper to create ExchangeData for testing."""
+    return ExchangeData(
+        exchange_id=uuid4(),
+        user_text=user_text,
+        assistant_text=assistant_text,
+        user_word_count=len(user_text.split()) if user_text else None,
+        assistant_word_count=len(assistant_text.split()) if assistant_text else None,
+        created_at=datetime.now(timezone.utc),
+    )
+```
+
+### Model Tests
+
+Test SQLAlchemy model instantiation and field defaults:
+
+```python
+class TestDialogueModel:
+    def test_create_dialogue_instance(self):
+        """Test creating a Dialogue model instance."""
+        dialogue = Dialogue(
+            source='chatgpt',
+            source_id='test-123',
+            title='Test Dialogue',
+            source_json={'key': 'value'},
+        )
+        
+        assert dialogue.source == 'chatgpt'
+        assert dialogue.source_id == 'test-123'
+        assert dialogue.id is None  # Set by database
+```
+
+---
+
+## Integration Tests
+
+Integration tests verify component interactions with a real PostgreSQL database.
+
+### Database Fixtures
+
+```python
+# tests/integration/conftest.py
+
+@pytest.fixture(scope='session')
+def database():
+    """Create test database."""
+    # Create database
+    create_test_database()
+    
+    yield
+    
+    # Cleanup
+    drop_test_database()
+
+@pytest.fixture
+def session(database):
+    """Create database session with rollback."""
+    engine = create_engine(TEST_DATABASE_URL)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    
+    yield session
+    
+    session.rollback()
+    session.close()
+```
+
+### Extractor Tests
+
+```python
+class TestChatGPTExtractor:
+    def test_import_simple_conversation(self, session, sample_chatgpt_export):
+        """Test importing a simple ChatGPT conversation."""
+        extractor = ChatGPTExtractor(session)
+        
+        count = extractor.extract(sample_chatgpt_export)
+        
+        assert count == 1
+        
+        dialogue = session.query(Dialogue).first()
+        assert dialogue is not None
+        assert dialogue.source == 'chatgpt'
+        assert len(dialogue.messages) > 0
+```
+
+### Builder Tests
+
+```python
+class TestTreeBuilder:
+    def test_build_linear_tree(self, session, dialogue_with_messages):
+        """Test tree analysis for linear conversation."""
+        builder = TreeBuilder(session)
+        
+        results = builder.build(dialogue_with_messages.id)
+        
+        tree = session.query(DialogueTree).get(dialogue_with_messages.id)
+        assert tree is not None
+        assert tree.branch_count == 0  # Linear
+        assert tree.is_linear  # Generated column
+```
+
+### Annotator Integration Tests
+
+```python
+class TestAnnotatorIntegration:
+    def test_full_annotation_pipeline(self, session, populated_database):
+        """Test running full annotation pipeline."""
+        manager = AnnotationManager(session)
+        manager.register(CodeBlockAnnotator)
+        manager.register(WikiLinkAnnotator)
+        manager.register(ExchangeTypeAnnotator)
+        
+        results = manager.run_all()
+        
+        assert all(count >= 0 for count in results.values())
+        
+        # Verify annotations were created
+        annotations = session.query(Annotation).count()
+        assert annotations > 0
+```
+
+---
+
+## Test Fixtures
+
+### Sample Data Fixtures
+
+```python
+# tests/conftest.py
+
+@pytest.fixture
+def sample_chatgpt_conversation():
+    """Sample ChatGPT conversation data."""
+    return {
+        'id': 'test-conv-123',
+        'title': 'Test Conversation',
+        'create_time': 1699900000.0,
+        'update_time': 1699900100.0,
+        'mapping': {
+            'root': {
+                'id': 'root',
+                'parent': None,
+                'children': ['msg-1'],
+                'message': {
+                    'id': 'root-msg',
+                    'author': {'role': 'system'},
+                    'content': {'content_type': 'text', 'parts': ['']},
+                }
+            },
+            'msg-1': {
+                'id': 'msg-1',
+                'parent': 'root',
+                'children': ['msg-2'],
+                'message': {
+                    'id': 'user-msg-1',
+                    'author': {'role': 'user'},
+                    'content': {'content_type': 'text', 'parts': ['Hello!']},
+                }
+            },
+            'msg-2': {
+                'id': 'msg-2',
+                'parent': 'msg-1',
+                'children': [],
+                'message': {
+                    'id': 'asst-msg-1',
+                    'author': {'role': 'assistant'},
+                    'content': {'content_type': 'text', 'parts': ['Hi! How can I help?']},
+                }
+            },
+        },
+        'current_node': 'msg-2',
+    }
+
+@pytest.fixture
+def sample_code_message():
+    """Sample message with code block."""
+    return MessageTextData(
+        message_id=uuid4(),
+        text='Here is the code:\n```python\nprint("hello")\n```',
+        created_at=datetime.now(timezone.utc),
+        role='assistant',
+    )
+```
+
+### Database Population Fixtures
+
+```python
+@pytest.fixture
+def populated_database(session):
+    """Database with sample dialogues, messages, and exchanges."""
+    # Create dialogue
+    dialogue = Dialogue(
+        source='chatgpt',
+        source_id='test-1',
+        title='Test',
+        source_json={},
+    )
+    session.add(dialogue)
+    session.flush()
+    
+    # Create messages
+    messages = create_test_messages(dialogue.id, session)
+    
+    # Build derived structures
+    tree_builder = TreeBuilder(session)
+    tree_builder.build(dialogue.id)
+    
+    exchange_builder = ExchangeBuilder(session)
+    exchange_builder.build(dialogue.id)
+    
+    session.commit()
+    
+    yield dialogue
+```
+
+---
+
+## Test Patterns
+
+### Testing Annotator Logic
+
+```python
+def test_annotator_logic():
+    """Test annotator without database."""
+    # 1. Create data object
+    data = MessageTextData(...)
+    
+    # 2. Create annotator without session
+    annotator = MyAnnotator.__new__(MyAnnotator)
+    
+    # 3. Call annotate directly
+    results = annotator.annotate(data)
+    
+    # 4. Assert on results
+    assert len(results) == 1
+    assert results[0].value == 'expected'
+```
+
+### Testing Incremental Processing
+
+```python
+def test_incremental_import(session):
+    """Test that incremental import updates correctly."""
+    extractor = ChatGPTExtractor(session)
+    
+    # First import
+    count1 = extractor.extract(file_path, mode='full')
+    
+    # Modify export file
+    modify_export_file(file_path)
+    
+    # Incremental import
+    count2 = extractor.extract(file_path, mode='incremental')
+    
+    # Should detect changes
+    assert count2 > 0
+```
+
+### Testing Strategy Priority
+
+```python
+def test_strategy_priority():
+    """Test that annotators run in priority order."""
+    manager = AnnotationManager(session)
+    
+    # Register in random order
+    manager.register(LowPriorityAnnotator)    # priority=30
+    manager.register(HighPriorityAnnotator)   # priority=90
+    manager.register(MedPriorityAnnotator)    # priority=50
+    
+    # Verify sorted order
+    sorted_annotators = manager._sorted_annotators()
+    priorities = [a.PRIORITY for a in sorted_annotators]
+    
+    assert priorities == sorted(priorities, reverse=True)
+```
+
+---
+
+## Mocking
+
+### Mock Database Session
+
+```python
+from unittest.mock import MagicMock, patch
+
+def test_with_mock_session():
+    """Test with mocked session."""
+    mock_session = MagicMock()
+    mock_session.query.return_value.filter.return_value.all.return_value = []
+    
+    annotator = MyAnnotator(mock_session)
+    result = annotator.compute()
+    
+    assert result == 0
+```
+
+### Mock File System
+
+```python
+def test_import_with_mock_file(tmp_path):
+    """Test import with temporary file."""
+    # Create temp file
+    export_file = tmp_path / "conversations.json"
+    export_file.write_text(json.dumps([sample_conversation]))
+    
+    # Import
+    extractor = ChatGPTExtractor(session)
+    count = extractor.extract(export_file)
+    
+    assert count == 1
+```
+
+---
+
+## Coverage
+
+### Running with Coverage
+
+```bash
+# Generate coverage report
+pytest --cov=llm_archive --cov-report=html
+
+# View report
+open htmlcov/index.html
+```
+
+### Coverage Requirements
+
+- Unit tests: High coverage for business logic
+- Integration tests: Cover happy paths and edge cases
+- Minimum target: 80% line coverage
+
+---
+
+## Continuous Integration
+
+### GitHub Actions Example
+
+```yaml
+# .github/workflows/test.yml
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: test_llm_archive
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev]"
+      
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_llm_archive
+        run: |
+          pytest --cov=llm_archive --cov-report=xml
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+```
+
+---
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md)
+- [Annotators](annotators.md) - Annotator testing patterns
+- [CLI Reference](cli.md) - CLI testing
+

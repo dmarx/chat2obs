@@ -1,0 +1,745 @@
+---
+File: llm_archive/models/__init__.py
+---
+# llm_archive/models/__init__.py
+"""SQLAlchemy models for raw and derived schemas."""
+
+from llm_archive.models.raw import (
+    Base,
+    Source,
+    Dialogue,
+    Message,
+    ContentPart,
+    Citation,
+    Attachment,
+    ChatGPTMessageMeta,
+    ChatGPTSearchGroup,
+    ChatGPTSearchEntry,
+    ChatGPTCodeExecution,
+    ChatGPTCodeOutput,
+    ChatGPTDalleGeneration,
+    ChatGPTCanvasDoc,
+    ClaudeMessageMeta,
+)
+
+from llm_archive.models.derived import (
+    PromptResponse,
+    PromptResponseContent,
+    AnnotatorCursor,
+)
+
+from llm_archive.models.annotations import (
+    get_annotation_model,
+    get_all_annotation_models,
+    ContentPartAnnotationFlag,
+    ContentPartAnnotationString,
+    PromptResponseAnnotationFlag,
+    PromptResponseAnnotationString,
+)
+
+__all__ = [
+    # Base
+    "Base",
+    # Raw core
+    "Source",
+    "Dialogue",
+    "Message",
+    "ContentPart",
+    "Citation",
+    "Attachment",
+    # Raw ChatGPT extensions
+    "ChatGPTMessageMeta",
+    "ChatGPTSearchGroup",
+    "ChatGPTSearchEntry",
+    "ChatGPTCodeExecution",
+    "ChatGPTCodeOutput",
+    "ChatGPTDalleGeneration",
+    "ChatGPTCanvasDoc",
+    # Raw Claude extensions
+    "ClaudeMessageMeta",
+    # Derived
+    "PromptResponse",
+    "PromptResponseContent",
+    "AnnotatorCursor",
+    # Annotation model helpers
+    "get_annotation_model",
+    "get_all_annotation_models",
+    # Common annotation models
+    "ContentPartAnnotationFlag",
+    "ContentPartAnnotationString",
+    "PromptResponseAnnotationFlag",
+    "PromptResponseAnnotationString",
+]
+
+
+
+---
+File: llm_archive/models/annotations.py
+---
+# llm_archive/models/annotations.py
+"""Factory-generated ORM models for typed annotation tables.
+
+Each (entity_type, value_type) pair gets its own table:
+    derived.{entity}_annotations_{value_type}
+
+This module generates all 16 models (4 entity types × 4 value types)
+and provides a registry for lookup:
+
+    from llm_archive.models.annotations import get_annotation_model
+    model = get_annotation_model(EntityType.CONTENT_PART, ValueType.FLAG)
+    session.query(model).filter(model.annotation_key == 'has_code_block')
+
+Adding a new entity type only requires adding an entry to _ENTITY_CONFIG.
+"""
+
+from __future__ import annotations
+
+from sqlalchemy import (
+    Column, DateTime, Float, ForeignKey, Index, String, Text,
+    UniqueConstraint, func,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+
+from llm_archive.annotations.core import EntityType, ValueType
+from llm_archive.models.raw import Base
+
+
+# ------------------------------------------------------------------
+# Entity configuration: maps EntityType → FK target string
+# ------------------------------------------------------------------
+
+_ENTITY_CONFIG: dict[EntityType, str] = {
+    EntityType.CONTENT_PART:    "raw.content_parts.id",
+    EntityType.MESSAGE:         "raw.messages.id",
+    EntityType.PROMPT_RESPONSE: "derived.prompt_responses.id",
+    EntityType.DIALOGUE:        "raw.dialogues.id",
+}
+
+
+# ------------------------------------------------------------------
+# Shared columns present on every annotation table
+# ------------------------------------------------------------------
+
+def _common_columns(entity_fk: str) -> dict:
+    return {
+        "id": Column(
+            PG_UUID(as_uuid=True), primary_key=True,
+            server_default=func.gen_random_uuid(),
+        ),
+        "entity_id": Column(
+            PG_UUID(as_uuid=True),
+            ForeignKey(entity_fk, ondelete="CASCADE"),
+            nullable=False,
+        ),
+        "annotation_key": Column(String, nullable=False),
+        "confidence": Column(Float),
+        "reason": Column(Text),
+        "source": Column(String, nullable=False),
+        "source_version": Column(String),
+        "created_at": Column(DateTime(timezone=True), server_default=func.now()),
+    }
+
+
+# ------------------------------------------------------------------
+# Value-type-specific columns and constraints
+# ------------------------------------------------------------------
+
+def _value_columns_and_args(
+    entity_type: EntityType,
+    value_type: ValueType,
+) -> tuple[dict, tuple]:
+    """Return (extra_columns, __table_args__) for a value type."""
+    prefix = entity_type.value.replace("_", "")[:6]  # short prefix for index names
+
+    if value_type == ValueType.FLAG:
+        return {}, (
+            UniqueConstraint("entity_id", "annotation_key"),
+            Index(f"ix_{prefix}_ann_flag_key", "annotation_key"),
+            Index(f"ix_{prefix}_ann_flag_eid", "entity_id"),
+            {"schema": "derived"},
+        )
+
+    if value_type == ValueType.STRING:
+        return {"annotation_value": Column(String, nullable=False)}, (
+            UniqueConstraint("entity_id", "annotation_key", "annotation_value"),
+            Index(f"ix_{prefix}_ann_str_key", "annotation_key"),
+            Index(f"ix_{prefix}_ann_str_kv", "annotation_key", "annotation_value"),
+            Index(f"ix_{prefix}_ann_str_eid", "entity_id"),
+            {"schema": "derived"},
+        )
+
+    if value_type == ValueType.NUMERIC:
+        return {"annotation_value": Column(Float, nullable=False)}, (
+            UniqueConstraint("entity_id", "annotation_key", "annotation_value"),
+            Index(f"ix_{prefix}_ann_num_key", "annotation_key"),
+            Index(f"ix_{prefix}_ann_num_eid", "entity_id"),
+            {"schema": "derived"},
+        )
+
+    if value_type == ValueType.JSON:
+        return {"annotation_value": Column(JSONB, nullable=False)}, (
+            UniqueConstraint("entity_id", "annotation_key"),
+            Index(f"ix_{prefix}_ann_json_key", "annotation_key"),
+            Index(f"ix_{prefix}_ann_json_eid", "entity_id"),
+            {"schema": "derived"},
+        )
+
+    raise ValueError(f"Unknown value type: {value_type}")
+
+
+# ------------------------------------------------------------------
+# Model factory
+# ------------------------------------------------------------------
+
+def _class_name(entity_type: EntityType, value_type: ValueType) -> str:
+    """Generate a PascalCase class name: e.g. ContentPartAnnotationFlag."""
+    entity_pascal = entity_type.value.replace("_", " ").title().replace(" ", "")
+    value_pascal = value_type.value.title()
+    return f"{entity_pascal}Annotation{value_pascal}"
+
+
+def _make_annotation_model(
+    entity_type: EntityType,
+    value_type: ValueType,
+) -> type:
+    """Generate an ORM model class for one annotation table."""
+    entity_fk = _ENTITY_CONFIG[entity_type]
+    table_name = f"{entity_type.value}_annotations_{value_type.value}"
+
+    columns = _common_columns(entity_fk)
+    extra_columns, table_args = _value_columns_and_args(entity_type, value_type)
+    columns.update(extra_columns)
+
+    attrs = {
+        "__tablename__": table_name,
+        "__table_args__": table_args,
+        **columns,
+    }
+
+    cls = type(_class_name(entity_type, value_type), (Base,), attrs)
+    return cls
+
+
+# ------------------------------------------------------------------
+# Registry: generated once at import time
+# ------------------------------------------------------------------
+
+_ANNOTATION_MODELS: dict[EntityType, dict[ValueType, type]] = {}
+
+for _et in EntityType:
+    _ANNOTATION_MODELS[_et] = {}
+    for _vt in ValueType:
+        _ANNOTATION_MODELS[_et][_vt] = _make_annotation_model(_et, _vt)
+
+
+def get_annotation_model(entity_type: EntityType, value_type: ValueType) -> type:
+    """Look up the ORM model for a (entity_type, value_type) pair."""
+    return _ANNOTATION_MODELS[entity_type][value_type]
+
+
+def get_all_annotation_models() -> list[type]:
+    """Return all 16 annotation model classes (for schema creation)."""
+    return [
+        model
+        for et_models in _ANNOTATION_MODELS.values()
+        for model in et_models.values()
+    ]
+
+
+# ------------------------------------------------------------------
+# Convenience aliases for the most commonly used models
+# ------------------------------------------------------------------
+
+ContentPartAnnotationFlag = _ANNOTATION_MODELS[EntityType.CONTENT_PART][ValueType.FLAG]
+ContentPartAnnotationString = _ANNOTATION_MODELS[EntityType.CONTENT_PART][ValueType.STRING]
+ContentPartAnnotationNumeric = _ANNOTATION_MODELS[EntityType.CONTENT_PART][ValueType.NUMERIC]
+ContentPartAnnotationJson = _ANNOTATION_MODELS[EntityType.CONTENT_PART][ValueType.JSON]
+
+MessageAnnotationFlag = _ANNOTATION_MODELS[EntityType.MESSAGE][ValueType.FLAG]
+MessageAnnotationString = _ANNOTATION_MODELS[EntityType.MESSAGE][ValueType.STRING]
+
+PromptResponseAnnotationFlag = _ANNOTATION_MODELS[EntityType.PROMPT_RESPONSE][ValueType.FLAG]
+PromptResponseAnnotationString = _ANNOTATION_MODELS[EntityType.PROMPT_RESPONSE][ValueType.STRING]
+PromptResponseAnnotationNumeric = _ANNOTATION_MODELS[EntityType.PROMPT_RESPONSE][ValueType.NUMERIC]
+PromptResponseAnnotationJson = _ANNOTATION_MODELS[EntityType.PROMPT_RESPONSE][ValueType.JSON]
+
+DialogueAnnotationFlag = _ANNOTATION_MODELS[EntityType.DIALOGUE][ValueType.FLAG]
+DialogueAnnotationString = _ANNOTATION_MODELS[EntityType.DIALOGUE][ValueType.STRING]
+
+
+
+---
+File: llm_archive/models/derived.py
+---
+# llm_archive/models/derived.py
+"""SQLAlchemy models for derived.* schema tables."""
+
+from sqlalchemy import (
+    Column, String, Integer, DateTime, Float, ForeignKey, Text, func,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import relationship
+
+from llm_archive.models.raw import Base
+
+
+# ----------------------------------------------------------------------
+# Prompt-Response Pairs (unique by response)
+# ----------------------------------------------------------------------
+
+class PromptResponse(Base):
+    """
+    Direct prompt-response association without tree dependency.
+
+    Each record pairs a user prompt with one of its responses.
+    A prompt can have multiple responses (regenerations).
+    Each response appears in exactly one record.
+    """
+    __tablename__ = "prompt_responses"
+    __table_args__ = {"schema": "derived"}
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    dialogue_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.dialogues.id", ondelete="CASCADE"), nullable=False)
+
+    prompt_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
+    response_message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"), nullable=False)
+
+    prompt_position = Column(Integer, nullable=False)
+    response_position = Column(Integer, nullable=False)
+
+    prompt_role = Column(String, nullable=False)
+    response_role = Column(String, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    dialogue = relationship("Dialogue", back_populates="prompt_responses")
+    prompt_message = relationship("Message", foreign_keys=[prompt_message_id])
+    response_message = relationship("Message", foreign_keys=[response_message_id])
+    content = relationship(
+        "PromptResponseContent",
+        uselist=False,
+        back_populates="prompt_response",
+        cascade="all, delete-orphan",
+    )
+
+    # ------------------------------------------------------------------
+    # Computed text properties (aggregate from content_parts via message)
+    # These provide a normalized access path without requiring the
+    # denormalized prompt_response_content table.
+    # ------------------------------------------------------------------
+
+    @property
+    def prompt_text(self) -> str | None:
+        """Aggregate text content from prompt message content_parts."""
+        if not self.prompt_message or not self.prompt_message.content_parts:
+            return None
+        text_parts = [
+            cp.text_content
+            for cp in sorted(self.prompt_message.content_parts, key=lambda c: c.sequence)
+            if cp.text_content and cp.part_type == 'text'
+        ]
+        return '\n'.join(text_parts) if text_parts else None
+
+    @property
+    def response_text(self) -> str | None:
+        """Aggregate text content from response message content_parts."""
+        if not self.response_message or not self.response_message.content_parts:
+            return None
+        text_parts = [
+            cp.text_content
+            for cp in sorted(self.response_message.content_parts, key=lambda c: c.sequence)
+            if cp.text_content and cp.part_type == 'text'
+        ]
+        return '\n'.join(text_parts) if text_parts else None
+
+    @property
+    def prompt_word_count(self) -> int:
+        text = self.prompt_text
+        return len(text.split()) if text else 0
+
+    @property
+    def response_word_count(self) -> int:
+        text = self.response_text
+        return len(text.split()) if text else 0
+
+
+# ----------------------------------------------------------------------
+# Prompt-Response Content (denormalized text — legacy / optional)
+# ----------------------------------------------------------------------
+
+class PromptResponseContent(Base):
+    """
+    Denormalized text content for annotation/search without joins.
+
+    NOTE: This table is maintained for backward compatibility with views.
+    Prefer PromptResponse.prompt_text / .response_text properties which
+    derive content from the source-of-truth content_parts table.
+    """
+    __tablename__ = "prompt_response_content"
+    __table_args__ = {"schema": "derived"}
+
+    prompt_response_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("derived.prompt_responses.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    prompt_text = Column(Text)
+    response_text = Column(Text)
+
+    prompt_word_count = Column(Integer)
+    response_word_count = Column(Integer)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    prompt_response = relationship("PromptResponse", back_populates="content")
+
+
+# ----------------------------------------------------------------------
+# Annotator Cursors — incremental processing state
+# ----------------------------------------------------------------------
+
+class AnnotatorCursor(Base):
+    """
+    Tracks processing state for an annotator version.
+
+    Each (annotator_name, annotator_version, entity_type) triple gets its
+    own cursor.  Bumping VERSION in annotator code creates a fresh cursor,
+    triggering full reprocessing.
+    """
+    __tablename__ = "annotator_cursors"
+    __table_args__ = {"schema": "derived"}
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+
+    annotator_name = Column(String, nullable=False)
+    annotator_version = Column(String, nullable=False)
+    entity_type = Column(String, nullable=False)
+
+    high_water_mark = Column(DateTime(timezone=True), nullable=False)
+
+    entities_processed = Column(Integer, nullable=False, default=0)
+    annotations_created = Column(Integer, nullable=False, default=0)
+    cumulative_runtime_seconds = Column(Float, nullable=False, default=0.0)
+
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return (
+            f"<AnnotatorCursor {self.annotator_name} v{self.annotator_version} "
+            f"[{self.entity_type}] hwm={self.high_water_mark} "
+            f"processed={self.entities_processed} created={self.annotations_created} "
+            f"runtime={self.cumulative_runtime_seconds:.1f}s>"
+        )
+
+
+
+---
+File: llm_archive/models/raw.py
+---
+# llm_archive/models/raw.py
+"""SQLAlchemy models for raw.* schema tables."""
+
+from datetime import datetime
+from uuid import UUID
+
+from sqlalchemy import (
+    Column, String, Integer, Boolean, DateTime, ForeignKey, Text, BigInteger,
+    ARRAY, func
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
+from sqlalchemy.orm import declarative_base, relationship
+
+Base = declarative_base()
+
+
+# ============================================================
+# Core Tables
+# ============================================================
+
+class Source(Base):
+    """Registry of dialogue sources."""
+    __tablename__ = "sources"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(String, primary_key=True)
+    display_name = Column(String, nullable=False)
+    has_native_trees = Column(Boolean, nullable=False)
+    role_vocabulary = Column(ARRAY(String), nullable=False)
+    source_metadata = Column(JSONB, name="metadata")  # 'metadata' reserved by SQLAlchemy
+    
+    dialogues = relationship("Dialogue", back_populates="source_rel")
+
+
+class Dialogue(Base):
+    """Universal dialogue container."""
+    __tablename__ = "dialogues"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    source = Column(String, ForeignKey("raw.sources.id"), nullable=False)
+    source_id = Column(String, nullable=False)
+    
+    title = Column(String)
+    
+    # Source timestamps (from archive)
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    source_rel = relationship("Source", back_populates="dialogues")
+    messages = relationship("Message", back_populates="dialogue", cascade="all, delete-orphan")
+    prompt_responses = relationship('PromptResponse', back_populates='dialogue')
+
+
+class Message(Base):
+    """Universal message with tree structure support."""
+    __tablename__ = "messages"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    dialogue_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.dialogues.id", ondelete="CASCADE"), nullable=False)
+    source_id = Column(String, nullable=False)
+    
+    parent_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id"))
+    
+    role = Column(String, nullable=False)
+    author_id = Column(String)
+    author_name = Column(String)
+    
+    # Source timestamps (from archive)
+    source_created_at = Column(DateTime(timezone=True))
+    source_updated_at = Column(DateTime(timezone=True))
+    
+    # Change tracking
+    content_hash = Column(String)  # hash of content for change detection
+    deleted_at = Column(DateTime(timezone=True))  # soft delete (removed from source)
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    # DB timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    dialogue = relationship("Dialogue", back_populates="messages")
+    parent = relationship("Message", remote_side=[id], backref="children")
+    content_parts = relationship("ContentPart", back_populates="message", cascade="all, delete-orphan")
+    attachments = relationship("Attachment", back_populates="message", cascade="all, delete-orphan")
+
+
+class ContentPart(Base):
+    """Content segments within a message."""
+    __tablename__ = "content_parts"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    
+    part_type = Column(String, nullable=False)
+    text_content = Column(Text)
+    
+    # Code-specific fields
+    language = Column(String)  # programming language for code blocks
+    
+    # Media fields
+    media_type = Column(String)  # MIME type (image/png, audio/mp3, etc.)
+    url = Column(String)  # URL for external resources
+    
+    # Tool use fields (Claude)
+    tool_name = Column(String)  # name of tool being used
+    tool_use_id = Column(String)  # links tool_result back to tool_use
+    tool_input = Column(JSONB)  # tool input parameters
+    
+    # Timing and status
+    started_at = Column(DateTime(timezone=True))
+    ended_at = Column(DateTime(timezone=True))
+    is_error = Column(Boolean, default=False)
+    
+    source_json = Column(JSONB, nullable=False)
+    
+    message = relationship("Message", back_populates="content_parts")
+    citations = relationship("Citation", back_populates="content_part", cascade="all, delete-orphan")
+
+
+class Citation(Base):
+    """Citations within content parts."""
+    __tablename__ = "citations"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    content_part_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.content_parts.id", ondelete="CASCADE"), nullable=False)
+    source_id = Column(String)
+    
+    url = Column(String)
+    title = Column(String)
+    snippet = Column(Text)
+    published_at = Column(DateTime(timezone=True))
+    
+    start_index = Column(Integer)
+    end_index = Column(Integer)
+    citation_type = Column(String)
+    
+    source_json = Column(JSONB)
+    
+    content_part = relationship("ContentPart", back_populates="citations")
+
+
+class Attachment(Base):
+    """File attachments on messages."""
+    __tablename__ = "attachments"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    
+    file_name = Column(String)
+    file_type = Column(String)
+    file_size = Column(Integer)
+    extracted_text = Column(Text)
+    
+    source_json = Column(JSONB)
+    
+    message = relationship("Message", back_populates="attachments")
+
+
+# ============================================================
+# ChatGPT Extensions
+# ============================================================
+
+class ChatGPTMessageMeta(Base):
+    """ChatGPT-specific message metadata."""
+    __tablename__ = "chatgpt_message_meta"
+    __table_args__ = {"schema": "raw"}
+    
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), primary_key=True)
+    model_slug = Column(String)
+    status = Column(String)
+    end_turn = Column(Boolean)
+    gizmo_id = Column(String)
+    source_json = Column(JSONB, nullable=False)
+
+
+class ChatGPTSearchGroup(Base):
+    """ChatGPT search result groups."""
+    __tablename__ = "chatgpt_search_groups"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    group_type = Column(String)
+    domain = Column(String)
+    source_json = Column(JSONB, nullable=False)
+    
+    entries = relationship("ChatGPTSearchEntry", back_populates="group", cascade="all, delete-orphan")
+
+
+class ChatGPTSearchEntry(Base):
+    """ChatGPT search result entries."""
+    __tablename__ = "chatgpt_search_entries"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    group_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.chatgpt_search_groups.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    url = Column(String)
+    title = Column(String)
+    snippet = Column(Text)
+    published_at = Column(DateTime(timezone=True))
+    attribution = Column(String)
+    source_json = Column(JSONB, nullable=False)
+    
+    group = relationship("ChatGPTSearchGroup", back_populates="entries")
+
+
+class ChatGPTCodeExecution(Base):
+    """ChatGPT code execution records."""
+    __tablename__ = "chatgpt_code_executions"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    run_id = Column(String)
+    status = Column(String)
+    code = Column(Text)
+    started_at = Column(DateTime(timezone=True))
+    ended_at = Column(DateTime(timezone=True))
+    final_output = Column(Text)
+    exception_name = Column(String)
+    exception_traceback = Column(Text)
+    source_json = Column(JSONB, nullable=False)
+    
+    outputs = relationship("ChatGPTCodeOutput", back_populates="execution", cascade="all, delete-orphan")
+
+
+class ChatGPTCodeOutput(Base):
+    """ChatGPT code execution outputs."""
+    __tablename__ = "chatgpt_code_outputs"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    execution_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.chatgpt_code_executions.id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    output_type = Column(String)
+    stream_name = Column(String)
+    text_content = Column(Text)
+    image_url = Column(String)
+    source_json = Column(JSONB, nullable=False)
+    
+    execution = relationship("ChatGPTCodeExecution", back_populates="outputs")
+
+
+class ChatGPTDalleGeneration(Base):
+    """ChatGPT DALL-E image generations."""
+    __tablename__ = "chatgpt_dalle_generations"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    content_part_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.content_parts.id", ondelete="CASCADE"), nullable=False)
+    gen_id = Column(String)
+    prompt = Column(Text)
+    seed = Column(BigInteger)
+    parent_gen_id = Column(String)
+    edit_op = Column(String)
+    width = Column(Integer)
+    height = Column(Integer)
+    source_json = Column(JSONB, nullable=False)
+
+
+class ChatGPTCanvasDoc(Base):
+    """ChatGPT canvas document operations."""
+    __tablename__ = "chatgpt_canvas_docs"
+    __table_args__ = {"schema": "raw"}
+    
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), nullable=False)
+    textdoc_id = Column(String)
+    textdoc_type = Column(String)
+    version = Column(Integer)
+    title = Column(String)
+    from_version = Column(Integer)
+    content_length = Column(Integer)
+    has_user_edit = Column(Boolean)
+    source_json = Column(JSONB, nullable=False)
+
+
+# ============================================================
+# Claude Extensions
+# ============================================================
+
+class ClaudeMessageMeta(Base):
+    """Claude-specific message metadata."""
+    __tablename__ = "claude_message_meta"
+    __table_args__ = {"schema": "raw"}
+    
+    message_id = Column(PG_UUID(as_uuid=True), ForeignKey("raw.messages.id", ondelete="CASCADE"), primary_key=True)
+    source_json = Column(JSONB, nullable=False)
+
+

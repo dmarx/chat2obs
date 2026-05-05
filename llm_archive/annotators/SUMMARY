@@ -1,0 +1,1088 @@
+---
+File: llm_archive/annotators/__init__.py
+---
+# llm_archive/annotators/__init__.py
+"""Annotation infrastructure for entities.
+
+Annotators analyze entities and produce annotations stored in derived.annotations.
+
+Architecture Overview:
+---------------------
+
+**Annotation Keys vs Annotators (Strategy Pattern)**
+
+An ANNOTATION_KEY identifies what we're trying to detect (e.g., 'code', 'latex').
+Multiple annotators can target the same key using different strategies.
+Higher PRIORITY annotators run first; lower-priority ones can be skipped
+if the key is already satisfied.
+
+Example: Detecting code in an exchange
+  - ChatGPTCodeExecutionAnnotator (priority=100): Platform ground truth
+  - CodeBlockAnnotator (priority=90): Explicit ``` blocks
+  - CodeStructureAnnotator (priority=70): Function/class patterns
+  - CodeKeywordDensityAnnotator (priority=30): Keyword density
+
+If code execution is detected (priority 100), lower-priority heuristics
+can check has_annotation_key() to skip redundant work.
+
+**Cursor-Based Incremental Processing**
+
+All annotators extend BaseAnnotator which manages cursor state.
+On each run only entities with created_at > high_water_mark are processed.
+Changing VERSION creates a new cursor, forcing full reprocessing.
+
+**Creating a Custom Annotator**
+
+    from llm_archive.annotators.prompt_response import (
+        PromptResponseAnnotator, PromptResponseData,
+    )
+    from llm_archive.annotations.core import AnnotationResult, ValueType
+
+    class MyAnnotator(PromptResponseAnnotator):
+        ANNOTATION_KEY = 'my_tag'
+        VALUE_TYPE = ValueType.STRING
+        PRIORITY = 50
+        VERSION = '1.0'
+
+        def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+            if some_condition(data):
+                return [AnnotationResult(key='my_tag', value='detected')]
+            return []
+
+Then register it:
+
+    from llm_archive.annotators.registry import get_default_registry
+
+    registry = get_default_registry()
+    registry.register(MyAnnotator)
+    results = registry.run_all(session)
+"""
+
+from llm_archive.annotators.base import BaseAnnotator
+from llm_archive.annotators.registry import AnnotatorRegistry, get_default_registry
+
+from llm_archive.annotators.content_part import (
+    ContentPartAnnotator,
+    ContentPartData,
+    CodeBlockAnnotator,
+    LatexContentAnnotator,
+    WikiLinkContentAnnotator,
+    CONTENT_PART_ANNOTATORS,
+)
+
+from llm_archive.annotators.prompt_response import (
+    PromptResponseAnnotator,
+    PromptResponseData,
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
+    PROMPT_RESPONSE_ANNOTATORS,
+)
+
+__all__ = [
+    # Base
+    "BaseAnnotator",
+    # Registry
+    "AnnotatorRegistry",
+    "get_default_registry",
+    # Content-part annotators
+    "ContentPartAnnotator",
+    "ContentPartData",
+    "CodeBlockAnnotator",
+    "ScriptHeaderAnnotator",
+    "LatexContentAnnotator",
+    "WikiLinkContentAnnotator",
+    "CONTENT_PART_ANNOTATORS",
+    # Prompt-response annotators
+    "PromptResponseAnnotator",
+    "PromptResponseData",
+    "WikiCandidateAnnotator",
+    "NaiveTitleAnnotator",
+    "PROMPT_RESPONSE_ANNOTATORS",
+]
+
+
+
+---
+File: llm_archive/annotators/base.py
+---
+# llm_archive/annotators/base.py
+"""Abstract base class for all annotators with cursor-based incremental processing.
+
+Provides:
+- Cursor creation / retrieval / update
+- Incremental entity iteration (only entities newer than high_water_mark)
+- Cumulative statistics (entities_processed, annotations_created, runtime)
+- Consistent logging
+
+Subclass hierarchy:
+    BaseAnnotator (this file)
+    ├── ContentPartAnnotator   (content_part.py)
+    │   ├── CodeBlockAnnotator
+    │   └── ...
+    └── PromptResponseAnnotator (prompt_response.py)
+        ├── WikiCandidateAnnotator
+        └── ...
+"""
+
+import time
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Generic, Iterator, TypeVar
+from uuid import UUID
+
+from loguru import logger
+from sqlalchemy.orm import Session
+
+from llm_archive.annotations.core import (
+    AnnotationResult,
+    AnnotationWriter,
+    EntityType,
+    ValueType,
+)
+from llm_archive.models.derived import AnnotatorCursor
+
+# Type variable for the dataclass each annotator family passes around.
+EntityDataT = TypeVar("EntityDataT")
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+class BaseAnnotator(ABC, Generic[EntityDataT]):
+    """Abstract base for all annotators.
+
+    Concrete subclasses must define:
+        ENTITY_TYPE, ANNOTATION_KEY, and implement
+        _iter_entities_after(), _entity_id(), _created_at(), annotate().
+
+    Class attributes (override in subclass):
+        ENTITY_TYPE      – EntityType enum member
+        ANNOTATION_KEY   – primary annotation key produced
+        VALUE_TYPE       – default ValueType for results
+        PRIORITY         – higher runs first (descending sort)
+        VERSION          – bump to force reprocessing
+        SOURCE           – e.g. 'heuristic', 'model', 'ingestion'
+    """
+
+    # -- metadata (subclass must set ENTITY_TYPE and ANNOTATION_KEY) ------
+    ENTITY_TYPE: EntityType = None          # type: ignore[assignment]
+    ANNOTATION_KEY: str = ""
+    VALUE_TYPE: ValueType = ValueType.STRING
+    PRIORITY: int = 50
+    VERSION: str = "1.0"
+    SOURCE: str = "heuristic"
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+        self.writer = AnnotationWriter(session)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def compute(self) -> int:
+        """Run annotation with cursor-based incremental processing.
+
+        Returns the number of annotations created this run.
+        """
+        start = time.monotonic()
+        cursor = self._get_or_create_cursor()
+
+        logger.info(
+            "{name} v{ver} starting  hwm={hwm}  cumulative_processed={p}",
+            name=self.__class__.__name__,
+            ver=self.VERSION,
+            hwm=cursor.high_water_mark,
+            p=cursor.entities_processed,
+        )
+
+        annotations_created = 0
+        entities_processed = 0
+        latest_created_at = cursor.high_water_mark
+
+        for data in self._iter_entities_after(cursor.high_water_mark):
+            entity_id = self._entity_id(data)
+            created_at = self._created_at(data)
+
+            results = self.annotate(data)
+
+            for result in results:
+                if self._write_result(entity_id, result):
+                    annotations_created += 1
+
+            entities_processed += 1
+
+            if created_at and created_at > latest_created_at:
+                latest_created_at = created_at
+
+        elapsed = time.monotonic() - start
+        self._update_cursor(
+            cursor,
+            entities_processed=entities_processed,
+            annotations_created=annotations_created,
+            new_high_water_mark=latest_created_at,
+            elapsed_seconds=elapsed,
+        )
+
+        logger.info(
+            "{name} v{ver} finished  processed={p} annotations={a} elapsed={e:.2f}s",
+            name=self.__class__.__name__,
+            ver=self.VERSION,
+            p=entities_processed,
+            a=annotations_created,
+            e=elapsed,
+        )
+        return annotations_created
+
+    # ------------------------------------------------------------------
+    # Cursor management
+    # ------------------------------------------------------------------
+
+    def _get_or_create_cursor(self) -> AnnotatorCursor:
+        """Retrieve or create cursor for this annotator + version + entity_type."""
+        cursor = (
+            self.session.query(AnnotatorCursor)
+            .filter_by(
+                annotator_name=self.__class__.__name__,
+                annotator_version=self.VERSION,
+                entity_type=self.ENTITY_TYPE.value,
+            )
+            .one_or_none()
+        )
+        if cursor is not None:
+            return cursor
+
+        cursor = AnnotatorCursor(
+            annotator_name=self.__class__.__name__,
+            annotator_version=self.VERSION,
+            entity_type=self.ENTITY_TYPE.value,
+            high_water_mark=_EPOCH,
+            entities_processed=0,
+            annotations_created=0,
+            cumulative_runtime_seconds=0.0,
+        )
+        self.session.add(cursor)
+        self.session.flush()
+        logger.debug("Created new cursor for {}", self.__class__.__name__)
+        return cursor
+
+    def _update_cursor(
+        self,
+        cursor: AnnotatorCursor,
+        *,
+        entities_processed: int,
+        annotations_created: int,
+        new_high_water_mark: datetime,
+        elapsed_seconds: float,
+    ) -> None:
+        """Advance cursor state after a run."""
+        cursor.high_water_mark = new_high_water_mark
+        cursor.entities_processed += entities_processed
+        cursor.annotations_created += annotations_created
+        cursor.cumulative_runtime_seconds += elapsed_seconds
+        cursor.updated_at = datetime.now(timezone.utc)
+        self.session.flush()
+
+    # ------------------------------------------------------------------
+    # Result writing (delegates to AnnotationWriter)
+    # ------------------------------------------------------------------
+
+    def _write_result(self, entity_id: UUID, result: AnnotationResult) -> bool:
+        """Write a single annotation result."""
+        value_type = result.value_type or self.VALUE_TYPE
+
+        if value_type == ValueType.FLAG:
+            return self.writer.write_flag(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        if value_type == ValueType.STRING:
+            return self.writer.write_string(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                value=str(result.value),
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        if value_type == ValueType.NUMERIC:
+            return self.writer.write_numeric(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                value=float(result.value),
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        if value_type == ValueType.JSON:
+            return self.writer.write_json(
+                entity_type=self.ENTITY_TYPE,
+                entity_id=entity_id,
+                key=result.key,
+                value=result.value,
+                confidence=result.confidence,
+                reason=result.reason,
+                source=result.source or self.SOURCE,
+                source_version=result.source_version or self.VERSION,
+            )
+        return False
+
+    # ------------------------------------------------------------------
+    # Abstract interface — concrete annotators must implement
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def _iter_entities_after(self, after: datetime) -> Iterator[EntityDataT]:
+        """Yield entities whose created_at > *after*, ordered by created_at."""
+        ...
+
+    @abstractmethod
+    def _entity_id(self, data: EntityDataT) -> UUID:
+        """Extract the primary-key UUID from entity data."""
+        ...
+
+    @abstractmethod
+    def _created_at(self, data: EntityDataT) -> datetime | None:
+        """Extract the created_at timestamp from entity data."""
+        ...
+
+    @abstractmethod
+    def annotate(self, data: EntityDataT) -> list[AnnotationResult]:
+        """Produce annotations for a single entity.
+
+        Returns an empty list when no annotation applies.
+        """
+        ...
+
+
+
+---
+File: llm_archive/annotators/content_part.py
+---
+# llm_archive/annotators/content_part.py
+"""Content-part level annotators.
+
+Annotators work on individual content_parts within messages,
+detecting features like code blocks, LaTeX, and wiki links.
+
+All annotators extend ContentPartAnnotator which extends BaseAnnotator,
+gaining cursor-based incremental processing automatically.
+
+Entity iteration uses ORM queries (ContentPart + Message models).
+"""
+
+import re
+from abc import abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Iterator
+from uuid import UUID
+
+from sqlalchemy.orm import Session
+
+from llm_archive.annotations.core import AnnotationResult, EntityType, ValueType
+from llm_archive.annotators.base import BaseAnnotator
+from llm_archive.models.raw import ContentPart, Message
+
+
+# ============================================================
+# Data Classes
+# ============================================================
+
+@dataclass
+class ContentPartData:
+    """Data passed to content-part annotation logic."""
+    content_part_id: UUID
+    message_id: UUID
+    dialogue_id: UUID
+    sequence: int
+    part_type: str
+    text_content: str | None
+    language: str | None
+    role: str
+    created_at: datetime | None
+
+
+# ============================================================
+# Base Content-Part Annotator
+# ============================================================
+
+class ContentPartAnnotator(BaseAnnotator[ContentPartData]):
+    """Base class for annotating content parts.
+
+    Iterates over ContentPart joined with Message using ORM queries.
+    Supports optional content filters (PART_TYPE_FILTER, ROLE_FILTER).
+
+    Subclass and implement ``annotate()`` to create a new content-part
+    annotator.  Everything else (cursor tracking, result writing,
+    incremental processing) is handled automatically.
+    """
+
+    ENTITY_TYPE = EntityType.CONTENT_PART
+
+    # Content filters — override in subclass
+    PART_TYPE_FILTER: str | None = None   # e.g. 'text', 'code'
+    ROLE_FILTER: str | None = None        # e.g. 'assistant', 'user'
+
+    # ------------------------------------------------------------------
+    # BaseAnnotator interface
+    # ------------------------------------------------------------------
+
+    def _iter_entities_after(self, after: datetime) -> Iterator[ContentPartData]:
+        """Yield content parts whose message.created_at > *after*."""
+        query = (
+            self.session.query(
+                ContentPart.id,
+                ContentPart.message_id,
+                Message.dialogue_id,
+                ContentPart.sequence,
+                ContentPart.part_type,
+                ContentPart.text_content,
+                ContentPart.language,
+                Message.role,
+                Message.created_at,
+            )
+            .join(ContentPart.message)
+            .filter(Message.deleted_at.is_(None))
+            .filter(Message.created_at > after)
+        )
+
+        if self.PART_TYPE_FILTER:
+            query = query.filter(ContentPart.part_type == self.PART_TYPE_FILTER)
+
+        if self.ROLE_FILTER:
+            query = query.filter(Message.role == self.ROLE_FILTER)
+
+        query = query.order_by(Message.created_at, ContentPart.sequence)
+
+        for row in query:
+            yield ContentPartData(
+                content_part_id=row[0],
+                message_id=row[1],
+                dialogue_id=row[2],
+                sequence=row[3],
+                part_type=row[4],
+                text_content=row[5],
+                language=row[6],
+                role=row[7],
+                created_at=row[8],
+            )
+
+    def _entity_id(self, data: ContentPartData) -> UUID:
+        return data.content_part_id
+
+    def _created_at(self, data: ContentPartData) -> datetime | None:
+        return data.created_at
+
+    @abstractmethod
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        """Analyze content part and return annotations to create."""
+        ...
+
+
+# ============================================================
+# Code Detection Annotators
+# ============================================================
+
+class CodeBlockAnnotator(ContentPartAnnotator):
+    """Detect explicit code blocks (```) in text content parts.
+
+    Produces:
+    - has_code_block FLAG
+    - code_block_count NUMERIC
+    - code_language STRING (multi-value, one per detected language)
+    """
+
+    ANNOTATION_KEY = "has_code_block"
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 90
+    PART_TYPE_FILTER = "text"
+    ROLE_FILTER = "assistant"
+
+    CODE_BLOCK_PATTERN = re.compile(r"```(\w*)\n?.*?```", re.DOTALL)
+
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        if not data.text_content:
+            return []
+
+        matches = self.CODE_BLOCK_PATTERN.findall(data.text_content)
+        if not matches:
+            return []
+
+        results: list[AnnotationResult] = [
+            AnnotationResult(
+                key="has_code_block",
+                value_type=ValueType.FLAG,
+                confidence=1.0,
+            ),
+            AnnotationResult(
+                key="code_block_count",
+                value=len(matches),
+                value_type=ValueType.NUMERIC,
+            ),
+        ]
+
+        languages = {lang.lower() for lang in matches if lang}
+        for lang in sorted(languages):
+            results.append(
+                AnnotationResult(
+                    key="code_language",
+                    value=lang,
+                    value_type=ValueType.STRING,
+                    confidence=1.0,
+                )
+            )
+
+        return results
+
+
+# ============================================================
+# Script Header Annotator
+# ============================================================
+
+
+# ============================================================
+# LaTeX Content Annotator
+# ============================================================
+
+class LatexContentAnnotator(ContentPartAnnotator):
+    """Detect LaTeX content in text.
+
+    Produces:
+    - has_latex FLAG
+    - latex_type STRING ('inline' | 'display' | 'commands')
+    """
+
+    ANNOTATION_KEY = "has_latex"
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 70
+    PART_TYPE_FILTER = "text"
+
+    INLINE_MATH = re.compile(r"(?<!\$)\$(?!\$)(?!\d)[^$\n]+?\$(?!\$)")
+    DISPLAY_MATH = re.compile(r"\$\$[^$]+?\$\$", re.DOTALL)
+    LATEX_COMMANDS = re.compile(r"\\(?:frac|sqrt|sum|int|prod|lim|begin|end)\b")
+
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        if not data.text_content:
+            return []
+
+        detected: list[str] = []
+
+        if self.DISPLAY_MATH.search(data.text_content):
+            detected.append("display")
+        if self.INLINE_MATH.search(data.text_content):
+            detected.append("inline")
+        if self.LATEX_COMMANDS.search(data.text_content):
+            detected.append("commands")
+
+        if not detected:
+            return []
+
+        results: list[AnnotationResult] = [
+            AnnotationResult(key="has_latex", value_type=ValueType.FLAG, confidence=1.0),
+        ]
+        for latex_type in detected:
+            results.append(
+                AnnotationResult(key="latex_type", value=latex_type, value_type=ValueType.STRING)
+            )
+        return results
+
+
+# ============================================================
+# Wiki Link Annotator
+# ============================================================
+
+class WikiLinkContentAnnotator(ContentPartAnnotator):
+    """Detect [[wiki links]] in content.
+
+    Produces:
+    - has_wiki_links FLAG
+    - wiki_link_count NUMERIC
+    """
+
+    ANNOTATION_KEY = "has_wiki_links"
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 75
+    PART_TYPE_FILTER = "text"
+    ROLE_FILTER = "assistant"
+
+    WIKI_LINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
+
+    def annotate(self, data: ContentPartData) -> list[AnnotationResult]:
+        if not data.text_content:
+            return []
+
+        matches = self.WIKI_LINK_PATTERN.findall(data.text_content)
+        if not matches:
+            return []
+
+        return [
+            AnnotationResult(
+                key="has_wiki_links",
+                value_type=ValueType.FLAG,
+                confidence=1.0,
+                reason="wiki_links_detected",
+            ),
+            AnnotationResult(
+                key="wiki_link_count",
+                value=len(matches),
+                value_type=ValueType.NUMERIC,
+            ),
+        ]
+
+
+# ============================================================
+# Registry
+# ============================================================
+
+CONTENT_PART_ANNOTATORS: list[type[ContentPartAnnotator]] = [
+    CodeBlockAnnotator,
+    LatexContentAnnotator,
+    WikiLinkContentAnnotator,
+]
+
+
+
+---
+File: llm_archive/annotators/prompt_response.py
+---
+# llm_archive/annotators/prompt_response.py
+"""Prompt-response level annotators.
+
+These annotators work on prompt_response pairs, detecting features like
+wiki article candidates and extracting titles.
+
+Entity iteration and annotation filtering use ORM queries with
+the annotation model registry — no raw SQL string construction.
+"""
+
+import re
+from abc import abstractmethod
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Iterator
+from uuid import UUID
+
+from sqlalchemy import and_
+from sqlalchemy.orm import Session, aliased
+
+from llm_archive.annotations.core import AnnotationResult, EntityType, ValueType
+from llm_archive.annotators.base import BaseAnnotator
+from llm_archive.models.annotations import get_annotation_model
+from llm_archive.models.derived import PromptResponse, PromptResponseContent
+
+
+# ============================================================
+# Data Classes
+# ============================================================
+
+@dataclass
+class PromptResponseData:
+    """Data passed to prompt-response annotation logic."""
+    prompt_response_id: UUID
+    dialogue_id: UUID
+    prompt_message_id: UUID
+    response_message_id: UUID
+    prompt_text: str | None
+    response_text: str | None
+    prompt_word_count: int | None
+    response_word_count: int | None
+    prompt_role: str
+    response_role: str
+    created_at: datetime | None
+
+
+# ============================================================
+# Base Prompt-Response Annotator
+# ============================================================
+
+class PromptResponseAnnotator(BaseAnnotator[PromptResponseData]):
+    """Base class for annotating prompt-response pairs.
+
+    Iterates over PromptResponse joined with PromptResponseContent
+    using ORM queries.
+
+    Supports annotation prerequisites and skip conditions via ORM joins:
+    - REQUIRES_FLAGS: Only process entities with ALL of these flag annotations
+    - REQUIRES_STRINGS: Only process entities with ALL of these (key, value) pairs
+    - SKIP_IF_FLAGS: Skip entities with ANY of these flag annotations
+    - SKIP_IF_STRINGS: Skip entities with ANY of these (key,) or (key, value) pairs
+
+    Subclass and implement ``annotate()`` to create a new prompt-response
+    annotator.
+    """
+
+    ENTITY_TYPE = EntityType.PROMPT_RESPONSE
+
+    # Filtering — override in subclass
+    REQUIRES_FLAGS: list[str] = []
+    REQUIRES_STRINGS: list[tuple[str, str]] = []   # (key, value) pairs
+    SKIP_IF_FLAGS: list[str] = []
+    SKIP_IF_STRINGS: list[tuple[str, ...]] = []    # (key,) or (key, value)
+
+    # ------------------------------------------------------------------
+    # BaseAnnotator interface
+    # ------------------------------------------------------------------
+
+    def _iter_entities_after(self, after: datetime) -> Iterator[PromptResponseData]:
+        """Yield prompt-response pairs created after *after*."""
+        query = (
+            self.session.query(
+                PromptResponse.id,
+                PromptResponse.dialogue_id,
+                PromptResponse.prompt_message_id,
+                PromptResponse.response_message_id,
+                PromptResponseContent.prompt_text,
+                PromptResponseContent.response_text,
+                PromptResponseContent.prompt_word_count,
+                PromptResponseContent.response_word_count,
+                PromptResponse.prompt_role,
+                PromptResponse.response_role,
+                PromptResponse.created_at,
+            )
+            .join(PromptResponse.content)
+            .filter(PromptResponse.created_at > after)
+        )
+
+        query = self._apply_annotation_filters(query)
+        query = query.order_by(PromptResponse.created_at)
+
+        for row in query:
+            yield PromptResponseData(
+                prompt_response_id=row[0],
+                dialogue_id=row[1],
+                prompt_message_id=row[2],
+                response_message_id=row[3],
+                prompt_text=row[4],
+                response_text=row[5],
+                prompt_word_count=row[6],
+                response_word_count=row[7],
+                prompt_role=row[8],
+                response_role=row[9],
+                created_at=row[10],
+            )
+
+    def _apply_annotation_filters(self, query):
+        """Apply REQUIRES and SKIP annotation filters using ORM joins."""
+        flag_model = get_annotation_model(EntityType.PROMPT_RESPONSE, ValueType.FLAG)
+        string_model = get_annotation_model(EntityType.PROMPT_RESPONSE, ValueType.STRING)
+
+        # REQUIRES_FLAGS: inner join ensures entity has each flag
+        for flag_key in self.REQUIRES_FLAGS:
+            alias = aliased(flag_model)
+            query = query.join(
+                alias,
+                and_(
+                    alias.entity_id == PromptResponse.id,
+                    alias.annotation_key == flag_key,
+                ),
+            )
+
+        # REQUIRES_STRINGS: inner join on (key, value) pairs
+        for key, value in self.REQUIRES_STRINGS:
+            alias = aliased(string_model)
+            query = query.join(
+                alias,
+                and_(
+                    alias.entity_id == PromptResponse.id,
+                    alias.annotation_key == key,
+                    alias.annotation_value == value,
+                ),
+            )
+
+        # SKIP_IF_FLAGS: left join + filter NULL (exclude matches)
+        for flag_key in self.SKIP_IF_FLAGS:
+            alias = aliased(flag_model)
+            query = query.outerjoin(
+                alias,
+                and_(
+                    alias.entity_id == PromptResponse.id,
+                    alias.annotation_key == flag_key,
+                ),
+            ).filter(alias.id.is_(None))
+
+        # SKIP_IF_STRINGS: left join + filter NULL
+        for skip_spec in self.SKIP_IF_STRINGS:
+            alias = aliased(string_model)
+            conditions = [alias.entity_id == PromptResponse.id]
+            conditions.append(alias.annotation_key == skip_spec[0])
+            if len(skip_spec) > 1:
+                conditions.append(alias.annotation_value == skip_spec[1])
+            query = query.outerjoin(alias, and_(*conditions))
+            query = query.filter(alias.id.is_(None))
+
+        return query
+
+    def _entity_id(self, data: PromptResponseData) -> UUID:
+        return data.prompt_response_id
+
+    def _created_at(self, data: PromptResponseData) -> datetime | None:
+        return data.created_at
+
+    @abstractmethod
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        """Analyze prompt-response pair and return annotations to create."""
+        ...
+
+
+# ============================================================
+# Wiki Article Detection
+# ============================================================
+
+class WikiCandidateAnnotator(PromptResponseAnnotator):
+    """Detect wiki-style article candidates.
+
+    Looks for [[wiki links]] in assistant responses.
+
+    Produces:
+    - exchange_type STRING 'wiki_article'
+    """
+
+    ANNOTATION_KEY = "wiki_candidate"
+    VALUE_TYPE = ValueType.FLAG
+    PRIORITY = 60
+    VERSION = "1.0"
+
+    WIKI_LINK_PATTERN = re.compile(r"\[\[([^\]]+)\]\]")
+
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if not data.response_text:
+            return []
+
+        wiki_links = self.WIKI_LINK_PATTERN.findall(data.response_text)
+        if len(wiki_links) < 2:
+            return []
+
+        return [
+            AnnotationResult(
+                key=self.ANNOTATION_KEY,
+                value_type=ValueType.FLAG,
+                confidence=.85,
+                reason=f"wiki_links={len(wiki_links)}",
+            )
+        ]
+
+
+# ============================================================
+# Naive Title Extraction
+# ============================================================
+
+def clean_title(text: str):
+    text = text.replace('[[','')
+    text = text.replace(']]','')
+    text = text.replace('**','')
+    return text
+
+
+class NaiveTitleAnnotator(PromptResponseAnnotator):
+    """Extract potential article title from response.
+
+    Only runs on wiki_article candidates.
+
+    Produces:
+    - proposed_title STRING
+    """
+
+    ANNOTATION_KEY = "proposed_title"
+    VALUE_TYPE = ValueType.STRING
+    PRIORITY = 50
+    VERSION = "1.1"
+
+    REQUIRES_FLAGS = [("wiki_candidate")]
+
+    def annotate(self, data: PromptResponseData) -> list[AnnotationResult]:
+        if not data.response_text:
+            return []
+
+        reason_suffix = ""
+        if data.response_role == "user":
+            reason_suffix = " in prompt"
+
+        lines = data.response_text.split("\n")
+        for line in lines[:5]:
+            if line.startswith("#"):
+                title = line.lstrip('#').strip()
+                if title:
+                    return [
+                        AnnotationResult(
+                            key=self.ANNOTATION_KEY,
+                            value=clean_title(title),
+                            value_type=ValueType.STRING,
+                            confidence=0.9,
+                            reason="markdown_header"+reason_suffix,
+                        )
+                    ]
+
+            if line.startswith('**') and line.endswith('**'):
+                title = line.strip('*').strip()
+                if title:
+                    return [
+                        AnnotationResult(
+                            key=self.ANNOTATION_KEY,
+                            value=clean_title(title),
+                            value_type=ValueType.STRING,
+                            confidence=0.9,
+                            reason="bold_header"+reason_suffix,
+                        )
+                    ]
+                    
+            
+            # Bold header with trailing content: **Title** - some subtitle
+            if line.startswith('**') and '**' in line[2:]:
+                end_idx = line.index('**', 2)
+                title = line[2:end_idx].strip()
+                if title:
+                    return [
+                        AnnotationResult(
+                            key=self.ANNOTATION_KEY,
+                            value=clean_title(title),
+                            value_type=ValueType.STRING,
+                            confidence=0.9,
+                            reason="bold_header_with_suffix"+reason_suffix,
+                        )
+                    ]
+        
+        # first_line = lines[0].strip() if lines else ""
+        # if 5 <= len(first_line.split()) <= 10:
+        #     return [
+        #         AnnotationResult(
+        #             key="proposed_title",
+        #             value=first_line,
+        #             value_type=ValueType.STRING,
+        #             confidence=0.6,
+        #             reason="Used first line",
+        #         )
+        #     ]
+
+        return []
+
+
+# ============================================================
+# Registry
+# ============================================================
+
+PROMPT_RESPONSE_ANNOTATORS: list[type[PromptResponseAnnotator]] = [
+    WikiCandidateAnnotator,
+    NaiveTitleAnnotator,
+]
+
+
+
+---
+File: llm_archive/annotators/registry.py
+---
+# llm_archive/annotators/registry.py
+"""Annotator registry: discovers, registers, and runs annotators in priority order.
+
+Usage:
+    from llm_archive.annotators.registry import AnnotatorRegistry
+
+    registry = AnnotatorRegistry()
+    # auto-discovers built-in annotators, or register manually:
+    registry.register(MyCustomAnnotator)
+
+    with get_session(db_url) as session:
+        results = registry.run_all(session)
+"""
+
+from __future__ import annotations
+
+from loguru import logger
+from sqlalchemy.orm import Session
+
+from llm_archive.annotators.base import BaseAnnotator
+
+
+class AnnotatorRegistry:
+    """Central registry of annotator classes.
+
+    Annotators are sorted by PRIORITY descending (highest priority first).
+    """
+
+    def __init__(self) -> None:
+        self._annotators: dict[str, type[BaseAnnotator]] = {}
+
+    # ------------------------------------------------------------------
+    # Registration
+    # ------------------------------------------------------------------
+
+    def register(self, cls: type[BaseAnnotator]) -> None:
+        """Register an annotator class."""
+        self._annotators[cls.__name__] = cls
+
+    def register_many(self, classes: list[type[BaseAnnotator]]) -> None:
+        for cls in classes:
+            self.register(cls)
+
+    def unregister(self, name: str) -> None:
+        self._annotators.pop(name, None)
+
+    # ------------------------------------------------------------------
+    # Discovery helpers
+    # ------------------------------------------------------------------
+
+    def list_annotators(self) -> list[type[BaseAnnotator]]:
+        """Return registered annotators sorted by priority (descending)."""
+        return sorted(
+            self._annotators.values(),
+            key=lambda c: c.PRIORITY,
+            reverse=True,
+        )
+
+    def get(self, name: str) -> type[BaseAnnotator] | None:
+        return self._annotators.get(name)
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
+    def run_all(self, session: Session) -> dict[str, int]:
+        """Run every registered annotator in priority order.
+
+        Returns dict mapping annotator name → annotations created.
+        """
+        results: dict[str, int] = {}
+        for cls in self.list_annotators():
+            logger.info("Running annotator: {} (priority={})", cls.__name__, cls.PRIORITY)
+            annotator = cls(session)
+            count = annotator.compute()
+            results[cls.__name__] = count
+        session.commit()
+        return results
+
+    def run_one(self, name: str, session: Session) -> int:
+        """Run a single annotator by class name.
+
+        Raises KeyError if not registered.
+        """
+        cls = self._annotators.get(name)
+        if cls is None:
+            raise KeyError(
+                f"Annotator '{name}' not registered. "
+                f"Available: {sorted(self._annotators)}"
+            )
+        annotator = cls(session)
+        count = annotator.compute()
+        session.commit()
+        return count
+
+
+def get_default_registry() -> AnnotatorRegistry:
+    """Build a registry with all built-in annotators."""
+    from llm_archive.annotators.content_part import CONTENT_PART_ANNOTATORS
+    from llm_archive.annotators.prompt_response import PROMPT_RESPONSE_ANNOTATORS
+
+    registry = AnnotatorRegistry()
+    registry.register_many(CONTENT_PART_ANNOTATORS)
+    registry.register_many(PROMPT_RESPONSE_ANNOTATORS)
+    return registry
+
+
