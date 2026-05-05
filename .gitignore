@@ -45,3 +45,8 @@ data/postgres/
 
 *.session.sql
 staging/
+
+data/
+nbs/*.log
+
+**/*.pyc
